@@ -1,0 +1,16 @@
+services:
+  docs-ssh:
+    build: .
+    container_name: docs-ssh
+    ports:
+      - "2222:2222"
+    environment:
+      SSH_HOST: 0.0.0.0
+      SSH_PORT: 2222
+      DOCS_DIR: /data/docs
+      DOCS_SSH_STATE_DIR: /data/state
+      SSH_HOST_KEY_PATH: /data/state/ssh_host_key
+    volumes:
+      - ./docs:/data/docs:ro
+      - ./.docs-ssh:/data/state
+    restart: unless-stopped

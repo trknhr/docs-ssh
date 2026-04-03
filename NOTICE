@@ -1,0 +1,9 @@
+docs-ssh includes code derived from supabase-community/supabase-ssh.
+
+Original project:
+- Repository: https://github.com/supabase-community/supabase-ssh
+- License: Apache License 2.0
+- Copyright: 2026 Supabase
+
+Files in this repository that are derived from or adapted from the upstream project
+carry prominent modification notices in their source headers.

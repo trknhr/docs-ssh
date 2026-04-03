@@ -1,0 +1,36 @@
+{
+  "name": "docs-ssh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.24.0",
+  "scripts": {
+    "build": "tsc",
+    "cli": "pnpm run build && node dist/src/cli.js",
+    "dev": "tsx src/server.ts",
+    "dev:watch": "tsx watch src/server.ts",
+    "ingest": "pnpm run build && node dist/src/cli.js ingest",
+    "start": "node dist/src/server.js",
+    "sources:list": "pnpm run build && node dist/src/cli.js sources list",
+    "generate:host-key": "tsx scripts/generate-host-key.ts",
+    "generate:host-key:local": "tsx scripts/generate-host-key.ts > ssh_host_key",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "just-bash": "^2.14.0",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/ssh2": "^1.15.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "ssh2"
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+.git
+.docs-ssh
+.tmux-orchestrator-export
+dist
+node_modules
+ssh_host_key
+.DS_Store

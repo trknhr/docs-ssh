@@ -1,0 +1,5 @@
+node_modules
+dist
+ssh_host_key
+.docs-ssh
+.DS_Store
