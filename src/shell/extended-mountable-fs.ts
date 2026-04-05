@@ -3,26 +3,33 @@
  * Modified only for docs-ssh packaging.
  */
 
+import { posix } from 'node:path'
 import { type InitialFiles, InMemoryFs, MountableFs, type MountableFsOptions } from 'just-bash'
 
 interface ExtendedMountableFsOptions extends Omit<MountableFsOptions, 'base'> {
   readOnly?: boolean
   initialFiles?: InitialFiles | undefined
+  readOnlyPaths?: string[]
+  writablePaths?: string[]
 }
 
 export class ExtendedMountableFs extends MountableFs {
   #base: InMemoryFs
   #readOnly: boolean
+  #readOnlyPaths: string[]
+  #writablePaths: string[]
   #readFiles: Set<string> = new Set()
   #readDirs: Set<string> = new Set()
   #observing = false
 
   constructor(opts?: ExtendedMountableFsOptions) {
-    const { readOnly, initialFiles, ...rest } = opts ?? {}
+    const { readOnly, initialFiles, readOnlyPaths, writablePaths, ...rest } = opts ?? {}
     const base = new InMemoryFs(initialFiles)
     super({ ...rest, base })
     this.#base = base
     this.#readOnly = readOnly ?? false
+    this.#readOnlyPaths = (readOnlyPaths ?? []).map((path) => posix.normalize(path))
+    this.#writablePaths = (writablePaths ?? []).map((path) => posix.normalize(path))
   }
 
   startObservingReads(): void {
@@ -53,22 +60,44 @@ export class ExtendedMountableFs extends MountableFs {
   }
 
   mkdirSync(path: string, options?: { recursive?: boolean }) {
+    this.#assertWritable(path, `mkdir '${path}'`)
     return this.#base.mkdirSync(path, options)
   }
 
   writeFileSync(path: string, content: string | Uint8Array) {
+    this.#assertWritable(path, `write '${path}'`)
     return this.#base.writeFileSync(path, content)
   }
 
-  #assertWritable(operation: string): void {
-    if (this.#readOnly) throw new Error(`EROFS: read-only file system, ${operation}`)
+  #isReadOnlyPath(path: string): boolean {
+    const normalizedPath = posix.normalize(path)
+    return this.#readOnlyPaths.some(
+      (readOnlyPath) =>
+        normalizedPath === readOnlyPath || normalizedPath.startsWith(`${readOnlyPath}/`),
+    )
+  }
+
+  #isWritablePath(path: string): boolean {
+    if (this.#writablePaths.length === 0) return true
+
+    const normalizedPath = posix.normalize(path)
+    return this.#writablePaths.some(
+      (writablePath) =>
+        normalizedPath === writablePath || normalizedPath.startsWith(`${writablePath}/`),
+    )
+  }
+
+  #assertWritable(path: string, operation: string): void {
+    if (this.#readOnly || this.#isReadOnlyPath(path) || !this.#isWritablePath(path)) {
+      throw new Error(`EROFS: read-only file system, ${operation}`)
+    }
   }
 
   override async writeFile(
     path: string,
     ...args: Parameters<MountableFs['writeFile']> extends [string, ...infer Rest] ? Rest : never
   ) {
-    this.#assertWritable(`write '${path}'`)
+    this.#assertWritable(path, `write '${path}'`)
     return super.writeFile(path, ...args)
   }
 
@@ -76,7 +105,7 @@ export class ExtendedMountableFs extends MountableFs {
     path: string,
     ...args: Parameters<MountableFs['appendFile']> extends [string, ...infer Rest] ? Rest : never
   ) {
-    this.#assertWritable(`append '${path}'`)
+    this.#assertWritable(path, `append '${path}'`)
     return super.appendFile(path, ...args)
   }
 
@@ -84,7 +113,7 @@ export class ExtendedMountableFs extends MountableFs {
     path: string,
     ...args: Parameters<MountableFs['mkdir']> extends [string, ...infer Rest] ? Rest : never
   ) {
-    this.#assertWritable(`mkdir '${path}'`)
+    this.#assertWritable(path, `mkdir '${path}'`)
     return super.mkdir(path, ...args)
   }
 
@@ -92,7 +121,7 @@ export class ExtendedMountableFs extends MountableFs {
     path: string,
     ...args: Parameters<MountableFs['rm']> extends [string, ...infer Rest] ? Rest : never
   ) {
-    this.#assertWritable(`rm '${path}'`)
+    this.#assertWritable(path, `rm '${path}'`)
     return super.rm(path, ...args)
   }
 
@@ -100,17 +129,17 @@ export class ExtendedMountableFs extends MountableFs {
     path: string,
     ...args: Parameters<MountableFs['chmod']> extends [string, ...infer Rest] ? Rest : never
   ) {
-    this.#assertWritable(`chmod '${path}'`)
+    this.#assertWritable(path, `chmod '${path}'`)
     return super.chmod(path, ...args)
   }
 
   override async symlink(...args: Parameters<MountableFs['symlink']>) {
-    this.#assertWritable(`symlink '${args[1]}'`)
+    this.#assertWritable(args[1], `symlink '${args[1]}'`)
     return super.symlink(...args)
   }
 
   override async link(...args: Parameters<MountableFs['link']>) {
-    this.#assertWritable(`link '${args[1]}'`)
+    this.#assertWritable(args[1], `link '${args[1]}'`)
     return super.link(...args)
   }
 
@@ -119,12 +148,12 @@ export class ExtendedMountableFs extends MountableFs {
     path: string,
     ...args: Parameters<MountableFs['cp']> extends [string, string, ...infer Rest] ? Rest : never
   ) {
-    this.#assertWritable(`cp '${path}'`)
+    this.#assertWritable(path, `cp '${path}'`)
     return super.cp(source, path, ...args)
   }
 
   override async mv(...args: Parameters<MountableFs['mv']>) {
-    this.#assertWritable(`mv '${args[1]}'`)
+    this.#assertWritable(args[1], `mv '${args[1]}'`)
     return super.mv(...args)
   }
 
@@ -132,7 +161,7 @@ export class ExtendedMountableFs extends MountableFs {
     path: string,
     ...args: Parameters<MountableFs['utimes']> extends [string, ...infer Rest] ? Rest : never
   ) {
-    this.#assertWritable(`utimes '${path}'`)
+    this.#assertWritable(path, `utimes '${path}'`)
     return super.utimes(path, ...args)
   }
 }

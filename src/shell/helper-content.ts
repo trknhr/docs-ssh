@@ -28,11 +28,19 @@ function createSourceList(sourceStore: SourceStore): string[] {
   return lines
 }
 
+function createWritableList(sourceStore: SourceStore): string[] {
+  return [
+    `- \`${sourceStore.workspaceMountPath}\` -> persistent personal notes and drafts`,
+    `- \`${sourceStore.scratchMountPath}\` -> temporary session-local files`,
+  ]
+}
+
 function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   const examples = [
     `${sshPrefix} find /docs -name '*.md' | head`,
     `${sshPrefix} grep -R "keyword" /docs`,
     `${sshPrefix} cat /docs/index.md`,
+    `${sshPrefix} sh -lc 'echo \"my notes\" > /workspace/notes.md'`,
   ]
 
   const nonDefaultSource = sourceStore.registry.sources.find(
@@ -69,6 +77,7 @@ export function createAgentsMarkdown(opts: HelperContentOptions): string {
     '',
     'Available paths:',
     ...createSourceList(opts.sourceStore),
+    ...createWritableList(opts.sourceStore),
     '',
     'Examples:',
     '',
@@ -94,6 +103,7 @@ export function createSkillMarkdown(opts: HelperContentOptions): string {
     '',
     'Default and named mounts:',
     ...createSourceList(opts.sourceStore),
+    ...createWritableList(opts.sourceStore),
     '',
     'Example commands:',
     '',
@@ -110,7 +120,7 @@ export function createSetupMarkdown(opts: HelperContentOptions): string {
   return [
     '# docs-ssh Setup',
     '',
-    `This server exposes ${opts.docsName} through a read-only SSH shell backed by just-bash.`,
+    `This server exposes ${opts.docsName} through read-only source mounts plus writable personal work areas.`,
     '',
     'Choose one of these setup flows:',
     '',
@@ -138,6 +148,9 @@ export function createSetupMarkdown(opts: HelperContentOptions): string {
     `${sshPrefix} skill`,
     `${sshPrefix} setup`,
     '```',
+    '',
+    'Writable paths:',
+    ...createWritableList(opts.sourceStore),
     '',
     'Suggested paths by tool:',
     '',

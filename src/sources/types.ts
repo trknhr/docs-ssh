@@ -27,4 +27,7 @@ export interface SourceStore {
   registry: SourceRegistry
   mounts: SourceMount[]
   defaultSource?: SourceSpec
+  workspaceMountPath: '/workspace'
+  scratchMountPath: '/scratch'
+  workspaceRootPath: string
 }

@@ -3,9 +3,10 @@
  * Modified to mount generic local docs and prepare for future source adapters.
  */
 
+import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { Bash, defineCommand, OverlayFs } from 'just-bash'
-import { loadSourceStore } from '../sources/source-store.js'
+import { Bash, defineCommand, InMemoryFs, OverlayFs, ReadWriteFs } from 'just-bash'
+import { getStatePaths, loadSourceStore } from '../sources/source-store.js'
 import { ExtendedMountableFs } from './extended-mountable-fs.js'
 import {
   createAgentsMarkdown,
@@ -56,10 +57,14 @@ export interface CreateBashOptions {
 export async function createBash(opts: CreateBashOptions = {}) {
   const docsDir = opts.docsDir ?? DEFAULT_DOCS_DIR
   const docsName = opts.docsName ?? 'Documentation'
+  const statePaths = getStatePaths()
+  const workspaceDir = resolve(process.env.WORKSPACE_DIR ?? `${statePaths.stateDir}/workspace`)
   const sourceStore = await loadSourceStore({
     registryPath: opts.registryPath,
     fallbackDocsDir: docsDir,
+    workspaceDir,
   })
+  await mkdir(sourceStore.workspaceRootPath, { recursive: true })
   const sshHost = opts.sshHost ?? process.env.SSH_CONNECT_HOST ?? '127.0.0.1'
   const sshPort = opts.sshPort ?? parseInt(process.env.SSH_CONNECT_PORT ?? '2222', 10)
   const agentsMarkdown = createAgentsMarkdown({
@@ -82,16 +87,27 @@ export async function createBash(opts: CreateBashOptions = {}) {
   })
 
   const fs = new ExtendedMountableFs({
-    readOnly: true,
+    readOnlyPaths: ['/AGENTS.md', '/SKILL.md', '/SETUP.md'],
+    writablePaths: [sourceStore.workspaceMountPath, sourceStore.scratchMountPath],
     initialFiles: {
       '/AGENTS.md': agentsMarkdown,
       '/SKILL.md': skillMarkdown,
       '/SETUP.md': setupMarkdown,
     },
-    mounts: sourceStore.mounts.map((mount) => ({
-      mountPoint: mount.mountPoint,
-      filesystem: new OverlayFs({ root: mount.rootPath, mountPoint: '/', readOnly: true }),
-    })),
+    mounts: [
+      ...sourceStore.mounts.map((mount) => ({
+        mountPoint: mount.mountPoint,
+        filesystem: new OverlayFs({ root: mount.rootPath, mountPoint: '/', readOnly: true }),
+      })),
+      {
+        mountPoint: sourceStore.workspaceMountPath,
+        filesystem: new ReadWriteFs({ root: sourceStore.workspaceRootPath }),
+      },
+      {
+        mountPoint: sourceStore.scratchMountPath,
+        filesystem: new InMemoryFs(),
+      },
+    ],
   })
 
   const bash = new Bash({

@@ -175,12 +175,16 @@ export function buildSourceStore(registry: SourceRegistry): SourceStore {
     },
     mounts,
     defaultSource,
+    workspaceMountPath: '/workspace',
+    scratchMountPath: '/scratch',
+    workspaceRootPath: '',
   }
 }
 
 export async function loadSourceStore(opts: {
   registryPath?: string
   fallbackDocsDir: string
+  workspaceDir: string
 }): Promise<SourceStore> {
   const statePaths = getStatePaths()
   const registryPath = resolve(opts.registryPath ?? statePaths.registryPath)
@@ -197,12 +201,20 @@ export async function loadSourceStore(opts: {
       })),
     )
 
-    return buildSourceStore({
+    const sourceStore = buildSourceStore({
       ...registry,
       sources: resolvedSources,
     })
+    return {
+      ...sourceStore,
+      workspaceRootPath: resolve(opts.workspaceDir),
+    }
   }
-  return buildSourceStore(createFallbackRegistry(opts.fallbackDocsDir))
+  const sourceStore = buildSourceStore(createFallbackRegistry(opts.fallbackDocsDir))
+  return {
+    ...sourceStore,
+    workspaceRootPath: resolve(opts.workspaceDir),
+  }
 }
 
 export function addSourceToRegistry(

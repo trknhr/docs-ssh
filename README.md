@@ -12,14 +12,16 @@ Current scope:
 
 - serve a local docs folder over SSH
 - ingest additional sources into a local registry
+- provide git-repo presets like `github`, `supabase`, `neon`, and `cloudflare`
 - mount sources at `/sources/<name>`
 - expose `/docs` as the default alias
-- keep the mounted filesystem read-only
+- keep source mounts read-only
+- provide `/workspace` for persistent personal notes
+- provide `/scratch` for temporary session-local files
 
 Deferred:
 
 - multi-source registry and switching
-- service presets like `github` or `cloudflare`
 - HTML/help-center crawling
 - hosted-service telemetry and rate limiting
 
@@ -103,6 +105,8 @@ Mounted paths:
 
 - every source is available at `/sources/<name>`
 - the default source is also available at `/docs`
+- `/workspace` is writable and persists across sessions
+- `/scratch` is writable and resets between SSH sessions
 
 Existing interactive shell sessions will not see new mounts until you reconnect.
 
@@ -112,6 +116,7 @@ Existing interactive shell sessions will not see new mounts until you reconnect.
 - `DOCS_NAME`: label shown in banners and helper files, default `Documentation`
 - `DOCS_SSH_STATE_DIR`: registry and managed source storage dir, default `./.docs-ssh`
 - `DOCS_SSH_REGISTRY_PATH`: optional explicit registry file path
+- `WORKSPACE_DIR`: writable personal workspace dir, default `./.docs-ssh/workspace`
 - `SSH_PORT`: SSH port to listen on, default `2222`
 - `SSH_HOST`: interface to bind, default `127.0.0.1`
 - `SSH_HOST_KEY_PATH`: host key path, default `./ssh_host_key`
