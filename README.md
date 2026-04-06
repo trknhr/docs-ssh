@@ -16,7 +16,7 @@ Current scope:
 - mount sources at `/sources/<name>`
 - expose `/docs` as the default alias
 - keep source mounts read-only
-- provide `/workspace` for persistent personal notes
+- provide `/workspace` as a persistent structured agent workspace
 - provide `/scratch` for temporary session-local files
 
 Deferred:
@@ -61,6 +61,44 @@ Deferred:
    ssh localhost -p 2222 grep -R "getting started" /docs
    ```
 
+5. Open the read-only viewer:
+
+   ```bash
+   open http://localhost:3000
+   ```
+
+   The viewer exposes a VS Code-like file tree plus a preview pane for markdown, text/code, and images.
+
+## SSH Config Alias
+
+If you plan to distribute a reusable skill file to users, configure a stable SSH alias on the client side instead of hardcoding a host name into the skill content.
+
+Example for a local server:
+
+```sshconfig
+Host docs-ssh
+  HostName 127.0.0.1
+  Port 2222
+```
+
+Example for a self-hosted server on your LAN or Tailscale network:
+
+```sshconfig
+Host docs-ssh
+  HostName <server-host-or-ip>
+  Port 2222
+```
+
+After that, users can connect and run helper commands through the same alias:
+
+```bash
+ssh docs-ssh
+ssh docs-ssh ls /docs
+ssh docs-ssh grep -R "getting started" /docs
+```
+
+The distributable skill file at `skills/SKILL.md` assumes this alias-based setup. If you prefer a different alias, update both the SSH config entry and the commands in the copied skill.
+
 ## Container
 
 You can run `docs-ssh` in Docker and keep the source registry plus host key on disk.
@@ -68,6 +106,7 @@ You can run `docs-ssh` in Docker and keep the source registry plus host key on d
 ```bash
 docker compose up --build -d
 ssh localhost -p 2222 ls /docs
+xdg-open http://localhost:3000
 ```
 
 The included `docker-compose.yml` mounts:
@@ -103,15 +142,19 @@ The self-hosting config uses:
 
 - `DOCS_SSH_DOCS_DIR` for the read-only docs mount
 - `DOCS_SSH_STATE_DIR` for ingested source data and the SSH host key
-- `DOCS_SSH_WORKSPACE_DIR` for persistent personal notes under `/workspace`
+- `DOCS_SSH_WORKSPACE_DIR` for the persistent structured workspace mounted at `/workspace`
 - `DOCS_SSH_BIND_IP` to control whether the SSH port binds only to localhost or to your LAN interface
+- `DOCS_SSH_VIEWER_BIND_IP` to control whether the HTTP viewer binds only to localhost or to your LAN interface
+- `DOCS_SSH_VIEWER_PORT` to control the HTTP viewer port
 
-Example: expose to your LAN on port `2222`.
+Example: expose SSH on `2222` and the viewer on `3000` to your LAN.
 
 ```bash
 cat > .env.selfhost <<'EOF'
 DOCS_SSH_BIND_IP=0.0.0.0
 DOCS_SSH_PORT=2222
+DOCS_SSH_VIEWER_BIND_IP=0.0.0.0
+DOCS_SSH_VIEWER_PORT=3000
 DOCS_SSH_DOCS_DIR=/srv/docs-ssh/docs
 DOCS_SSH_STATE_DIR=/srv/docs-ssh/state
 DOCS_SSH_WORKSPACE_DIR=/srv/docs-ssh/workspace
@@ -120,7 +163,14 @@ EOF
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --build
 ```
 
-Security note: the current SSH server still accepts any authentication attempt, so do not expose it directly to the public internet yet. Keep it on localhost, your LAN, or behind a private network like Tailscale until SSH auth is implemented.
+After startup:
+
+```bash
+ssh <server-ip> -p 2222
+xdg-open http://<server-ip>:3000
+```
+
+Security note: the current SSH server still accepts any authentication attempt, so do not expose it directly to the public internet yet. Keep both the SSH service and the viewer on localhost, your LAN, or behind a private network like Tailscale until SSH auth is implemented.
 
 ## Ingest Sources
 
@@ -137,10 +187,23 @@ Mounted paths:
 
 - every source is available at `/sources/<name>`
 - the default source is also available at `/docs`
-- `/workspace` is writable and persists across sessions
+- `/workspace` persists across sessions and includes scaffolded task/library/decision directories
 - `/scratch` is writable and resets between SSH sessions
 
 Existing interactive shell sessions will not see new mounts until you reconnect.
+
+## Workspace Layout
+
+`docs-ssh` seeds `/workspace` with a stable top-level structure for AI agents:
+
+- `README.md` and `_policy.json` describe the layout and writing rules
+- `tasks/` for active task-specific work
+- `library/` for reusable personal references, playbooks, snippets, and prompts
+- `decisions/` for durable cross-task decisions
+- `archive/` for completed work
+- `shared/` reserved for future multi-user sharing
+
+From the SSH session, the guidance files are read-only and writes are limited to `/workspace/tasks`, `/workspace/library`, `/workspace/decisions`, and `/workspace/archive`. Agents should create new task material under `/workspace/tasks/<task-slug>/` and use `/scratch` for temporary files.
 
 ## Configuration
 
@@ -148,7 +211,7 @@ Existing interactive shell sessions will not see new mounts until you reconnect.
 - `DOCS_NAME`: label shown in banners and helper files, default `Documentation`
 - `DOCS_SSH_STATE_DIR`: registry and managed source storage dir, default `./.docs-ssh`
 - `DOCS_SSH_REGISTRY_PATH`: optional explicit registry file path
-- `WORKSPACE_DIR`: writable personal workspace dir, default `./.docs-ssh/workspace`
+- `WORKSPACE_DIR`: persistent structured workspace dir, default `./.docs-ssh/workspace`
 - `SSH_PORT`: SSH port to listen on, default `2222`
 - `SSH_HOST`: interface to bind, default `127.0.0.1`
 - `SSH_HOST_KEY_PATH`: host key path, default `./ssh_host_key`

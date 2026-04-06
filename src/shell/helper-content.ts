@@ -28,10 +28,26 @@ function createSourceList(sourceStore: SourceStore): string[] {
   return lines
 }
 
-function createWritableList(sourceStore: SourceStore): string[] {
+function createWorkspaceList(sourceStore: SourceStore): string[] {
   return [
-    `- \`${sourceStore.workspaceMountPath}\` -> persistent personal notes and drafts`,
+    `- \`${sourceStore.workspaceMountPath}/README.md\` -> workspace layout and writing rules`,
+    `- \`${sourceStore.workspaceMountPath}/_policy.json\` -> machine-readable workspace policy`,
+    `- \`${sourceStore.workspaceMountPath}/tasks\` -> active task-specific work`,
+    `- \`${sourceStore.workspaceMountPath}/library\` -> reusable personal notes, playbooks, and snippets`,
+    `- \`${sourceStore.workspaceMountPath}/decisions\` -> durable cross-task decisions`,
+    `- \`${sourceStore.workspaceMountPath}/archive\` -> completed work and retired notes`,
+    `- \`${sourceStore.workspaceMountPath}/shared\` -> reserved for future shared use`,
     `- \`${sourceStore.scratchMountPath}\` -> temporary session-local files`,
+  ]
+}
+
+function createWorkspaceRules(sourceStore: SourceStore): string[] {
+  return [
+    `- Read \`${sourceStore.workspaceMountPath}/README.md\` before writing files.`,
+    `- Do not create loose files or new top-level directories under \`${sourceStore.workspaceMountPath}\`.`,
+    `- Create active work under \`${sourceStore.workspaceMountPath}/tasks/<task-slug>/\`.`,
+    `- Treat \`${sourceStore.workspaceMountPath}/shared\` as reserved for future shared workflows.`,
+    `- Use \`${sourceStore.scratchMountPath}\` for temporary files.`,
   ]
 }
 
@@ -39,8 +55,9 @@ function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   const examples = [
     `${sshPrefix} find /docs -name '*.md' | head`,
     `${sshPrefix} grep -R "keyword" /docs`,
-    `${sshPrefix} cat /docs/index.md`,
-    `${sshPrefix} sh -lc 'echo \"my notes\" > /workspace/notes.md'`,
+    `${sshPrefix} cat /workspace/README.md`,
+    `${sshPrefix} mkdir -p /workspace/tasks/example-task/artifacts`,
+    `${sshPrefix} sh -lc 'echo \"- note\" >> /workspace/tasks/example-task/notes.md'`,
   ]
 
   const nonDefaultSource = sourceStore.registry.sources.find(
@@ -77,7 +94,10 @@ export function createAgentsMarkdown(opts: HelperContentOptions): string {
     '',
     'Available paths:',
     ...createSourceList(opts.sourceStore),
-    ...createWritableList(opts.sourceStore),
+    ...createWorkspaceList(opts.sourceStore),
+    '',
+    'Workspace rules:',
+    ...createWorkspaceRules(opts.sourceStore),
     '',
     'Examples:',
     '',
@@ -103,7 +123,10 @@ export function createSkillMarkdown(opts: HelperContentOptions): string {
     '',
     'Default and named mounts:',
     ...createSourceList(opts.sourceStore),
-    ...createWritableList(opts.sourceStore),
+    ...createWorkspaceList(opts.sourceStore),
+    '',
+    'Workspace rules:',
+    ...createWorkspaceRules(opts.sourceStore),
     '',
     'Example commands:',
     '',
@@ -149,8 +172,11 @@ export function createSetupMarkdown(opts: HelperContentOptions): string {
     `${sshPrefix} setup`,
     '```',
     '',
-    'Writable paths:',
-    ...createWritableList(opts.sourceStore),
+    'Workspace paths:',
+    ...createWorkspaceList(opts.sourceStore),
+    '',
+    'Workspace rules:',
+    ...createWorkspaceRules(opts.sourceStore),
     '',
     'Suggested paths by tool:',
     '',

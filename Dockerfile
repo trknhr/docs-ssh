@@ -9,8 +9,10 @@ RUN pnpm install --frozen-lockfile
 
 COPY scripts ./scripts
 COPY src ./src
+COPY viewer ./viewer
 COPY docs ./docs
 COPY README.md LICENSE NOTICE ./
+COPY vite.config.ts ./
 
 RUN pnpm build \
   && pnpm prune --prod
@@ -26,16 +28,20 @@ RUN apt-get update \
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/viewer-dist ./viewer-dist
 COPY --from=build /app/docs ./docs
 COPY --from=build /app/README.md /app/LICENSE /app/NOTICE ./
 
 ENV NODE_ENV=production
 ENV SSH_HOST=0.0.0.0
 ENV SSH_PORT=2222
+ENV VIEWER_HOST=0.0.0.0
+ENV VIEWER_PORT=3000
 ENV DOCS_DIR=/app/docs
 ENV DOCS_SSH_STATE_DIR=/data/state
 ENV SSH_HOST_KEY_PATH=/data/state/ssh_host_key
 
 EXPOSE 2222
+EXPOSE 3000
 
 CMD ["node", "dist/src/server.js"]

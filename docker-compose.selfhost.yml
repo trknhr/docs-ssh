@@ -5,9 +5,12 @@ services:
     init: true
     ports:
       - "${DOCS_SSH_BIND_IP:-127.0.0.1}:${DOCS_SSH_PORT:-2222}:2222"
+      - "${DOCS_SSH_VIEWER_BIND_IP:-127.0.0.1}:${DOCS_SSH_VIEWER_PORT:-3000}:3000"
     environment:
       SSH_HOST: 0.0.0.0
       SSH_PORT: 2222
+      VIEWER_HOST: 0.0.0.0
+      VIEWER_PORT: 3000
       DOCS_DIR: /data/docs
       DOCS_SSH_STATE_DIR: /data/state
       WORKSPACE_DIR: /data/workspace

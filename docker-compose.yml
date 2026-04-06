@@ -4,9 +4,12 @@ services:
     container_name: docs-ssh
     ports:
       - "2222:2222"
+      - "3000:3000"
     environment:
       SSH_HOST: 0.0.0.0
       SSH_PORT: 2222
+      VIEWER_HOST: 0.0.0.0
+      VIEWER_PORT: 3000
       DOCS_DIR: /data/docs
       DOCS_SSH_STATE_DIR: /data/state
       SSH_HOST_KEY_PATH: /data/state/ssh_host_key

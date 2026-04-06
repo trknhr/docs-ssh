@@ -38,11 +38,13 @@ function createBanner(docsName: string): string {
     `${chalkInstance.dim('Useful paths:')}\r\n`,
     '  /docs\r\n',
     '  /sources/<name>\r\n',
+    '  /workspace/README.md\r\n',
+    '  /workspace/_policy.json\r\n',
     '\r\n',
     `${chalkInstance.dim('Examples:')}\r\n`,
     '  ls /docs\r\n',
     "  grep -R 'keyword' /docs\r\n",
-    '  cat /docs/index.md\r\n',
+    '  cat /workspace/README.md\r\n',
     '\r\n',
   ].join('')
 }

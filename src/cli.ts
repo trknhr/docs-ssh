@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
-import { access, mkdir, stat } from 'node:fs/promises'
-import { basename, relative, resolve } from 'node:path'
+import { access, appendFile, mkdir, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import {
   addSourceToRegistry,
@@ -13,9 +13,15 @@ import {
   normalizeSourceName,
   readSourceRegistry,
   writeSourceRegistry,
+  loadSourceStore,
 } from './sources/source-store.js'
 import type { SourceRegistry, SourceSpec } from './sources/types.js'
 import { getGitRepoPreset } from './ingest/presets.js'
+import {
+  createAgentsMarkdown,
+  createSetupMarkdown,
+  createSkillMarkdown,
+} from './shell/helper-content.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -32,6 +38,9 @@ Usage:
   docs-ssh ingest git-repo <repo-url> [--name <name>] [--subdir <path>] [--ref <ref>] [--default]
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
+  docs-ssh helper agents [--output <path>] [--append]
+  docs-ssh helper skill [--output <path>]
+  docs-ssh helper setup [--output <path>]
 
 Initial presets:
   github
@@ -246,6 +255,82 @@ async function listSources(args: ParsedArgs): Promise<void> {
   }
 }
 
+type HelperTarget = 'agents' | 'setup' | 'skill'
+
+async function loadHelperOptions(args: ParsedArgs) {
+  const statePaths = getStatePaths(getFlagString(args, 'state-dir'))
+  const docsDir = resolve(getFlagString(args, 'docs-dir') ?? process.env.DOCS_DIR ?? './docs')
+  const docsName = getFlagString(args, 'docs-name') ?? process.env.DOCS_NAME ?? 'Documentation'
+  const workspaceDir = resolve(
+    getFlagString(args, 'workspace-dir') ?? process.env.WORKSPACE_DIR ?? `${statePaths.stateDir}/workspace`,
+  )
+  const sourceStore = await loadSourceStore({
+    registryPath: statePaths.registryPath,
+    fallbackDocsDir: docsDir,
+    workspaceDir,
+  })
+  const sshHost = getFlagString(args, 'ssh-host') ?? process.env.SSH_CONNECT_HOST ?? process.env.SSH_HOST ?? '127.0.0.1'
+  const sshPortValue =
+    getFlagString(args, 'ssh-port') ??
+    process.env.SSH_CONNECT_PORT ??
+    process.env.SSH_PORT ??
+    process.env.PORT ??
+    '2222'
+  const sshPort = parseInt(sshPortValue, 10)
+
+  if (Number.isNaN(sshPort)) {
+    throw new Error(`Invalid ssh port: ${sshPortValue}`)
+  }
+
+  return {
+    docsName,
+    sourceStore,
+    sshHost,
+    sshPort,
+  }
+}
+
+function renderHelperMarkdown(target: HelperTarget, args: ParsedArgs): Promise<string> {
+  return loadHelperOptions(args).then((options) => {
+    switch (target) {
+      case 'agents':
+        return createAgentsMarkdown(options)
+      case 'setup':
+        return createSetupMarkdown(options)
+      case 'skill':
+        return createSkillMarkdown(options)
+    }
+  })
+}
+
+async function writeHelperOutput(path: string, content: string, append: boolean): Promise<void> {
+  const resolvedPath = resolve(path)
+  await mkdir(dirname(resolvedPath), { recursive: true })
+  if (append) {
+    await appendFile(resolvedPath, content)
+    return
+  }
+  await writeFile(resolvedPath, content)
+}
+
+async function outputHelper(target: HelperTarget, args: ParsedArgs): Promise<void> {
+  const append = getFlagBoolean(args, 'append')
+  const outputPath = getFlagString(args, 'output')
+  const content = await renderHelperMarkdown(target, args)
+
+  if (!outputPath) {
+    if (append) {
+      throw new Error('--append requires --output.')
+    }
+    process.stdout.write(content)
+    return
+  }
+
+  await writeHelperOutput(outputPath, content, append)
+  const action = append ? 'Appended' : 'Wrote'
+  console.log(`${action} ${target} helper to ${resolve(outputPath)}`)
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
 
@@ -278,6 +363,15 @@ async function main() {
 
   if (command === 'sources' && subcommand === 'list') {
     await listSources(args)
+    return
+  }
+
+  if (command === 'helper') {
+    if (subcommand === 'agents' || subcommand === 'setup' || subcommand === 'skill') {
+      await outputHelper(subcommand, args)
+      return
+    }
+    printUsage()
     return
   }
 

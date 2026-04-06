@@ -1,7 +1,9 @@
 node_modules
 dist
+viewer-dist
 ssh_host_key
 .docs-ssh
 .env
 .env.selfhost
 .DS_Store
+var

@@ -7,6 +7,11 @@ import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Bash, defineCommand, InMemoryFs, OverlayFs, ReadWriteFs } from 'just-bash'
 import { getStatePaths, loadSourceStore } from '../sources/source-store.js'
+import {
+  ensureWorkspaceLayout,
+  getWorkspaceReadOnlyPaths,
+  getWorkspaceWritablePaths,
+} from '../workspace/layout.js'
 import { ExtendedMountableFs } from './extended-mountable-fs.js'
 import {
   createAgentsMarkdown,
@@ -65,6 +70,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
     workspaceDir,
   })
   await mkdir(sourceStore.workspaceRootPath, { recursive: true })
+  await ensureWorkspaceLayout(sourceStore.workspaceRootPath)
   const sshHost = opts.sshHost ?? process.env.SSH_CONNECT_HOST ?? '127.0.0.1'
   const sshPort = opts.sshPort ?? parseInt(process.env.SSH_CONNECT_PORT ?? '2222', 10)
   const agentsMarkdown = createAgentsMarkdown({
@@ -87,8 +93,22 @@ export async function createBash(opts: CreateBashOptions = {}) {
   })
 
   const fs = new ExtendedMountableFs({
-    readOnlyPaths: ['/AGENTS.md', '/SKILL.md', '/SETUP.md'],
-    writablePaths: [sourceStore.workspaceMountPath, sourceStore.scratchMountPath],
+    readOnlyPaths: [
+      '/AGENTS.md',
+      '/SKILL.md',
+      '/SETUP.md',
+      ...getWorkspaceReadOnlyPaths(sourceStore.workspaceMountPath),
+    ],
+    writablePaths: [
+      '/bin',
+      '/dev',
+      '/proc',
+      '/tmp',
+      '/usr',
+      '/usr/bin',
+      ...getWorkspaceWritablePaths(sourceStore.workspaceMountPath),
+      sourceStore.scratchMountPath,
+    ],
     initialFiles: {
       '/AGENTS.md': agentsMarkdown,
       '/SKILL.md': skillMarkdown,
@@ -114,7 +134,8 @@ export async function createBash(opts: CreateBashOptions = {}) {
     fs,
     cwd: '/',
     env: {
-      HOME: '/',
+      HOME: sourceStore.workspaceMountPath,
+      PATH: '/bin:/usr/bin',
       BASH_ALIAS_ll: 'ls -alF',
       BASH_ALIAS_la: 'ls -a',
       BASH_ALIAS_l: 'ls -CF',
