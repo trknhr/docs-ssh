@@ -90,6 +90,38 @@ docker build -t docs-ssh .
 docker run --rm -p 2222:2222 docs-ssh
 ```
 
+## Self-Hosting
+
+For a home server, use the dedicated self-hosting compose file so docs, state, and workspace live on separate host paths.
+
+```bash
+cp .env.selfhost.example .env.selfhost
+docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --build
+```
+
+The self-hosting config uses:
+
+- `DOCS_SSH_DOCS_DIR` for the read-only docs mount
+- `DOCS_SSH_STATE_DIR` for ingested source data and the SSH host key
+- `DOCS_SSH_WORKSPACE_DIR` for persistent personal notes under `/workspace`
+- `DOCS_SSH_BIND_IP` to control whether the SSH port binds only to localhost or to your LAN interface
+
+Example: expose to your LAN on port `2222`.
+
+```bash
+cat > .env.selfhost <<'EOF'
+DOCS_SSH_BIND_IP=0.0.0.0
+DOCS_SSH_PORT=2222
+DOCS_SSH_DOCS_DIR=/srv/docs-ssh/docs
+DOCS_SSH_STATE_DIR=/srv/docs-ssh/state
+DOCS_SSH_WORKSPACE_DIR=/srv/docs-ssh/workspace
+EOF
+
+docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --build
+```
+
+Security note: the current SSH server still accepts any authentication attempt, so do not expose it directly to the public internet yet. Keep it on localhost, your LAN, or behind a private network like Tailscale until SSH auth is implemented.
+
 ## Ingest Sources
 
 You can ingest more sources into a local registry under `.docs-ssh/`.

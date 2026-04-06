@@ -1,0 +1,19 @@
+services:
+  docs-ssh:
+    build: .
+    container_name: docs-ssh
+    init: true
+    ports:
+      - "${DOCS_SSH_BIND_IP:-127.0.0.1}:${DOCS_SSH_PORT:-2222}:2222"
+    environment:
+      SSH_HOST: 0.0.0.0
+      SSH_PORT: 2222
+      DOCS_DIR: /data/docs
+      DOCS_SSH_STATE_DIR: /data/state
+      WORKSPACE_DIR: /data/workspace
+      SSH_HOST_KEY_PATH: /data/state/ssh_host_key
+    volumes:
+      - ${DOCS_SSH_DOCS_DIR:-./docs}:/data/docs:ro
+      - ${DOCS_SSH_STATE_DIR:-./var/state}:/data/state
+      - ${DOCS_SSH_WORKSPACE_DIR:-./var/workspace}:/data/workspace
+    restart: unless-stopped
