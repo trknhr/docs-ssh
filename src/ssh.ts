@@ -13,6 +13,8 @@ const { Server } = ssh2
 
 const chalkInstance = new Chalk({ level: 3 })
 const blue = chalkInstance.rgb(89, 136, 255)
+const EXEC_STDIN_GRACE_MS = parseInt(process.env.EXEC_STDIN_GRACE_MS ?? '500', 10)
+const MAX_EXEC_STDIN_BYTES = parseInt(process.env.MAX_EXEC_STDIN_BYTES ?? `${1024 * 1024}`, 10)
 export interface SSHServerOptions {
   hostKey: Buffer
   host?: string
@@ -47,6 +49,86 @@ function createBanner(docsName: string): string {
     '  cat /workspace/README.md\r\n',
     '\r\n',
   ].join('')
+}
+
+async function collectExecStdin(
+  channel: ServerChannel,
+  opts: {
+    graceMs?: number
+    maxBytes?: number
+    waitForEndMs?: number
+  } = {},
+): Promise<string | undefined> {
+  const graceMs = opts.graceMs ?? EXEC_STDIN_GRACE_MS
+  const maxBytes = opts.maxBytes ?? MAX_EXEC_STDIN_BYTES
+  const waitForEndMs = opts.waitForEndMs ?? 10_000
+  const input = channel.stdin ?? channel
+
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let totalBytes = 0
+    let sawData = false
+    let settled = false
+    let graceTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => finish(), graceMs)
+    let endTimer: ReturnType<typeof setTimeout> | null = null
+
+    const clearTimers = () => {
+      if (graceTimer) clearTimeout(graceTimer)
+      if (endTimer) clearTimeout(endTimer)
+      graceTimer = null
+      endTimer = null
+    }
+
+    const cleanup = () => {
+      clearTimers()
+      input.off('data', onData)
+      input.off('end', onEnd)
+      input.off('eof', onEnd)
+      input.off('close', onClose)
+    }
+
+    const finish = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(sawData ? Buffer.concat(chunks).toString('utf8') : undefined)
+    }
+
+    const fail = (message: string) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(new Error(message))
+    }
+
+    const onData = (chunk: Buffer | string) => {
+      sawData = true
+      if (graceTimer) {
+        clearTimeout(graceTimer)
+        graceTimer = null
+      }
+
+      if (endTimer) clearTimeout(endTimer)
+      endTimer = setTimeout(() => fail('Timed out while reading stdin.'), waitForEndMs)
+
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      totalBytes += buffer.length
+      if (totalBytes > maxBytes) {
+        fail(`stdin exceeded ${maxBytes} bytes.`)
+        return
+      }
+
+      chunks.push(buffer)
+    }
+
+    const onEnd = () => finish()
+    const onClose = () => finish()
+
+    input.on('data', onData)
+    input.on('end', onEnd)
+    input.on('eof', onEnd)
+    input.on('close', onClose)
+  })
 }
 
 export function createSSHServer(opts: SSHServerOptions) {
@@ -105,6 +187,7 @@ export function createSSHServer(opts: SSHServerOptions) {
             const channel = acceptExec()
             channels.add(channel)
             channel.on('close', () => channels.delete(channel))
+            channel.stdin.on('data', () => resetIdle())
 
             try {
               const { bash } = await createBash({
@@ -114,8 +197,12 @@ export function createSSHServer(opts: SSHServerOptions) {
                 sshHost: host,
                 sshPort: port,
               })
+              const stdin = await collectExecStdin(channel, {
+                waitForEndMs: execTimeout,
+              })
               const result = await bash.exec(execInfo.command, {
                 cwd: '/',
+                stdin,
                 signal: AbortSignal.timeout(execTimeout),
               })
 

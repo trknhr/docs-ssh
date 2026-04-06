@@ -12,7 +12,6 @@ Current scope:
 
 - serve a local docs folder over SSH
 - ingest additional sources into a local registry
-- provide git-repo presets like `github`, `supabase`, `neon`, and `cloudflare`
 - mount sources at `/sources/<name>`
 - expose `/docs` as the default alias
 - keep source mounts read-only
@@ -21,7 +20,7 @@ Current scope:
 
 Deferred:
 
-- multi-source registry and switching
+- default-source switching and source removal commands
 - HTML/help-center crawling
 - hosted-service telemetry and rate limiting
 
@@ -33,7 +32,13 @@ Deferred:
    pnpm install
    ```
 
-2. Generate a host key manually if you want to precreate one:
+2. Build the viewer assets once:
+
+   ```bash
+   pnpm run build:viewer
+   ```
+
+3. Generate a host key manually if you want to precreate one:
 
    ```bash
    pnpm run generate:host-key:local
@@ -41,11 +46,13 @@ Deferred:
 
    If you skip this step, `docs-ssh` will generate `./ssh_host_key` automatically on first boot.
 
-3. Start the server:
+4. Start the server:
 
    ```bash
    pnpm run dev
    ```
+
+   This starts the SSH server on `127.0.0.1:2222` and the viewer on `127.0.0.1:3000`.
 
    If you want reload-on-save locally, use:
 
@@ -53,7 +60,9 @@ Deferred:
    pnpm run dev:watch
    ```
 
-4. Connect from another terminal:
+   If you change files under `viewer/`, rerun `pnpm run build:viewer` before refreshing the browser.
+
+5. Connect from another terminal:
 
    ```bash
    ssh localhost -p 2222
@@ -61,10 +70,14 @@ Deferred:
    ssh localhost -p 2222 grep -R "getting started" /docs
    ```
 
-5. Open the read-only viewer:
+6. Open the read-only viewer in a browser:
 
    ```bash
+   # macOS
    open http://localhost:3000
+
+   # Linux
+   xdg-open http://localhost:3000
    ```
 
    The viewer exposes a VS Code-like file tree plus a preview pane for markdown, text/code, and images.
@@ -99,6 +112,24 @@ ssh docs-ssh grep -R "getting started" /docs
 
 The distributable skill file at `skills/SKILL.md` assumes this alias-based setup. If you prefer a different alias, update both the SSH config entry and the commands in the copied skill.
 
+## Agent Helper Files
+
+Inside an SSH session, `docs-ssh` exposes three helper commands:
+
+- `agents` prints a short instructions snippet for `AGENTS.md` or similar tool instruction files
+- `skill` prints a reusable `SKILL.md`
+- `setup` prints the setup guide with suggested installation paths
+
+You can generate the same content locally from the repo:
+
+```bash
+pnpm run helper:agents
+pnpm run helper:skill
+pnpm run helper:setup
+pnpm run agents:append
+pnpm run skill:write
+```
+
 ## Container
 
 You can run `docs-ssh` in Docker and keep the source registry plus host key on disk.
@@ -106,13 +137,14 @@ You can run `docs-ssh` in Docker and keep the source registry plus host key on d
 ```bash
 docker compose up --build -d
 ssh localhost -p 2222 ls /docs
-xdg-open http://localhost:3000
 ```
+
+Then open `http://localhost:3000` in a browser.
 
 The included `docker-compose.yml` mounts:
 
 - `./docs` -> `/data/docs` as the read-only default docs source
-- `./.docs-ssh` -> `/data/state` for ingested sources, registry state, and the generated host key
+- `./.docs-ssh` -> `/data/state` for ingested sources, registry state, the generated host key, and the default workspace
 
 Useful container commands:
 
@@ -126,7 +158,7 @@ If you want to run the image without Compose, the image works with bundled sampl
 
 ```bash
 docker build -t docs-ssh .
-docker run --rm -p 2222:2222 docs-ssh
+docker run --rm -p 2222:2222 -p 3000:3000 docs-ssh
 ```
 
 ## Self-Hosting
@@ -167,8 +199,9 @@ After startup:
 
 ```bash
 ssh <server-ip> -p 2222
-xdg-open http://<server-ip>:3000
 ```
+
+Then open `http://<server-ip>:3000` in a browser.
 
 Security note: the current SSH server still accepts any authentication attempt, so do not expose it directly to the public internet yet. Keep both the SSH service and the viewer on localhost, your LAN, or behind a private network like Tailscale until SSH auth is implemented.
 
@@ -190,7 +223,7 @@ Mounted paths:
 - `/workspace` persists across sessions and includes scaffolded task/library/decision directories
 - `/scratch` is writable and resets between SSH sessions
 
-Existing interactive shell sessions will not see new mounts until you reconnect.
+The viewer picks up registry changes on refresh. Existing interactive shell sessions will not see new mounts until you reconnect.
 
 ## Workspace Layout
 
@@ -214,7 +247,11 @@ From the SSH session, the guidance files are read-only and writes are limited to
 - `WORKSPACE_DIR`: persistent structured workspace dir, default `./.docs-ssh/workspace`
 - `SSH_PORT`: SSH port to listen on, default `2222`
 - `SSH_HOST`: interface to bind, default `127.0.0.1`
+- `VIEWER_PORT`: HTTP viewer port, default `3000`
+- `VIEWER_HOST`: HTTP viewer bind interface, default `127.0.0.1`
+- `VIEWER_DIST_DIR`: built viewer asset directory, default `./viewer-dist`
 - `SSH_HOST_KEY_PATH`: host key path, default `./ssh_host_key`
+- `SSH_HOST_KEY`: optional PEM-encoded host key content that overrides `SSH_HOST_KEY_PATH`
 - `IDLE_TIMEOUT`: idle session timeout in ms, default `60000`
 - `SESSION_TIMEOUT`: max session duration in ms, default `600000`
 - `EXEC_TIMEOUT`: per-command timeout in ms, default `10000`
