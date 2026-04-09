@@ -41,6 +41,9 @@ describe('createBash', () => {
     await expect(fs.readFile('/AGENTS.md', 'utf8')).resolves.toContain(
       'Before implementing against Project Docs, inspect the mounted docs over SSH first.',
     )
+    await expect(fs.readFile('/AGENTS.md', 'utf8')).resolves.toContain(
+      'prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`',
+    )
     await expect(fs.readFile('/docs/README.md', 'utf8')).resolves.toBe('# Project Docs\n')
     await expect(fs.readFile('/workspace/README.md', 'utf8')).resolves.toContain('# Workspace')
   })

@@ -59,7 +59,10 @@ describe('helper content', () => {
     expect(markdown).toContain('- `/docs` -> default source (`project-docs`)')
     expect(markdown).toContain('- `/sources/reference`')
     expect(markdown).toContain('- `/workspace/shared` -> reserved for future shared use')
+    expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
     expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /docs')
+    expect(markdown).toContain(`ssh docs-ssh -p 2222 "printf '%s\\n' '# Notes' '- item' > /workspace/tasks/example-task/notes.md"`)
+    expect(markdown).toContain('ssh docs-ssh -p 2222 cat /workspace/tasks/example-task/notes.md')
     expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /sources/reference')
   })
 
@@ -74,6 +77,7 @@ describe('helper content', () => {
     expect(markdown).toContain('description: Search and read Project Docs over SSH using shell tools like grep, find, and cat.')
     expect(markdown).toContain('Use ssh docs.example.com to inspect the mounted docs before making changes.')
     expect(markdown).not.toContain('-p 22')
+    expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
     expect(markdown).toContain('ssh docs.example.com grep -R "keyword" /docs')
   })
 

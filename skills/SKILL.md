@@ -35,6 +35,8 @@ Workspace rules:
 - Read `/workspace/README.md` before writing files.
 - Do not create loose files or new top-level directories under `/workspace`.
 - Create active work under `/workspace/tasks/<task-slug>/`.
+- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.
+- After writing a workspace file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.
 - Treat `/workspace/shared` as reserved for future shared workflows.
 - Use `/scratch` for temporary files.
 
@@ -45,5 +47,7 @@ ssh docs-ssh find /docs -name '*.md' | head
 ssh docs-ssh grep -R "keyword" /docs
 ssh docs-ssh cat /workspace/README.md
 ssh docs-ssh mkdir -p /workspace/tasks/example-task/artifacts
+ssh docs-ssh "printf '%s\n' '# Notes' '- item' > /workspace/tasks/example-task/notes.md"
 ssh docs-ssh sh -lc 'echo "- note" >> /workspace/tasks/example-task/notes.md'
+ssh docs-ssh cat /workspace/tasks/example-task/notes.md
 ```

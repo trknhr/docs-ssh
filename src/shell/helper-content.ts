@@ -46,6 +46,8 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
     `- Read \`${sourceStore.workspaceMountPath}/README.md\` before writing files.`,
     `- Do not create loose files or new top-level directories under \`${sourceStore.workspaceMountPath}\`.`,
     `- Create active work under \`${sourceStore.workspaceMountPath}/tasks/<task-slug>/\`.`,
+    '- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.',
+    '- After writing a workspace file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.',
     `- Treat \`${sourceStore.workspaceMountPath}/shared\` as reserved for future shared workflows.`,
     `- Use \`${sourceStore.scratchMountPath}\` for temporary files.`,
   ]
@@ -57,7 +59,9 @@ function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
     `${sshPrefix} grep -R "keyword" /docs`,
     `${sshPrefix} cat /workspace/README.md`,
     `${sshPrefix} mkdir -p /workspace/tasks/example-task/artifacts`,
+    `${sshPrefix} "printf '%s\\n' '# Notes' '- item' > /workspace/tasks/example-task/notes.md"`,
     `${sshPrefix} sh -lc 'echo \"- note\" >> /workspace/tasks/example-task/notes.md'`,
+    `${sshPrefix} cat /workspace/tasks/example-task/notes.md`,
   ]
 
   const nonDefaultSource = sourceStore.registry.sources.find(
