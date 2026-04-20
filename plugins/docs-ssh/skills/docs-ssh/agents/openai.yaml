@@ -1,0 +1,4 @@
+interface:
+  display_name: "docs-ssh"
+  short_description: "Inspect mounted docs and workspace files over SSH"
+  default_prompt: "Use $docs-ssh to inspect mounted docs, read the workspace rules, and save notes under /workspace/tasks."

@@ -1,0 +1,36 @@
+{
+  "name": "docs-ssh",
+  "version": "0.1.0",
+  "description": "Browse mounted docs and structured workspaces over SSH.",
+  "author": {
+    "name": "Teruo Kunihiro",
+    "url": "https://github.com/trknhr"
+  },
+  "homepage": "https://github.com/trknhr/docs-ssh",
+  "repository": "https://github.com/trknhr/docs-ssh",
+  "license": "Apache-2.0",
+  "keywords": [
+    "ssh",
+    "docs",
+    "workspace",
+    "agents"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "docs-ssh",
+    "shortDescription": "Inspect docs and workspaces over SSH",
+    "longDescription": "Use a stable SSH alias to inspect mounted docs, top-level agent helper files, and structured workspace folders before saving task notes.",
+    "developerName": "trknhr",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/trknhr/docs-ssh",
+    "defaultPrompt": [
+      "Use $docs-ssh to inspect mounted docs and save notes under /workspace/tasks."
+    ],
+    "brandColor": "#1F6FEB",
+    "screenshots": []
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "docs-ssh",
+  "interface": {
+    "displayName": "docs-ssh"
+  },
+  "plugins": [
+    {
+      "name": "docs-ssh",
+      "source": {
+        "source": "local",
+        "path": "./plugins/docs-ssh"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

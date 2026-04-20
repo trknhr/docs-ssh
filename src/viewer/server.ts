@@ -85,6 +85,7 @@ interface ViewerServerOptions {
   port?: number
   registryPath?: string
   staticDir?: string
+  workspaceDir?: string
 }
 
 function classifyFile(path: string): ViewerFileKind {
@@ -170,11 +171,10 @@ function buildRawUrl(path: string): string {
 
 async function loadViewerContext(opts: ViewerServerOptions) {
   const statePaths = getStatePaths()
-  const workspaceDir = resolve(process.env.WORKSPACE_DIR ?? `${statePaths.stateDir}/workspace`)
   const sourceStore = await loadSourceStore({
     registryPath: opts.registryPath,
     fallbackDocsDir: opts.docsDir,
-    workspaceDir,
+    workspaceDir: resolve(opts.workspaceDir ?? `${statePaths.stateDir}/workspace`),
   })
 
   const defaultSourceName = sourceStore.registry.defaultSourceName

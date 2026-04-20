@@ -5,7 +5,9 @@
 
 import type { AddressInfo } from 'node:net'
 import { Chalk } from 'chalk'
-import ssh2, { type ServerChannel } from 'ssh2'
+import ssh2, { type PublicKeyAuthContext, type ServerChannel } from 'ssh2'
+import { createAuthStore, type AuthUser } from './auth/store.js'
+import { normalizeSshPublicKey } from './auth/ssh-key.js'
 import { createBash } from './shell/bash.js'
 import { createShellSession } from './shell/session.js'
 
@@ -16,6 +18,7 @@ const blue = chalkInstance.rgb(89, 136, 255)
 const EXEC_STDIN_GRACE_MS = parseInt(process.env.EXEC_STDIN_GRACE_MS ?? '500', 10)
 const MAX_EXEC_STDIN_BYTES = parseInt(process.env.MAX_EXEC_STDIN_BYTES ?? `${1024 * 1024}`, 10)
 export interface SSHServerOptions {
+  authDbPath: string
   hostKey: Buffer
   host?: string
   port?: number
@@ -25,17 +28,31 @@ export interface SSHServerOptions {
   docsDir?: string
   docsName?: string
   registryPath?: string
+  sshConnectHost?: string
+  sshConnectPort?: number
+  workspaceDir?: string
+}
+
+interface AuthenticatedPrincipal {
+  fingerprint: string
+  requestedUsername: string
+  user: AuthUser
 }
 
 function formatPrompt(cwd: string): string {
   return `docs-ssh:${cwd} $ `
 }
 
-function createBanner(docsName: string): string {
+function createBanner(docsName: string, principal: AuthenticatedPrincipal): string {
   return [
     `${blue('docs-ssh')}\r\n`,
     '\r\n',
     `${docsName} is mounted read-only for shell-based exploration.\r\n`,
+    '\r\n',
+    `${chalkInstance.dim('Authenticated as:')} ${principal.user.login} (${principal.user.displayName})\r\n`,
+    ...(principal.requestedUsername !== principal.user.login
+      ? [`${chalkInstance.dim('Requested SSH user:')} ${principal.requestedUsername}\r\n`]
+      : []),
     '\r\n',
     `${chalkInstance.dim('Useful paths:')}\r\n`,
     '  /docs\r\n',
@@ -131,8 +148,48 @@ async function collectExecStdin(
   })
 }
 
+function createSessionEnv(principal: AuthenticatedPrincipal): Record<string, string> {
+  return {
+    DOCS_SSH_AUTH_DISPLAY_NAME: principal.user.displayName,
+    DOCS_SSH_AUTH_FINGERPRINT: principal.fingerprint,
+    DOCS_SSH_AUTH_LOGIN: principal.user.login,
+    DOCS_SSH_AUTH_METHOD: 'publickey',
+    DOCS_SSH_AUTH_USER_ID: principal.user.id,
+    DOCS_SSH_REQUESTED_USERNAME: principal.requestedUsername,
+    LOGNAME: principal.user.login,
+    USER: principal.user.login,
+  }
+}
+
+function authenticateWithPublicKey(
+  ctx: PublicKeyAuthContext,
+  authStore: ReturnType<typeof createAuthStore>,
+): AuthenticatedPrincipal | null {
+  const normalizedKey = normalizeSshPublicKey({
+    algo: ctx.key.algo,
+    data: ctx.key.data,
+  })
+  const user = authStore.findUserBySshFingerprint(normalizedKey.fingerprint)
+  if (!user) return null
+
+  if (ctx.signature && ctx.blob) {
+    if (normalizedKey.parsedKey.verify(ctx.blob, ctx.signature, ctx.hashAlgo) !== true) {
+      return null
+    }
+  } else if (ctx.signature || ctx.blob) {
+    return null
+  }
+
+  return {
+    fingerprint: normalizedKey.fingerprint,
+    requestedUsername: ctx.username,
+    user,
+  }
+}
+
 export function createSSHServer(opts: SSHServerOptions) {
   const {
+    authDbPath,
     hostKey,
     host = '127.0.0.1',
     port = 2222,
@@ -142,8 +199,14 @@ export function createSSHServer(opts: SSHServerOptions) {
     docsDir,
     docsName = 'Documentation',
     registryPath,
+    sshConnectHost = '127.0.0.1',
+    sshConnectPort = 2222,
+    workspaceDir,
   } = opts
 
+  const authStore = createAuthStore({
+    dbPath: authDbPath,
+  })
   const activeClients = new Map<ssh2.Connection, Set<ServerChannel>>()
 
   const server = new Server(
@@ -156,6 +219,7 @@ export function createSSHServer(opts: SSHServerOptions) {
       activeClients.set(client, channels)
 
       let activeChannel: ServerChannel | null = null
+      let authenticatedPrincipal: AuthenticatedPrincipal | null = null
 
       const endSession = (reason: string) => {
         if (activeChannel) {
@@ -169,10 +233,34 @@ export function createSSHServer(opts: SSHServerOptions) {
       const resetIdle = () => idleTimer.refresh()
 
       client.on('authentication', (ctx) => {
-        ctx.accept()
+        if (ctx.method !== 'publickey') {
+          ctx.reject(['publickey'])
+          return
+        }
+
+        try {
+          const principal = authenticateWithPublicKey(ctx, authStore)
+          if (!principal) {
+            ctx.reject(['publickey'])
+            return
+          }
+
+          authenticatedPrincipal = principal
+          ctx.accept()
+        } catch {
+          ctx.reject(['publickey'])
+        }
       })
 
       client.on('ready', () => {
+        if (!authenticatedPrincipal) {
+          client.end()
+          return
+        }
+
+        const principal = authenticatedPrincipal
+        const sessionEnv = createSessionEnv(principal)
+
         client.on('session', (accept) => {
           const session = accept()
 
@@ -193,9 +281,11 @@ export function createSSHServer(opts: SSHServerOptions) {
               const { bash } = await createBash({
                 docsDir,
                 docsName,
+                env: sessionEnv,
                 registryPath,
-                sshHost: host,
-                sshPort: port,
+                sshHost: sshConnectHost,
+                sshPort: sshConnectPort,
+                workspaceDir,
               })
               const stdin = await collectExecStdin(channel, {
                 waitForEndMs: execTimeout,
@@ -227,9 +317,11 @@ export function createSSHServer(opts: SSHServerOptions) {
             const { bash } = await createBash({
               docsDir,
               docsName,
+              env: sessionEnv,
               registryPath,
-              sshHost: host,
-              sshPort: port,
+              sshHost: sshConnectHost,
+              sshPort: sshConnectPort,
+              workspaceDir,
             })
             let shellSession: ReturnType<typeof createShellSession> | null = null
 
@@ -239,7 +331,7 @@ export function createSSHServer(opts: SSHServerOptions) {
               output: channel,
               terminal: hasPty,
               execTimeout,
-              banner: createBanner(docsName),
+              banner: createBanner(docsName, principal),
               prompt: formatPrompt,
               beforeExec: (command) => {
                 if (command === 'exit') {
@@ -294,7 +386,13 @@ export function createSSHServer(opts: SSHServerOptions) {
 
     close(): Promise<void> {
       return new Promise((resolve) => {
-        server.close(() => resolve())
+        for (const client of activeClients.keys()) {
+          client.end()
+        }
+        server.close(() => {
+          authStore.close()
+          resolve()
+        })
       })
     },
   }

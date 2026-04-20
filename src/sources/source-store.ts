@@ -5,6 +5,12 @@ import type { SourceRegistry, SourceSpec, SourceStore, SourceType } from './type
 const SOURCE_NAME_PATTERN = /[^a-z0-9-]+/g
 const SOURCE_REGISTRY_VERSION = 1
 
+export interface StatePaths {
+  registryPath: string
+  sourcesDir: string
+  stateDir: string
+}
+
 export function normalizeSourceName(name: string): string {
   return name
     .trim()
@@ -17,14 +23,24 @@ export function getSourceMountPath(name: string): string {
   return posix.join('/sources', normalizeSourceName(name))
 }
 
-export function getStatePaths(stateDir = process.env.DOCS_SSH_STATE_DIR ?? './.docs-ssh') {
-  const resolvedStateDir = resolve(stateDir)
+export function resolveStatePaths(opts: {
+  registryPath?: string
+  stateDir: string
+}): StatePaths {
+  const resolvedStateDir = resolve(opts.stateDir)
 
   return {
     stateDir: resolvedStateDir,
-    registryPath: resolve(process.env.DOCS_SSH_REGISTRY_PATH ?? `${resolvedStateDir}/sources.json`),
+    registryPath: resolve(opts.registryPath ?? `${resolvedStateDir}/sources.json`),
     sourcesDir: resolve(resolvedStateDir, 'sources'),
   }
+}
+
+export function getStatePaths(stateDir = process.env.DOCS_SSH_STATE_DIR ?? './.docs-ssh'): StatePaths {
+  return resolveStatePaths({
+    stateDir,
+    registryPath: process.env.DOCS_SSH_REGISTRY_PATH,
+  })
 }
 
 export function createSourceSpec(opts: {
@@ -118,7 +134,7 @@ async function resolveSourceRootPath(opts: {
 
   if (await pathExists(configuredPath)) return configuredPath
 
-  const statePaths = getStatePaths(dirname(registryPath))
+  const statePaths = resolveStatePaths({ stateDir: dirname(registryPath) })
 
   if (source.managed) {
     const managedPath = resolve(statePaths.sourcesDir, source.name, 'repo', source.subdir ?? '.')

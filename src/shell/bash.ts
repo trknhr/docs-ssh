@@ -6,7 +6,8 @@
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Bash, defineCommand, InMemoryFs, OverlayFs, ReadWriteFs } from 'just-bash'
-import { getStatePaths, loadSourceStore } from '../sources/source-store.js'
+import { loadInstanceConfig, type InstanceConfig } from '../instance-config.js'
+import { loadSourceStore } from '../sources/source-store.js'
 import {
   ensureWorkspaceLayout,
   getWorkspaceReadOnlyPaths,
@@ -18,8 +19,6 @@ import {
   createSetupMarkdown,
   createSkillMarkdown,
 } from './helper-content.js'
-
-const DEFAULT_DOCS_DIR = resolve(process.env.DOCS_DIR ?? './docs')
 
 export const EXECUTION_LIMITS = {
   maxCommandCount: 1000,
@@ -54,25 +53,29 @@ const sshCommand = defineCommand('ssh', async (args) => {
 export interface CreateBashOptions {
   docsDir?: string
   docsName?: string
+  env?: Record<string, string>
+  instanceConfig?: InstanceConfig
   registryPath?: string
   sshHost?: string
   sshPort?: number
+  workspaceDir?: string
 }
 
 export async function createBash(opts: CreateBashOptions = {}) {
-  const docsDir = opts.docsDir ?? DEFAULT_DOCS_DIR
-  const docsName = opts.docsName ?? 'Documentation'
-  const statePaths = getStatePaths()
-  const workspaceDir = resolve(process.env.WORKSPACE_DIR ?? `${statePaths.stateDir}/workspace`)
+  const instanceConfig = opts.instanceConfig ?? loadInstanceConfig()
+  const docsDir = opts.docsDir ?? instanceConfig.docsDir
+  const docsName = opts.docsName ?? instanceConfig.docsName
+  const registryPath = opts.registryPath ?? instanceConfig.statePaths.registryPath
+  const workspaceDir = resolve(opts.workspaceDir ?? instanceConfig.workspaceDir)
   const sourceStore = await loadSourceStore({
-    registryPath: opts.registryPath,
+    registryPath,
     fallbackDocsDir: docsDir,
     workspaceDir,
   })
   await mkdir(sourceStore.workspaceRootPath, { recursive: true })
   await ensureWorkspaceLayout(sourceStore.workspaceRootPath)
-  const sshHost = opts.sshHost ?? process.env.SSH_CONNECT_HOST ?? '127.0.0.1'
-  const sshPort = opts.sshPort ?? parseInt(process.env.SSH_CONNECT_PORT ?? '2222', 10)
+  const sshHost = opts.sshHost ?? instanceConfig.ssh.connectHost
+  const sshPort = opts.sshPort ?? instanceConfig.ssh.connectPort
   const agentsMarkdown = createAgentsMarkdown({
     docsName,
     sourceStore,
@@ -136,6 +139,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
     env: {
       HOME: sourceStore.workspaceMountPath,
       PATH: '/bin:/usr/bin',
+      ...opts.env,
       BASH_ALIAS_ll: 'ls -alF',
       BASH_ALIAS_la: 'ls -a',
       BASH_ALIAS_l: 'ls -CF',

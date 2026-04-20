@@ -244,9 +244,12 @@ From the SSH session, the guidance files are read-only and writes are limited to
 - `DOCS_NAME`: label shown in banners and helper files, default `Documentation`
 - `DOCS_SSH_STATE_DIR`: registry and managed source storage dir, default `./.docs-ssh`
 - `DOCS_SSH_REGISTRY_PATH`: optional explicit registry file path
+- `DOCS_SSH_AUTH_DB_PATH`: auth metadata database path, default `<DOCS_SSH_STATE_DIR>/auth.sqlite`
 - `WORKSPACE_DIR`: persistent structured workspace dir, default `./.docs-ssh/workspace`
 - `SSH_PORT`: SSH port to listen on, default `2222`
 - `SSH_HOST`: interface to bind, default `127.0.0.1`
+- `SSH_CONNECT_HOST`: optional host name used in generated helper files, default `SSH_HOST` or `127.0.0.1`
+- `SSH_CONNECT_PORT`: optional port used in generated helper files, default `SSH_PORT`
 - `VIEWER_PORT`: HTTP viewer port, default `3000`
 - `VIEWER_HOST`: HTTP viewer bind interface, default `127.0.0.1`
 - `VIEWER_DIST_DIR`: built viewer asset directory, default `./viewer-dist`
@@ -255,6 +258,27 @@ From the SSH session, the guidance files are read-only and writes are limited to
 - `IDLE_TIMEOUT`: idle session timeout in ms, default `60000`
 - `SESSION_TIMEOUT`: max session duration in ms, default `600000`
 - `EXEC_TIMEOUT`: per-command timeout in ms, default `10000`
+
+## Auth Bootstrap
+
+For a single-tenant VPS setup, bootstrap one default instance plus one owner principal in the local auth database:
+
+```bash
+pnpm run cli -- auth init
+pnpm run cli -- auth add-ssh-key ~/.ssh/id_ed25519.pub
+pnpm run cli -- auth add-web-identity \
+  --provider oidc \
+  --issuer https://accounts.google.com \
+  --subject <oidc-subject>
+```
+
+Defaults:
+
+- the auth DB lives at `.docs-ssh/auth.sqlite`
+- `auth init` creates instance slug `default`
+- `auth init` creates owner login `owner`
+
+You can override these with CLI flags such as `--db-path`, `--instance-slug`, `--owner-login`, and `--owner-name`.
 
 ## License
 

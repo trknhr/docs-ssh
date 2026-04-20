@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process'
-import { access, appendFile, mkdir, stat, writeFile } from 'node:fs/promises'
+import { access, appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { createAuthStore } from './auth/store.js'
+import { loadInstanceConfig } from './instance-config.js'
 import {
   addSourceToRegistry,
   createEmptyRegistry,
@@ -38,6 +40,9 @@ Usage:
   docs-ssh ingest git-repo <repo-url> [--name <name>] [--subdir <path>] [--ref <ref>] [--default]
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
+  docs-ssh auth init [--db-path <path>] [--instance-slug <slug>] [--instance-name <name>] [--owner-login <login>] [--owner-name <name>]
+  docs-ssh auth add-ssh-key <public-key-path> [--db-path <path>] [--user <login>] [--name <name>]
+  docs-ssh auth add-web-identity --issuer <issuer> --subject <subject> [--provider <provider>] [--email <email>] [--user <login>] [--db-path <path>]
   docs-ssh helper agents [--output <path>] [--append]
   docs-ssh helper skill [--output <path>]
   docs-ssh helper setup [--output <path>]
@@ -84,6 +89,26 @@ function getFlagString(args: ParsedArgs, name: string): string | undefined {
 
 function getFlagBoolean(args: ParsedArgs, name: string): boolean {
   return args.flags.get(name) === true
+}
+
+function getOptionalIntegerFlag(args: ParsedArgs, name: string): number | undefined {
+  const value = getFlagString(args, name)
+  if (value === undefined) return undefined
+
+  const parsed = parseInt(value, 10)
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid ${name}: ${value}`)
+  }
+
+  return parsed
+}
+
+function getRequiredFlagString(args: ParsedArgs, name: string): string {
+  const value = getFlagString(args, name)
+  if (!value) {
+    throw new Error(`Missing required --${name} flag.`)
+  }
+  return value
 }
 
 function deriveRepoName(repoUrl: string): string {
@@ -255,38 +280,115 @@ async function listSources(args: ParsedArgs): Promise<void> {
   }
 }
 
+function getAuthDbPath(args: ParsedArgs): string {
+  const instanceConfig = loadInstanceConfig({
+    stateDir: getFlagString(args, 'state-dir'),
+  })
+  return resolve(getFlagString(args, 'db-path') ?? instanceConfig.auth.dbPath)
+}
+
+async function authInit(args: ParsedArgs): Promise<void> {
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const owner = authStore.ensureSingleTenantOwner({
+      instanceName: getFlagString(args, 'instance-name'),
+      instanceSlug: getFlagString(args, 'instance-slug'),
+      ownerLogin: getFlagString(args, 'owner-login'),
+      ownerName: getFlagString(args, 'owner-name'),
+    })
+
+    console.log(`Initialized auth database at ${authStore.dbPath}`)
+    console.log(`- instance: ${owner.instance.slug} (${owner.instance.displayName})`)
+    console.log(`- owner: ${owner.user.login} (${owner.user.displayName})`)
+  } finally {
+    authStore.close()
+  }
+}
+
+async function authAddSshKey(args: ParsedArgs): Promise<void> {
+  const publicKeyPath = args.positionals[2]
+  if (!publicKeyPath) {
+    throw new Error('Missing required public key path for auth add-ssh-key.')
+  }
+
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const publicKey = await readFile(resolve(publicKeyPath), 'utf8')
+    const sshKey = authStore.addSshKey({
+      name: getFlagString(args, 'name') ?? basename(publicKeyPath),
+      publicKey,
+      userLogin: getFlagString(args, 'user'),
+    })
+    const user = authStore.findUserBySshFingerprint(sshKey.fingerprint)
+
+    console.log(`Added SSH key for ${user?.login ?? getFlagString(args, 'user') ?? 'owner'}`)
+    console.log(`- fingerprint: ${sshKey.fingerprint}`)
+    console.log(`- algorithm: ${sshKey.algorithm}`)
+    console.log(`- stored as: ${sshKey.name ?? '(unnamed)'}`)
+  } finally {
+    authStore.close()
+  }
+}
+
+async function authAddWebIdentity(args: ParsedArgs): Promise<void> {
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const identity = authStore.addAuthIdentity({
+      email: getFlagString(args, 'email'),
+      issuer: getRequiredFlagString(args, 'issuer'),
+      provider: getFlagString(args, 'provider'),
+      subject: getRequiredFlagString(args, 'subject'),
+      userLogin: getFlagString(args, 'user'),
+    })
+    const user = authStore.findUserByAuthIdentity({
+      issuer: identity.issuer,
+      provider: identity.provider,
+      subject: identity.subject,
+    })
+
+    console.log(`Added web identity for ${user?.login ?? getFlagString(args, 'user') ?? 'owner'}`)
+    console.log(`- provider: ${identity.provider}`)
+    console.log(`- issuer: ${identity.issuer}`)
+    console.log(`- subject: ${identity.subject}`)
+    if (identity.email) {
+      console.log(`- email: ${identity.email}`)
+    }
+  } finally {
+    authStore.close()
+  }
+}
+
 type HelperTarget = 'agents' | 'setup' | 'skill'
 
 async function loadHelperOptions(args: ParsedArgs) {
-  const statePaths = getStatePaths(getFlagString(args, 'state-dir'))
-  const docsDir = resolve(getFlagString(args, 'docs-dir') ?? process.env.DOCS_DIR ?? './docs')
-  const docsName = getFlagString(args, 'docs-name') ?? process.env.DOCS_NAME ?? 'Documentation'
-  const workspaceDir = resolve(
-    getFlagString(args, 'workspace-dir') ?? process.env.WORKSPACE_DIR ?? `${statePaths.stateDir}/workspace`,
-  )
-  const sourceStore = await loadSourceStore({
-    registryPath: statePaths.registryPath,
-    fallbackDocsDir: docsDir,
-    workspaceDir,
+  const instanceConfig = loadInstanceConfig({
+    docsDir: getFlagString(args, 'docs-dir'),
+    docsName: getFlagString(args, 'docs-name'),
+    sshConnectHost: getFlagString(args, 'ssh-host'),
+    sshConnectPort: getOptionalIntegerFlag(args, 'ssh-port'),
+    stateDir: getFlagString(args, 'state-dir'),
+    workspaceDir: getFlagString(args, 'workspace-dir'),
   })
-  const sshHost = getFlagString(args, 'ssh-host') ?? process.env.SSH_CONNECT_HOST ?? process.env.SSH_HOST ?? '127.0.0.1'
-  const sshPortValue =
-    getFlagString(args, 'ssh-port') ??
-    process.env.SSH_CONNECT_PORT ??
-    process.env.SSH_PORT ??
-    process.env.PORT ??
-    '2222'
-  const sshPort = parseInt(sshPortValue, 10)
-
-  if (Number.isNaN(sshPort)) {
-    throw new Error(`Invalid ssh port: ${sshPortValue}`)
-  }
+  const sourceStore = await loadSourceStore({
+    registryPath: instanceConfig.statePaths.registryPath,
+    fallbackDocsDir: instanceConfig.docsDir,
+    workspaceDir: instanceConfig.workspaceDir,
+  })
 
   return {
-    docsName,
+    docsName: instanceConfig.docsName,
     sourceStore,
-    sshHost,
-    sshPort,
+    sshHost: instanceConfig.ssh.connectHost,
+    sshPort: instanceConfig.ssh.connectPort,
   }
 }
 
@@ -363,6 +465,26 @@ async function main() {
 
   if (command === 'sources' && subcommand === 'list') {
     await listSources(args)
+    return
+  }
+
+  if (command === 'auth') {
+    if (subcommand === 'init') {
+      await authInit(args)
+      return
+    }
+
+    if (subcommand === 'add-ssh-key') {
+      await authAddSshKey(args)
+      return
+    }
+
+    if (subcommand === 'add-web-identity') {
+      await authAddWebIdentity(args)
+      return
+    }
+
+    printUsage()
     return
   }
 
