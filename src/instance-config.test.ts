@@ -14,6 +14,14 @@ describe('loadInstanceConfig', () => {
     expect(config.statePaths.registryPath).toBe(resolve('./tmp/state/sources.json'))
     expect(config.statePaths.sourcesDir).toBe(resolve('./tmp/state/sources'))
     expect(config.auth.dbPath).toBe(resolve('./tmp/state/auth.sqlite'))
+    expect(config.auth.oidc).toEqual({
+      clientId: undefined,
+      clientSecret: undefined,
+      enabled: false,
+      issuer: undefined,
+      provider: 'oidc',
+      scope: 'openid email profile',
+    })
     expect(config.workspaceDir).toBe(resolve('./tmp/state/workspace'))
     expect(config.docsDir).toBe(resolve('./docs'))
     expect(config.viewer.staticDir).toBe(resolve('./viewer-dist'))
@@ -26,6 +34,11 @@ describe('loadInstanceConfig', () => {
       execTimeoutMs: 15_000,
       idleTimeoutMs: 5_000,
       authDbPath: './runtime/auth.sqlite',
+      authOidcClientId: 'viewer-client',
+      authOidcClientSecret: 'viewer-secret',
+      authOidcIssuer: 'https://issuer.example.com',
+      authOidcProvider: 'google',
+      authOidcScope: 'openid email',
       registryPath: './runtime/registry.json',
       sessionTimeoutMs: 20_000,
       sshBindHost: '0.0.0.0',
@@ -35,6 +48,7 @@ describe('loadInstanceConfig', () => {
       sshPort: 2222,
       stateDir: './runtime/state',
       viewerBindHost: '0.0.0.0',
+      viewerPublicOrigin: 'https://docs.example.com',
       viewerPort: 4000,
       viewerStaticDir: './runtime/viewer',
       workspaceDir: './runtime/workspace',
@@ -44,6 +58,14 @@ describe('loadInstanceConfig', () => {
     expect(config.docsDir).toBe(resolve('./custom-docs'))
     expect(config.docsName).toBe('Project Docs')
     expect(config.auth.dbPath).toBe(resolve('./runtime/auth.sqlite'))
+    expect(config.auth.oidc).toEqual({
+      clientId: 'viewer-client',
+      clientSecret: 'viewer-secret',
+      enabled: true,
+      issuer: 'https://issuer.example.com',
+      provider: 'google',
+      scope: 'openid email',
+    })
     expect(config.statePaths.stateDir).toBe(resolve('./runtime/state'))
     expect(config.statePaths.registryPath).toBe(resolve('./runtime/registry.json'))
     expect(config.workspaceDir).toBe(resolve('./runtime/workspace'))
@@ -57,6 +79,7 @@ describe('loadInstanceConfig', () => {
     expect(config.viewer).toMatchObject({
       bindHost: '0.0.0.0',
       port: 4000,
+      publicOrigin: 'https://docs.example.com',
       staticDir: resolve('./runtime/viewer'),
     })
     expect(config.timeouts).toEqual({

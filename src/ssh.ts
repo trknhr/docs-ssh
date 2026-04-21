@@ -15,8 +15,6 @@ const { Server } = ssh2
 
 const chalkInstance = new Chalk({ level: 3 })
 const blue = chalkInstance.rgb(89, 136, 255)
-const EXEC_STDIN_GRACE_MS = parseInt(process.env.EXEC_STDIN_GRACE_MS ?? '500', 10)
-const MAX_EXEC_STDIN_BYTES = parseInt(process.env.MAX_EXEC_STDIN_BYTES ?? `${1024 * 1024}`, 10)
 export interface SSHServerOptions {
   authDbPath: string
   hostKey: Buffer
@@ -37,6 +35,18 @@ interface AuthenticatedPrincipal {
   fingerprint: string
   requestedUsername: string
   user: AuthUser
+}
+
+function getExecStdinGraceMs(): number {
+  return parseInt(process.env.EXEC_STDIN_GRACE_MS ?? '500', 10)
+}
+
+function getMaxExecStdinBytes(): number {
+  return parseInt(process.env.MAX_EXEC_STDIN_BYTES ?? `${1024 * 1024}`, 10)
+}
+
+function getServerIdent(): string {
+  return `docs-ssh_${process.env.VERSION ?? 'dev'}`
 }
 
 function formatPrompt(cwd: string): string {
@@ -76,8 +86,8 @@ async function collectExecStdin(
     waitForEndMs?: number
   } = {},
 ): Promise<string | undefined> {
-  const graceMs = opts.graceMs ?? EXEC_STDIN_GRACE_MS
-  const maxBytes = opts.maxBytes ?? MAX_EXEC_STDIN_BYTES
+  const graceMs = opts.graceMs ?? getExecStdinGraceMs()
+  const maxBytes = opts.maxBytes ?? getMaxExecStdinBytes()
   const waitForEndMs = opts.waitForEndMs ?? 10_000
   const input = channel.stdin ?? channel
 
@@ -211,7 +221,7 @@ export function createSSHServer(opts: SSHServerOptions) {
 
   const server = new Server(
     {
-      ident: `docs-ssh_${process.env.VERSION ?? 'dev'}`,
+      ident: getServerIdent(),
       hostKeys: [hostKey],
     },
     (client) => {

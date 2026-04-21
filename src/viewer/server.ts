@@ -1,7 +1,21 @@
 import { createReadStream } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { basename, extname, posix, resolve, sep } from 'node:path'
+import { createAuthStore, type AuthSshKey } from '../auth/store.js'
+import { OidcClient, createPendingOidcLogin, getViewerOrigin, type OidcAuthConfig } from '../auth/oidc.js'
+import {
+  clearPendingOidcCookie,
+  clearViewerSessionCookie,
+  deriveViewerSessionSecret,
+  isSecureViewerRequest,
+  readPendingOidcLogin,
+  readViewerSession,
+  sanitizeViewerReturnTo,
+  writePendingOidcCookie,
+  writeViewerSessionCookie,
+} from '../auth/web-session.js'
 import { getSourceMountPath, getStatePaths, loadSourceStore } from '../sources/source-store.js'
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx'])
@@ -57,6 +71,8 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 ])
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024
 const MAX_TREE_NODES = 10_000
+const MAX_VIEWER_JSON_BODY_BYTES = 64 * 1024
+const VIEWER_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 
 type ViewerFileKind = 'binary' | 'image' | 'markdown' | 'text'
 type ViewerMountType = 'docs' | 'source' | 'workspace'
@@ -79,11 +95,15 @@ interface ViewerTreeNode {
 }
 
 interface ViewerServerOptions {
+  authDbPath?: string
   docsDir: string
   docsName?: string
   host?: string
+  oidc?: OidcAuthConfig
   port?: number
+  publicOrigin?: string
   registryPath?: string
+  sessionSecret?: Buffer | string
   staticDir?: string
   workspaceDir?: string
 }
@@ -167,6 +187,43 @@ function normalizeVirtualPath(path: string): string {
 
 function buildRawUrl(path: string): string {
   return `/api/raw?path=${encodeURIComponent(path)}`
+}
+
+function toViewerSshKeyPayload(sshKey: AuthSshKey) {
+  return {
+    algorithm: sshKey.algorithm,
+    createdAt: sshKey.createdAt,
+    fingerprint: sshKey.fingerprint,
+    name: sshKey.name,
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`
+}
+
+function deriveFirstOwnerLogin(email?: string): string | undefined {
+  if (!email) return undefined
+  const localPart = email.split('@', 1)[0]?.trim().toLowerCase()
+  if (!localPart) return undefined
+
+  const normalized = localPart
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || undefined
+}
+
+function deriveFirstOwnerName(email?: string): string | undefined {
+  return email?.trim() || undefined
 }
 
 async function loadViewerContext(opts: ViewerServerOptions) {
@@ -391,6 +448,69 @@ function sendMethodNotAllowed(response: ServerResponse) {
   sendJson(response, 405, { error: 'Method not allowed.' })
 }
 
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = []
+  let totalBytes = 0
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    totalBytes += buffer.length
+    if (totalBytes > MAX_VIEWER_JSON_BODY_BYTES) {
+      throw new Error('Request body was too large.')
+    }
+    chunks.push(buffer)
+  }
+
+  const raw = Buffer.concat(chunks).toString('utf8').trim()
+  if (!raw) {
+    throw new Error('Request body was empty.')
+  }
+
+  try {
+    return JSON.parse(raw) as unknown
+  } catch {
+    throw new Error('Request body was not valid JSON.')
+  }
+}
+
+function redirect(
+  response: ServerResponse,
+  location: string,
+  opts: {
+    cookies?: string[]
+    headOnly?: boolean
+  } = {},
+) {
+  response.writeHead(302, {
+    Location: location,
+    ...(opts.cookies && opts.cookies.length > 0 ? { 'Set-Cookie': opts.cookies } : {}),
+  })
+  response.end(opts.headOnly ? undefined : `Redirecting to ${location}`)
+}
+
+function sendAuthError(
+  response: ServerResponse,
+  statusCode: number,
+  message: string,
+  opts: {
+    clearCookies?: string[]
+    command?: string
+    details?: Array<{ label: string; value: string }>
+    headOnly?: boolean
+  } = {},
+) {
+  response.writeHead(statusCode, {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'text/html; charset=utf-8',
+    ...(opts.clearCookies && opts.clearCookies.length > 0 ? { 'Set-Cookie': opts.clearCookies } : {}),
+  })
+  response.end(
+    opts.headOnly
+      ? undefined
+      : `<!doctype html><html lang="en"><body><main><h1>Authentication failed</h1><p>${escapeHtml(message)}</p>${opts.details && opts.details.length > 0 ? `<dl>${opts.details.map((detail) => `<div><dt>${escapeHtml(detail.label)}</dt><dd><code>${escapeHtml(detail.value)}</code></dd></div>`).join('')}</dl>` : ''}${opts.command ? `<p>Link this identity in the local auth database, then retry sign-in.</p><pre>${escapeHtml(opts.command)}</pre>` : ''}</main></body></html>`,
+  )
+}
+
 async function serveStaticFile(
   staticDir: string,
   requestPath: string,
@@ -419,17 +539,284 @@ export function createViewerServer(opts: ViewerServerOptions) {
   const host = opts.host ?? '127.0.0.1'
   const port = opts.port ?? 3000
   const staticDir = resolve(opts.staticDir ?? './viewer-dist')
+  const authStore = opts.authDbPath ? createAuthStore({ dbPath: opts.authDbPath }) : null
+  const oidcClient = opts.oidc ? new OidcClient(opts.oidc) : null
+  const sessionSecret = opts.sessionSecret ? deriveViewerSessionSecret(opts.sessionSecret) : null
+
+  const getActiveSession = (request: IncomingMessage) => {
+    if (!authStore || !sessionSecret) return null
+    const session = readViewerSession(sessionSecret, request)
+    if (!session) return null
+
+    const user = authStore.findUserByLogin(session.login)
+    if (!user || user.id !== session.userId) return null
+
+    return {
+      ...session,
+      login: user.login,
+      userDisplayName: user.displayName,
+      userId: user.id,
+    }
+  }
+
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     try {
       const method = request.method ?? 'GET'
+      const url = new URL(request.url ?? '/', 'http://localhost')
       const headOnly = method === 'HEAD'
+      const isSshKeyRoute = url.pathname === '/api/auth/ssh-keys'
 
-      if (method !== 'GET' && method !== 'HEAD') {
+      if (method !== 'GET' && method !== 'HEAD' && !(isSshKeyRoute && method === 'POST')) {
         sendMethodNotAllowed(response)
         return
       }
 
-      const url = new URL(request.url ?? '/', 'http://localhost')
+      if (url.pathname === '/api/auth/session') {
+        const session = getActiveSession(request)
+        sendJson(
+          response,
+          200,
+          {
+            oidc: oidcClient && opts.oidc
+              ? {
+                  enabled: true,
+                  issuer: opts.oidc.issuer,
+                  provider: opts.oidc.provider,
+                }
+              : {
+                  enabled: false,
+                },
+            session: session
+              ? {
+                  email: session.email,
+                  expiresAt: session.expiresAt,
+                  issuer: session.issuer,
+                  login: session.login,
+                  provider: session.provider,
+                  subject: session.subject,
+                  userDisplayName: session.userDisplayName,
+                  userId: session.userId,
+                }
+              : null,
+          },
+          headOnly,
+        )
+        return
+      }
+
+      if (isSshKeyRoute) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in to manage SSH keys.' }, headOnly)
+          return
+        }
+
+        if (method === 'GET' || method === 'HEAD') {
+          sendJson(
+            response,
+            200,
+            {
+              keys: authStore.listSshKeys(session.login).map(toViewerSshKeyPayload),
+            },
+            headOnly,
+          )
+          return
+        }
+
+        if (method === 'POST') {
+          let payload
+          try {
+            payload = await readJsonBody(request) as {
+              name?: unknown
+              publicKey?: unknown
+            }
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return
+          }
+
+          if (typeof payload.publicKey !== 'string' || payload.publicKey.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing SSH public key.' })
+            return
+          }
+          if (payload.name !== undefined && payload.name !== null && typeof payload.name !== 'string') {
+            sendJson(response, 400, { error: 'SSH key name must be a string.' })
+            return
+          }
+
+          try {
+            const sshKey = authStore.addSshKey({
+              name: typeof payload.name === 'string' ? payload.name : undefined,
+              publicKey: payload.publicKey,
+              userLogin: session.login,
+            })
+            sendJson(response, 200, {
+              key: toViewerSshKeyPayload(sshKey),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        sendMethodNotAllowed(response)
+        return
+      }
+
+      if (url.pathname === '/auth/login') {
+        if (!oidcClient || !opts.oidc || !sessionSecret) {
+          sendJson(response, 501, { error: 'OIDC login is not configured.' }, headOnly)
+          return
+        }
+
+        const currentSession = getActiveSession(request)
+        const returnTo = sanitizeViewerReturnTo(url.searchParams.get('returnTo'))
+        if (currentSession) {
+          redirect(response, returnTo, { headOnly })
+          return
+        }
+
+        const secure = isSecureViewerRequest(request, opts.publicOrigin)
+        const pendingLogin = createPendingOidcLogin(returnTo)
+        const redirectUri = `${getViewerOrigin(request, opts.publicOrigin)}/auth/callback`
+        const location = await oidcClient.buildAuthorizationRedirectUrl({
+          pendingLogin,
+          redirectUri,
+        })
+
+        redirect(response, location, {
+          cookies: [writePendingOidcCookie(sessionSecret, pendingLogin, secure)],
+          headOnly,
+        })
+        return
+      }
+
+      if (url.pathname === '/auth/callback') {
+        if (!oidcClient || !opts.oidc || !sessionSecret || !authStore) {
+          sendJson(response, 501, { error: 'OIDC login is not configured.' }, headOnly)
+          return
+        }
+
+        const secure = isSecureViewerRequest(request, opts.publicOrigin)
+        const pendingLogin = readPendingOidcLogin(sessionSecret, request)
+        if (!pendingLogin) {
+          sendAuthError(response, 400, 'The login request has expired. Start the sign-in flow again.', {
+            clearCookies: [clearPendingOidcCookie(secure)],
+            headOnly,
+          })
+          return
+        }
+
+        const code = url.searchParams.get('code')?.trim()
+        const state = url.searchParams.get('state')?.trim()
+        if (!code || !state || state !== pendingLogin.state) {
+          sendAuthError(response, 400, 'The OIDC callback parameters were invalid.', {
+            clearCookies: [clearPendingOidcCookie(secure)],
+            headOnly,
+          })
+          return
+        }
+
+        try {
+          const redirectUri = `${getViewerOrigin(request, opts.publicOrigin)}/auth/callback`
+          const identity = await oidcClient.exchangeCodeForIdentity({
+            code,
+            codeVerifier: pendingLogin.codeVerifier,
+            nonce: pendingLogin.nonce,
+            redirectUri,
+          })
+          const user = authStore.findUserByAuthIdentity({
+            issuer: identity.issuer,
+            provider: opts.oidc.provider,
+            subject: identity.subject,
+          })
+
+          const signedUpUser = !user
+            ? authStore.signUpFirstUserWithAuthIdentity({
+                email: identity.email,
+                issuer: identity.issuer,
+                ownerLogin: deriveFirstOwnerLogin(identity.email),
+                ownerName: deriveFirstOwnerName(identity.email),
+                provider: opts.oidc.provider,
+                subject: identity.subject,
+              })?.owner.user
+            : null
+
+          const resolvedUser = user ?? signedUpUser
+
+          if (!resolvedUser) {
+            const linkCommand = `pnpm run cli -- auth add-web-identity --provider ${shellQuote(opts.oidc.provider)} --issuer ${shellQuote(identity.issuer)} --subject ${shellQuote(identity.subject)}`
+            sendAuthError(
+              response,
+              403,
+              'This web identity is not linked to a docs-ssh user yet.',
+              {
+                clearCookies: [clearPendingOidcCookie(secure), clearViewerSessionCookie(secure)],
+                command: linkCommand,
+                details: [
+                  { label: 'provider', value: opts.oidc.provider },
+                  { label: 'issuer', value: identity.issuer },
+                  { label: 'subject', value: identity.subject },
+                ],
+                headOnly,
+              },
+            )
+            return
+          }
+
+          redirect(response, pendingLogin.returnTo, {
+            cookies: [
+              clearPendingOidcCookie(secure),
+              writeViewerSessionCookie(
+                sessionSecret,
+                {
+                  email: identity.email,
+                  expiresAt: Date.now() + VIEWER_SESSION_TTL_MS,
+                  issuer: identity.issuer,
+                  login: resolvedUser.login,
+                  provider: opts.oidc.provider,
+                  subject: identity.subject,
+                  userDisplayName: resolvedUser.displayName,
+                  userId: resolvedUser.id,
+                },
+                secure,
+              ),
+            ],
+            headOnly,
+          })
+          return
+        } catch (error) {
+          sendAuthError(
+            response,
+            401,
+            error instanceof Error ? error.message : 'OIDC verification failed.',
+            {
+              clearCookies: [clearPendingOidcCookie(secure), clearViewerSessionCookie(secure)],
+              headOnly,
+            },
+          )
+          return
+        }
+      }
+
+      if (url.pathname === '/auth/logout') {
+        const secure = isSecureViewerRequest(request, opts.publicOrigin)
+        redirect(response, sanitizeViewerReturnTo(url.searchParams.get('returnTo')), {
+          cookies: [clearViewerSessionCookie(secure), clearPendingOidcCookie(secure)],
+          headOnly,
+        })
+        return
+      }
+
       const context = await loadViewerContext(opts)
       const publicMounts = context.mounts.map((mount) => ({
         aliases: mount.aliases,
@@ -631,12 +1018,20 @@ export function createViewerServer(opts: ViewerServerOptions) {
 
   return {
     listen: () =>
-      new Promise<void>((resolveListen, reject) => {
+      new Promise<number>((resolveListen, reject) => {
         server.once('error', reject)
         server.listen(port, host, () => {
           server.off('error', reject)
-          console.log(`[viewer] listening on http://${host}:${port}`)
-          resolveListen()
+          const address = server.address() as AddressInfo
+          console.log(`[viewer] listening on http://${host}:${address.port}`)
+          resolveListen(address.port)
+        })
+      }),
+    close: () =>
+      new Promise<void>((resolveClose) => {
+        server.close(() => {
+          authStore?.close()
+          resolveClose()
         })
       }),
   }

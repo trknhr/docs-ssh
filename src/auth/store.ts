@@ -75,6 +75,15 @@ export interface AddAuthIdentityInput {
   userLogin?: string
 }
 
+export interface SignUpFirstUserWithAuthIdentityInput {
+  email?: string
+  issuer: string
+  ownerLogin?: string
+  ownerName?: string
+  provider?: string
+  subject: string
+}
+
 export interface AddSshKeyInput {
   name?: string
   publicKey: string
@@ -320,6 +329,14 @@ function getSshKeyByFingerprint(database: Database.Database, fingerprint: string
   return row ? parseAuthSshKey(row) : null
 }
 
+function countUsers(database: Database.Database): number {
+  const row = database
+    .prepare('SELECT COUNT(*) AS count FROM users')
+    .get() as { count: number }
+
+  return row.count
+}
+
 export interface AuthStore {
   addAuthIdentity(input: AddAuthIdentityInput): AuthIdentity
   addSshKey(input: AddSshKeyInput): AuthSshKey
@@ -331,6 +348,10 @@ export interface AuthStore {
   findUserBySshFingerprint(fingerprint: string): AuthUser | null
   listAuthIdentities(userLogin?: string): AuthIdentity[]
   listSshKeys(userLogin?: string): AuthSshKey[]
+  signUpFirstUserWithAuthIdentity(input: SignUpFirstUserWithAuthIdentityInput): {
+    identity: AuthIdentity
+    owner: SingleTenantOwner
+  } | null
 }
 
 export function createAuthStore(opts: { dbPath: string }): AuthStore {
@@ -409,6 +430,58 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         instance: parseInstance(instance),
         membership: parseMembership(membership),
         user: parseUser(user),
+      }
+    },
+  )
+
+  const signUpFirstUserWithAuthIdentityTx = database.transaction(
+    (
+      input: Required<Pick<SignUpFirstUserWithAuthIdentityInput, 'issuer' | 'provider' | 'subject'>> & {
+        email?: string
+        ownerLogin: string
+        ownerName: string
+      },
+    ): {
+      identity: AuthIdentity
+      owner: SingleTenantOwner
+    } | null => {
+      if (countUsers(database) > 0) return null
+
+      const owner = ensureSingleTenantOwnerTx({
+        instanceName: DEFAULT_INSTANCE_NAME,
+        instanceSlug: DEFAULT_INSTANCE_SLUG,
+        ownerLogin: input.ownerLogin,
+        ownerName: input.ownerName,
+      })
+
+      const identity: AuthIdentityRow = {
+        createdAt: createTimestamp(),
+        email: input.email?.trim() || null,
+        id: randomUUID(),
+        issuer: input.issuer,
+        provider: input.provider,
+        subject: input.subject,
+        userId: owner.user.id,
+      }
+
+      database
+        .prepare(
+          `INSERT INTO auth_identities (id, user_id, provider, issuer, subject, email, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          identity.id,
+          identity.userId,
+          identity.provider,
+          identity.issuer,
+          identity.subject,
+          identity.email,
+          identity.createdAt,
+        )
+
+      return {
+        identity: parseAuthIdentity(identity),
+        owner,
       }
     },
   )
@@ -591,6 +664,22 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         )
         .all(user.id)
         .map((row) => parseAuthSshKey(row as AuthSshKeyRow))
+    },
+    signUpFirstUserWithAuthIdentity(input: SignUpFirstUserWithAuthIdentityInput) {
+      const issuer = input.issuer.trim()
+      const provider = normalizeProvider(input.provider)
+      const subject = input.subject.trim()
+      if (!issuer) throw new Error('Missing required issuer for auth identity.')
+      if (!subject) throw new Error('Missing required subject for auth identity.')
+
+      return signUpFirstUserWithAuthIdentityTx({
+        email: input.email?.trim(),
+        issuer,
+        ownerLogin: normalizeIdentifier(input.ownerLogin, DEFAULT_OWNER_LOGIN),
+        ownerName: normalizeLabel(input.ownerName, DEFAULT_OWNER_NAME),
+        provider,
+        subject,
+      })
     },
   }
 }

@@ -3,6 +3,7 @@ import { access, appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/pr
 import { basename, dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { createAuthStore } from './auth/store.js'
+import { loadLocalEnvFile } from './env.js'
 import { loadInstanceConfig } from './instance-config.js'
 import {
   addSourceToRegistry,
@@ -26,6 +27,8 @@ import {
 } from './shell/helper-content.js'
 
 const execFileAsync = promisify(execFile)
+
+loadLocalEnvFile()
 
 interface ParsedArgs {
   positionals: string[]

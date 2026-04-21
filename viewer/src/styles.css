@@ -46,6 +46,10 @@ select {
   font: inherit;
 }
 
+textarea {
+  font: inherit;
+}
+
 .app-shell {
   display: grid;
   grid-template-rows: auto 1fr;
@@ -80,8 +84,163 @@ select {
   justify-content: flex-end;
 }
 
+.auth-panel {
+  align-items: flex-end;
+  display: grid;
+  gap: 0.4rem;
+  justify-items: end;
+}
+
+.auth-panel__body {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
 .workspace {
   min-height: 0;
+}
+
+.logged-out-shell {
+  display: grid;
+  gap: 1.2rem;
+  min-height: 100%;
+  padding: 1.2rem;
+}
+
+.logged-out-hero {
+  background:
+    linear-gradient(135deg, rgba(10, 18, 34, 0.96), rgba(8, 15, 30, 0.98)),
+    radial-gradient(circle at top right, rgba(34, 195, 238, 0.14), transparent 26rem);
+  border: 1px solid var(--border);
+  border-radius: 1.5rem;
+  display: grid;
+  gap: 1.2rem;
+  grid-template-columns: minmax(0, 1.5fr) minmax(18rem, 0.9fr);
+  overflow: hidden;
+  padding: 1.4rem;
+  position: relative;
+}
+
+.logged-out-hero::after {
+  background: linear-gradient(90deg, transparent, rgba(34, 195, 238, 0.18), transparent);
+  content: '';
+  height: 1px;
+  left: 1.4rem;
+  position: absolute;
+  right: 1.4rem;
+  top: 5.2rem;
+}
+
+.logged-out-hero__copy,
+.logged-out-status {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.logged-out-hero__copy h2,
+.logged-out-card h3 {
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin: 0;
+}
+
+.logged-out-hero__copy h2 {
+  font-size: clamp(2.5rem, 7vw, 4.8rem);
+  margin-top: 0.15rem;
+}
+
+.logged-out-hero__lede,
+.logged-out-status__card p,
+.logged-out-card p,
+.logged-out-steps {
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.logged-out-hero__lede {
+  font-size: 1.04rem;
+  line-height: 1.7;
+  max-width: 42rem;
+  padding-top: 0.7rem;
+}
+
+.logged-out-hero__actions,
+.logged-out-card__pills {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.hero-button {
+  background: linear-gradient(135deg, #22c3ee, #0ea5e9);
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 999px;
+  box-shadow: 0 12px 32px rgba(8, 145, 178, 0.24);
+  color: #021420;
+  display: inline-flex;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0.8rem 1.15rem;
+  text-decoration: none;
+}
+
+.hero-button:hover {
+  filter: brightness(1.05);
+}
+
+.logged-out-status {
+  align-content: start;
+  background: rgba(7, 12, 24, 0.56);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 1.2rem;
+  padding: 1rem;
+}
+
+.logged-out-status__card,
+.logged-out-card {
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 1.15rem;
+  display: grid;
+  gap: 0.55rem;
+  padding: 1rem;
+}
+
+.logged-out-status__card strong {
+  color: var(--text);
+  font-size: 0.96rem;
+}
+
+.logged-out-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.logged-out-card {
+  background:
+    linear-gradient(180deg, rgba(17, 24, 39, 0.94), rgba(9, 17, 30, 0.96)),
+    radial-gradient(circle at top left, rgba(34, 195, 238, 0.08), transparent 18rem);
+  min-height: 13rem;
+}
+
+.logged-out-card h3 {
+  font-size: 1.5rem;
+}
+
+.logged-out-card__pills {
+  padding: 0.15rem 0;
+}
+
+.logged-out-steps {
+  display: grid;
+  gap: 0.6rem;
+  line-height: 1.65;
+  padding-left: 1.2rem;
 }
 
 .allotment {
@@ -185,7 +344,8 @@ select {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 0.8rem;
@@ -196,12 +356,19 @@ select {
 }
 
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   border-color: rgba(34, 195, 238, 0.72);
   box-shadow: 0 0 0 3px rgba(34, 195, 238, 0.12);
 }
 
-.field--stacked input {
+.field textarea {
+  min-height: 8rem;
+  resize: vertical;
+}
+
+.field--stacked input,
+.field--stacked textarea {
   min-width: auto;
   width: 100%;
 }
@@ -230,6 +397,26 @@ select {
 .meta-link:hover {
   border-color: rgba(34, 195, 238, 0.6);
   color: var(--text);
+}
+
+.meta-button {
+  background: transparent;
+  cursor: pointer;
+}
+
+.action-button {
+  background: linear-gradient(135deg, rgba(34, 195, 238, 0.9), rgba(14, 165, 233, 0.92));
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 0.9rem;
+  color: #03141f;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0.8rem 1rem;
+}
+
+.action-button:disabled {
+  cursor: progress;
+  opacity: 0.7;
 }
 
 .explorer-node {
@@ -303,6 +490,124 @@ select {
 .preview-state h3,
 .preview-state p {
   margin: 0;
+}
+
+.account-dashboard {
+  display: grid;
+  gap: 1rem;
+}
+
+.account-banner {
+  align-items: start;
+  background:
+    linear-gradient(135deg, rgba(14, 22, 40, 0.98), rgba(8, 14, 28, 0.98)),
+    radial-gradient(circle at top right, rgba(34, 195, 238, 0.16), transparent 24rem);
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: minmax(0, 1.6fr) auto;
+  padding: 1rem 1.1rem;
+}
+
+.account-banner h3,
+.account-card h3 {
+  letter-spacing: -0.03em;
+  margin: 0.2rem 0 0;
+}
+
+.account-banner p,
+.account-card p {
+  color: var(--text-muted);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.account-banner__meta {
+  align-items: flex-end;
+  display: grid;
+  gap: 0.5rem;
+  justify-items: end;
+}
+
+.account-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.95fr);
+}
+
+.account-card {
+  background:
+    linear-gradient(180deg, rgba(14, 21, 38, 0.96), rgba(8, 13, 26, 0.98)),
+    radial-gradient(circle at top left, rgba(34, 195, 238, 0.07), transparent 18rem);
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem 1.1rem;
+}
+
+.account-form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.account-form__footer {
+  display: grid;
+  gap: 0.65rem;
+  justify-items: start;
+}
+
+.status-message {
+  border-radius: 0.85rem;
+  font-size: 0.92rem;
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+}
+
+.status-message--error {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.22);
+  color: #fecaca;
+}
+
+.status-message--success {
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.22);
+  color: #bbf7d0;
+}
+
+.ssh-key-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.ssh-key-item {
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 1rem;
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.9rem;
+}
+
+.ssh-key-item__header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.ssh-key-item strong {
+  color: var(--text);
+}
+
+.ssh-key-item code {
+  color: #bae6fd;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .preview-skeleton {
@@ -458,5 +763,24 @@ select {
   .workspace .allotment {
     height: auto;
     min-height: calc(100vh - 6rem);
+  }
+
+  .logged-out-shell {
+    padding: 0.9rem;
+  }
+
+  .logged-out-hero,
+  .logged-out-grid,
+  .account-grid,
+  .account-banner {
+    grid-template-columns: 1fr;
+  }
+
+  .logged-out-hero::after {
+    display: none;
+  }
+
+  .account-banner__meta {
+    justify-items: start;
   }
 }

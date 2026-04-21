@@ -7,6 +7,43 @@ export interface RootSummary {
   type: 'docs' | 'source' | 'workspace'
 }
 
+export interface ViewerOidcState {
+  enabled: boolean
+  issuer?: string
+  provider?: string
+}
+
+export interface ViewerSessionUser {
+  email?: string
+  expiresAt: number
+  issuer: string
+  login: string
+  provider: string
+  subject: string
+  userDisplayName: string
+  userId: string
+}
+
+export interface ViewerSessionResponse {
+  oidc: ViewerOidcState
+  session: ViewerSessionUser | null
+}
+
+export interface ViewerSshKey {
+  algorithm: string
+  createdAt: string
+  fingerprint: string
+  name: string | null
+}
+
+export interface ViewerSshKeyListResponse {
+  keys: ViewerSshKey[]
+}
+
+export interface ViewerSshKeyMutationResponse {
+  key: ViewerSshKey
+}
+
 export interface TreeNodeData {
   children?: TreeNodeData[]
   id: string

@@ -3,10 +3,13 @@
  * Modified to provide a local-first docs-ssh server with minimal dependencies.
  */
 
+import { loadLocalEnvFile } from './env.js'
 import { ensureHostKey, logHostKeyFingerprint } from './host-key.js'
 import { loadInstanceConfig, type InstanceConfig } from './instance-config.js'
 import { createSSHServer } from './ssh.js'
 import { createViewerServer } from './viewer/server.js'
+
+loadLocalEnvFile()
 
 async function loadHostKey(config: InstanceConfig): Promise<Buffer> {
   if (config.ssh.hostKey) {
@@ -39,11 +42,23 @@ async function main(): Promise<void> {
   })
 
   const viewer = createViewerServer({
+    authDbPath: instanceConfig.auth.dbPath,
     docsDir: instanceConfig.docsDir,
     docsName: instanceConfig.docsName,
     host: instanceConfig.viewer.bindHost,
+    oidc: instanceConfig.auth.oidc.enabled && instanceConfig.auth.oidc.issuer && instanceConfig.auth.oidc.clientId
+      ? {
+          clientId: instanceConfig.auth.oidc.clientId,
+          clientSecret: instanceConfig.auth.oidc.clientSecret,
+          issuer: instanceConfig.auth.oidc.issuer,
+          provider: instanceConfig.auth.oidc.provider,
+          scope: instanceConfig.auth.oidc.scope,
+        }
+      : undefined,
     port: instanceConfig.viewer.port,
+    publicOrigin: instanceConfig.viewer.publicOrigin,
     registryPath: instanceConfig.statePaths.registryPath,
+    sessionSecret: hostKey,
     staticDir: instanceConfig.viewer.staticDir,
     workspaceDir: instanceConfig.workspaceDir,
   })

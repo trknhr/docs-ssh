@@ -4,6 +4,14 @@ import { resolveStatePaths, type StatePaths } from './sources/source-store.js'
 export interface InstanceConfig {
   auth: {
     dbPath: string
+    oidc: {
+      clientId?: string
+      clientSecret?: string
+      enabled: boolean
+      issuer?: string
+      provider: string
+      scope: string
+    }
   }
   docsDir: string
   docsName: string
@@ -20,6 +28,7 @@ export interface InstanceConfig {
   viewer: {
     bindHost: string
     port: number
+    publicOrigin?: string
     staticDir: string
   }
   timeouts: {
@@ -31,6 +40,11 @@ export interface InstanceConfig {
 
 export interface LoadInstanceConfigOptions {
   authDbPath?: string
+  authOidcClientId?: string
+  authOidcClientSecret?: string
+  authOidcIssuer?: string
+  authOidcProvider?: string
+  authOidcScope?: string
   docsDir?: string
   docsName?: string
   env?: NodeJS.ProcessEnv
@@ -46,6 +60,7 @@ export interface LoadInstanceConfigOptions {
   sshPort?: number
   stateDir?: string
   viewerBindHost?: string
+  viewerPublicOrigin?: string
   viewerPort?: number
   viewerStaticDir?: string
   workspaceDir?: string
@@ -88,6 +103,17 @@ export function loadInstanceConfig(opts: LoadInstanceConfigOptions = {}): Instan
       dbPath: resolve(
         getStringValue(opts.authDbPath, env.DOCS_SSH_AUTH_DB_PATH, `${statePaths.stateDir}/auth.sqlite`),
       ),
+      oidc: {
+        clientId: opts.authOidcClientId ?? env.DOCS_SSH_OIDC_CLIENT_ID,
+        clientSecret: opts.authOidcClientSecret ?? env.DOCS_SSH_OIDC_CLIENT_SECRET,
+        enabled: Boolean(
+          (opts.authOidcIssuer ?? env.DOCS_SSH_OIDC_ISSUER)
+          && (opts.authOidcClientId ?? env.DOCS_SSH_OIDC_CLIENT_ID),
+        ),
+        issuer: opts.authOidcIssuer ?? env.DOCS_SSH_OIDC_ISSUER,
+        provider: getStringValue(opts.authOidcProvider, env.DOCS_SSH_OIDC_PROVIDER, 'oidc'),
+        scope: getStringValue(opts.authOidcScope, env.DOCS_SSH_OIDC_SCOPE, 'openid email profile'),
+      },
     },
     docsDir: resolve(getStringValue(opts.docsDir, env.DOCS_DIR, './docs')),
     docsName: getStringValue(opts.docsName, env.DOCS_NAME, 'Documentation'),
@@ -117,6 +143,7 @@ export function loadInstanceConfig(opts: LoadInstanceConfigOptions = {}): Instan
     viewer: {
       bindHost: getStringValue(opts.viewerBindHost, env.VIEWER_HOST, '127.0.0.1'),
       port: getIntegerValue(opts.viewerPort, env.VIEWER_PORT, 3000, 'VIEWER_PORT'),
+      publicOrigin: opts.viewerPublicOrigin ?? env.VIEWER_PUBLIC_ORIGIN,
       staticDir: resolve(
         getStringValue(opts.viewerStaticDir, env.VIEWER_DIST_DIR, './viewer-dist'),
       ),

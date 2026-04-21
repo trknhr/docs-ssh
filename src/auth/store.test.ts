@@ -73,6 +73,35 @@ describe('createAuthStore', () => {
     authStore.close()
   })
 
+  it('can sign up the first web user into an empty auth store', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({
+      dbPath: resolve(tempDir, 'auth.sqlite'),
+    })
+
+    const signedUp = authStore.signUpFirstUserWithAuthIdentity({
+      email: 'first.owner@example.com',
+      issuer: 'https://accounts.example.com',
+      ownerLogin: 'first-owner',
+      ownerName: 'First Owner',
+      provider: 'google',
+      subject: 'google-sub-123',
+    })
+
+    expect(signedUp?.owner.user.login).toBe('first-owner')
+    expect(signedUp?.owner.membership.role).toBe('owner')
+    expect(signedUp?.identity.provider).toBe('google')
+    expect(
+      authStore.findUserByAuthIdentity({
+        issuer: 'https://accounts.example.com',
+        provider: 'google',
+        subject: 'google-sub-123',
+      })?.login,
+    ).toBe('first-owner')
+
+    authStore.close()
+  })
+
   it('uses the sole owner when the bootstrap login is customized', async () => {
     const tempDir = await createTempDir()
     const authStore = createAuthStore({
