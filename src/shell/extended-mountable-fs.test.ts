@@ -6,16 +6,16 @@ describe('ExtendedMountableFs', () => {
     const fs = new ExtendedMountableFs({
       initialFiles: {
         '/notes.txt': 'hello',
-        '/docs/readme.md': '# Docs\n',
+        '/project/docs/readme.md': '# Docs\n',
       },
     })
 
     fs.startObservingReads()
     await expect(fs.readFile('/notes.txt', 'utf8')).resolves.toBe('hello')
-    await expect(fs.readdir('/docs')).resolves.toEqual(['readme.md'])
+    await expect(fs.readdir('/project/docs')).resolves.toEqual(['readme.md'])
     expect(fs.stopObservingReads()).toEqual({
       files: ['/notes.txt'],
-      dirs: ['/docs'],
+      dirs: ['/project/docs'],
     })
     expect(fs.stopObservingReads()).toEqual({
       files: [],
@@ -25,23 +25,23 @@ describe('ExtendedMountableFs', () => {
 
   it('allows writes only inside configured writable paths', async () => {
     const fs = new ExtendedMountableFs({
-      writablePaths: ['/tmp', '/workspace/tasks'],
-      readOnlyPaths: ['/workspace/README.md'],
+      writablePaths: ['/tmp', '/project/tasks'],
+      readOnlyPaths: ['/project/README.md', '/project/docs'],
     })
 
     await fs.mkdir('/tmp', { recursive: true })
     await fs.writeFile('/tmp/output.txt', 'ok')
     await expect(fs.readFile('/tmp/output.txt', 'utf8')).resolves.toBe('ok')
 
-    await fs.mkdir('/workspace/tasks/example', { recursive: true })
-    await fs.writeFile('/workspace/tasks/example/notes.md', 'note')
-    await expect(fs.readFile('/workspace/tasks/example/notes.md', 'utf8')).resolves.toBe('note')
+    await fs.mkdir('/project/tasks/example', { recursive: true })
+    await fs.writeFile('/project/tasks/example/notes.md', 'note')
+    await expect(fs.readFile('/project/tasks/example/notes.md', 'utf8')).resolves.toBe('note')
 
-    await expect(fs.writeFile('/workspace/README.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/workspace/README.md'",
+    await expect(fs.writeFile('/project/README.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/project/README.md'",
     )
-    await expect(fs.writeFile('/docs/guide.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/docs/guide.md'",
+    await expect(fs.writeFile('/project/docs/guide.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/project/docs/guide.md'",
     )
   })
 

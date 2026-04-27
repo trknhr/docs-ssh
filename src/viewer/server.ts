@@ -16,7 +16,7 @@ import {
   writePendingOidcCookie,
   writeViewerSessionCookie,
 } from '../auth/web-session.js'
-import { getSourceMountPath, getStatePaths, loadSourceStore } from '../sources/source-store.js'
+import { getProjectSourceMountPath, getStatePaths, loadSourceStore } from '../sources/source-store.js'
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx'])
 const TEXT_EXTENSIONS = new Set([
@@ -75,7 +75,7 @@ const MAX_VIEWER_JSON_BODY_BYTES = 64 * 1024
 const VIEWER_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 
 type ViewerFileKind = 'binary' | 'image' | 'markdown' | 'text'
-type ViewerMountType = 'docs' | 'source' | 'workspace'
+type ViewerMountType = 'home' | 'project' | 'project-docs' | 'shared' | 'source'
 
 interface ViewerMount {
   aliases: string[]
@@ -243,23 +243,45 @@ async function loadViewerContext(opts: ViewerServerOptions) {
     const aliases = sourceStore.mounts
       .filter((mount) => mount.sourceName === defaultSource.name)
       .map((mount) => mount.mountPoint)
-      .sort((left, right) => (left === '/docs' ? -1 : right === '/docs' ? 1 : left.localeCompare(right)))
+      .sort((left, right) =>
+        left === sourceStore.projectDocsMountPath
+          ? -1
+          : right === sourceStore.projectDocsMountPath
+            ? 1
+            : left.localeCompare(right),
+      )
 
     mounts.push({
-      aliases: aliases.filter((alias) => alias !== '/docs'),
-      label: 'docs',
-      mountPath: '/docs',
+      aliases: aliases.filter((alias) => alias !== sourceStore.projectDocsMountPath),
+      label: 'project docs',
+      mountPath: sourceStore.projectDocsMountPath,
       rootPath: defaultSource.rootPath,
-      type: 'docs',
+      type: 'project-docs',
     })
   }
 
   mounts.push({
     aliases: [],
-    label: 'workspace',
-    mountPath: sourceStore.workspaceMountPath,
-    rootPath: sourceStore.workspaceRootPath,
-    type: 'workspace',
+    label: 'home',
+    mountPath: sourceStore.homeMountPath,
+    rootPath: sourceStore.homeRootPath,
+    type: 'home',
+  })
+
+  mounts.push({
+    aliases: [`${sourceStore.projectsMountPath}/${sourceStore.projectSlug}`],
+    label: 'project',
+    mountPath: sourceStore.projectMountPath,
+    rootPath: sourceStore.projectRootPath,
+    type: 'project',
+  })
+
+  mounts.push({
+    aliases: [],
+    label: 'shared',
+    mountPath: sourceStore.sharedMountPath,
+    rootPath: sourceStore.sharedRootPath,
+    type: 'shared',
   })
 
   const sourceMounts = sourceStore.registry.sources
@@ -268,7 +290,7 @@ async function loadViewerContext(opts: ViewerServerOptions) {
     .map((source) => ({
       aliases: [],
       label: source.name,
-      mountPath: getSourceMountPath(source.name),
+      mountPath: getProjectSourceMountPath(source.name, sourceStore.projectMountPath),
       rootPath: source.rootPath,
       type: 'source' as const,
     }))
@@ -367,8 +389,6 @@ async function buildTree(mounts: ViewerMount[]) {
   }
 
   const tree: ViewerTreeNode[] = []
-  const sourceNodes: ViewerTreeNode[] = []
-
   for (const mount of mounts) {
     const node: ViewerTreeNode = {
       id: toTreeNodeId('directory', mount.mountPath),
@@ -378,22 +398,7 @@ async function buildTree(mounts: ViewerMount[]) {
       children: await visit(mount),
     }
 
-    if (mount.type === 'source') {
-      sourceNodes.push(node)
-      continue
-    }
-
     tree.push(node)
-  }
-
-  if (sourceNodes.length > 0) {
-    tree.push({
-      id: toTreeNodeId('directory', '/sources'),
-      kind: 'directory',
-      name: 'sources',
-      path: '/sources',
-      children: sourceNodes,
-    })
   }
 
   return {
@@ -404,7 +409,7 @@ async function buildTree(mounts: ViewerMount[]) {
 
 function resolveViewerPath(mounts: ViewerMount[], requestedPath: string) {
   const path = normalizeVirtualPath(requestedPath)
-  if (path === '/' || path === '/sources') {
+  if (path === '/' || path === '/projects') {
     throw new Error('Path does not point to a mounted file.')
   }
 

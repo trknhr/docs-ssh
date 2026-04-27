@@ -27,7 +27,15 @@ export interface SourceStore {
   registry: SourceRegistry
   mounts: SourceMount[]
   defaultSource?: SourceSpec
-  workspaceMountPath: '/workspace'
+  homeMountPath: '/home'
+  projectDocsMountPath: '/project/docs'
+  projectMountPath: '/project'
+  projectSlug: string
+  projectsMountPath: '/projects'
+  sharedMountPath: '/shared'
   tmpMountPath: '/tmp'
+  homeRootPath: string
+  projectRootPath: string
+  sharedRootPath: string
   workspaceRootPath: string
 }

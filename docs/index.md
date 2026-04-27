@@ -2,13 +2,13 @@
 
 This directory is mounted into the SSH session as:
 
-- `/sources/<name>`
-- `/docs`
+- `/project/sources/<name>`
+- `/project/docs`
 
 Try:
 
 ```bash
-ls /docs
-cat /docs/index.md
-grep -R "sample" /docs
+ls /project/docs
+cat /project/docs/index.md
+grep -R "sample" /project/docs
 ```

@@ -12,10 +12,10 @@ Current scope:
 
 - serve a local docs folder over SSH
 - ingest additional sources into a local registry
-- mount sources at `/sources/<name>`
-- expose `/docs` as the default alias
+- mount sources at `/project/sources/<name>`
+- expose `/project/docs` as the default source alias
 - keep source mounts read-only
-- provide `/workspace` as a persistent structured agent workspace
+- provide `/home`, `/project`, and `/shared` as persistent structured work areas
 - provide `/tmp` for temporary session-local files
 
 Deferred:
@@ -67,8 +67,8 @@ Deferred:
 
    ```bash
    ssh localhost -p 2222
-   ssh localhost -p 2222 ls /docs
-   ssh localhost -p 2222 grep -R "getting started" /docs
+   ssh localhost -p 2222 ls /project/docs
+   ssh localhost -p 2222 grep -R "getting started" /project/docs
    ```
 
 6. Open the read-only viewer in a browser:
@@ -108,8 +108,8 @@ After that, users can connect and run helper commands through the same alias:
 
 ```bash
 ssh docs-ssh
-ssh docs-ssh ls /docs
-ssh docs-ssh grep -R "getting started" /docs
+ssh docs-ssh ls /project/docs
+ssh docs-ssh grep -R "getting started" /project/docs
 ```
 
 The distributable skill file at `skills/SKILL.md` assumes this alias-based setup. If you prefer a different alias, update both the SSH config entry and the commands in the copied skill.
@@ -138,7 +138,7 @@ You can run `docs-ssh` in Docker and keep the source registry plus host key on d
 
 ```bash
 docker compose up --build -d
-ssh localhost -p 2222 ls /docs
+ssh localhost -p 2222 ls /project/docs
 ```
 
 Then open `http://localhost:3000` in a browser.
@@ -176,7 +176,7 @@ The self-hosting config uses:
 
 - `DOCS_SSH_DOCS_DIR` for the read-only docs mount
 - `DOCS_SSH_STATE_DIR` for ingested source data and the SSH host key
-- `DOCS_SSH_WORKSPACE_DIR` for the persistent structured workspace mounted at `/workspace`
+- `DOCS_SSH_WORKSPACE_DIR` for the persistent structured filesystem backing `/home`, `/project`, `/projects`, and `/shared`
 - `DOCS_SSH_BIND_IP` to control whether the SSH port binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_BIND_IP` to control whether the HTTP viewer binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_PORT` to control the HTTP viewer port
@@ -220,25 +220,50 @@ pnpm run sources:list
 
 Mounted paths:
 
-- every source is available at `/sources/<name>`
-- the default source is also available at `/docs`
-- `/workspace` persists across sessions and includes scaffolded task/library/decision directories
+- every source is available at `/project/sources/<name>`
+- the default source is also available at `/project/docs`
+- `/home` persists private principal-scoped work across sessions
+- `/project` is the current project alias backed by `/projects/default`
+- `/shared` persists tenant-wide docs and policies
 - `/tmp` is writable and resets between SSH sessions
 
 The viewer picks up registry changes on refresh. Existing interactive shell sessions will not see new mounts until you reconnect.
 
-## Workspace Layout
+## Filesystem Layout
 
-`docs-ssh` seeds `/workspace` with a stable top-level structure for AI agents:
+`docs-ssh` seeds a v2 SSH filesystem with private, project, shared, and temporary areas:
 
-- `README.md` and `_policy.json` describe the layout and writing rules
-- `tasks/` for active task-specific work
-- `library/` for reusable personal references, playbooks, snippets, and prompts
-- `decisions/` for durable cross-task decisions
-- `archive/` for completed work
-- `shared/` reserved for future multi-user sharing
+```text
+/
+  README.md
+  home/
+    README.md
+    tasks/
+    workspace/
+    docs/
+    agents/codex/
+      handoffs/
+      sessions/raw/
+      artifacts/
+  project/
+    README.md
+    docs/
+    sources/<name>/
+    tasks/
+    workspace/
+    agents/codex/
+      handoffs/
+      artifacts/
+  projects/
+    default/
+  shared/
+    README.md
+    docs/
+    policies/
+  tmp/
+```
 
-From the SSH session, the guidance files are read-only and writes are limited to `/workspace/tasks`, `/workspace/library`, `/workspace/decisions`, and `/workspace/archive`. Agents should create new task material under `/workspace/tasks/<task-slug>/` and use `/tmp` for temporary files.
+From the SSH session, source mounts under `/project/docs` and `/project/sources/<name>` are read-only. Writes are intended for `/home`, `/project/tasks`, `/project/workspace`, `/project/agents`, and `/shared/docs` or `/shared/policies`. Agents should create project task material under `/project/tasks/<task-slug>/`, store private resume summaries under `/home/agents/codex/handoffs/`, and use `/tmp` for temporary files.
 
 ## Configuration
 
@@ -254,7 +279,7 @@ If a repo-local `.env` file exists, both the server entrypoint and the CLI load 
 - `DOCS_SSH_OIDC_CLIENT_SECRET`: optional OIDC client secret for web sign-in
 - `DOCS_SSH_OIDC_PROVIDER`: auth identity provider label used in `auth_identities`, default `oidc`
 - `DOCS_SSH_OIDC_SCOPE`: OIDC scope for web sign-in, default `openid email profile`
-- `WORKSPACE_DIR`: persistent structured workspace dir, default `./.docs-ssh/workspace`
+- `WORKSPACE_DIR`: persistent structured filesystem dir, default `./.docs-ssh/workspace`
 - `SSH_PORT`: SSH port to listen on, default `2222`
 - `SSH_HOST`: interface to bind, default `127.0.0.1`
 - `SSH_CONNECT_HOST`: optional host name used in generated helper files, default `SSH_HOST` or `127.0.0.1`

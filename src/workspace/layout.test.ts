@@ -21,81 +21,89 @@ afterEach(async () => {
 })
 
 describe('workspace layout', () => {
-  it('returns writable workspace paths without the reserved shared directory', () => {
+  it('returns writable v2 filesystem paths', () => {
     expect(getWorkspaceWritablePaths()).toEqual([
-      '/workspace/tasks',
-      '/workspace/library',
-      '/workspace/decisions',
-      '/workspace/archive',
+      '/home/tasks',
+      '/home/workspace',
+      '/home/docs',
+      '/home/agents',
+      '/project/tasks',
+      '/project/workspace',
+      '/project/agents',
+      '/projects/default/tasks',
+      '/projects/default/workspace',
+      '/projects/default/agents',
+      '/shared/docs',
+      '/shared/policies',
+      '/tmp',
     ])
 
-    expect(getWorkspaceWritablePaths('/agent-workspace')).toEqual([
-      '/agent-workspace/tasks',
-      '/agent-workspace/library',
-      '/agent-workspace/decisions',
-      '/agent-workspace/archive',
-    ])
+    expect(getWorkspaceWritablePaths({ projectSlug: 'demo' })).toContain('/projects/demo/tasks')
   })
 
-  it('returns the read-only guide and directory readmes', () => {
+  it('returns the read-only v2 guide and directory readmes', () => {
     expect(getWorkspaceReadOnlyPaths()).toEqual([
-      '/workspace/README.md',
-      '/workspace/_policy.json',
-      '/workspace/tasks/README.md',
-      '/workspace/library/README.md',
-      '/workspace/decisions/README.md',
-      '/workspace/archive/README.md',
-      '/workspace/shared/README.md',
+      '/README.md',
+      '/home/README.md',
+      '/home/tasks/README.md',
+      '/home/workspace/README.md',
+      '/home/docs/README.md',
+      '/home/agents/README.md',
+      '/project/README.md',
+      '/project/docs',
+      '/project/sources',
+      '/project/tasks/README.md',
+      '/project/workspace/README.md',
+      '/project/agents/README.md',
+      '/projects/default/README.md',
+      '/projects/default/docs',
+      '/projects/default/sources',
+      '/projects/default/tasks/README.md',
+      '/projects/default/workspace/README.md',
+      '/projects/default/agents/README.md',
+      '/shared/README.md',
+      '/shared/docs/README.md',
+      '/shared/policies/README.md',
     ])
   })
 
-  it('creates the workspace scaffold and policy file', async () => {
+  it('creates the v2 filesystem scaffold', async () => {
     const rootPath = await createTempDir()
 
     await ensureWorkspaceLayout(rootPath)
 
-    const policy = JSON.parse(await readFile(resolve(rootPath, '_policy.json'), 'utf8'))
-    expect(policy).toMatchObject({
-      schemaVersion: 1,
-      root: '/workspace',
-      tmpRoot: '/tmp',
-      naming: {
-        taskSlugStyle: 'kebab-case',
-      },
-      taskTemplate: {
-        suggestedFiles: ['brief.md', 'plan.md', 'notes.md', 'handoff.md'],
-        suggestedDirectories: ['artifacts'],
-      },
-    })
-    expect(policy.directories.shared).toEqual({
-      purpose: 'Reserved for future multi-user sharing.',
-      reserved: true,
-      readme: '/workspace/shared/README.md',
-    })
-
     const workspaceReadme = await readFile(resolve(rootPath, 'README.md'), 'utf8')
-    expect(workspaceReadme).toContain('/workspace/tasks/<task-slug>/')
-    expect(workspaceReadme).toContain('Do not add additional loose files or new top-level directories')
+    expect(workspaceReadme).toContain('/project/tasks/<task-slug>/')
+    expect(workspaceReadme).toContain('separates private work')
 
-    const tasksReadme = await readFile(resolve(rootPath, 'tasks', 'README.md'), 'utf8')
+    const homeReadme = await readFile(resolve(rootPath, 'home', 'README.md'), 'utf8')
+    expect(homeReadme).toContain('private durable storage')
+
+    const tasksReadme = await readFile(resolve(rootPath, 'projects', 'default', 'tasks', 'README.md'), 'utf8')
     expect(tasksReadme).toContain('# Tasks')
     expect(tasksReadme).toContain('artifacts/')
 
     const sharedReadme = await readFile(resolve(rootPath, 'shared', 'README.md'), 'utf8')
-    expect(sharedReadme).toContain('Reserved for future multi-user sharing.')
+    expect(sharedReadme).toContain('tenant-wide shared material')
+
+    await expect(
+      readFile(resolve(rootPath, 'home', 'agents', 'codex', 'sessions', 'raw', 'README.md'), 'utf8'),
+    ).rejects.toThrow()
   })
 
   it('does not overwrite existing guide files', async () => {
     const rootPath = await createTempDir()
-    await mkdir(resolve(rootPath, 'tasks'), { recursive: true })
-    await writeFile(resolve(rootPath, 'README.md'), 'custom workspace guide\n')
-    await writeFile(resolve(rootPath, 'tasks', 'README.md'), 'custom tasks guide\n')
+    await mkdir(resolve(rootPath, 'projects', 'default', 'tasks'), { recursive: true })
+    await writeFile(resolve(rootPath, 'README.md'), 'custom root guide\n')
+    await writeFile(resolve(rootPath, 'projects', 'default', 'tasks', 'README.md'), 'custom tasks guide\n')
 
     await ensureWorkspaceLayout(rootPath)
 
-    await expect(readFile(resolve(rootPath, 'README.md'), 'utf8')).resolves.toBe('custom workspace guide\n')
-    await expect(readFile(resolve(rootPath, 'tasks', 'README.md'), 'utf8')).resolves.toBe('custom tasks guide\n')
-    await expect(readFile(resolve(rootPath, 'library', 'README.md'), 'utf8')).resolves.toContain('# Library')
-    await expect(readFile(resolve(rootPath, '_policy.json'), 'utf8')).resolves.toContain('"schemaVersion": 1')
+    await expect(readFile(resolve(rootPath, 'README.md'), 'utf8')).resolves.toBe('custom root guide\n')
+    await expect(readFile(resolve(rootPath, 'projects', 'default', 'tasks', 'README.md'), 'utf8')).resolves.toBe(
+      'custom tasks guide\n',
+    )
+    await expect(readFile(resolve(rootPath, 'home', 'workspace', 'README.md'), 'utf8')).resolves.toContain('# Workspace')
+    await expect(readFile(resolve(rootPath, 'shared', 'policies', 'README.md'), 'utf8')).resolves.toContain('# Policies')
   })
 })

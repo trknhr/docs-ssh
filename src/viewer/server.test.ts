@@ -333,7 +333,7 @@ describe('createViewerServer OIDC session flow', () => {
     const jar = new CookieJar()
 
     const loginResponse = await fetchWithCookies(
-      `${viewer.baseUrl}/auth/login?returnTo=${encodeURIComponent('/?path=/docs/README.md')}`,
+      `${viewer.baseUrl}/auth/login?returnTo=${encodeURIComponent('/?path=/project/docs/README.md')}`,
       jar,
     )
     expect(loginResponse.status).toBe(302)
@@ -344,7 +344,7 @@ describe('createViewerServer OIDC session flow', () => {
 
     const callbackResponse = await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
     expect(callbackResponse.status).toBe(302)
-    expect(callbackResponse.headers.get('location')).toBe('/?path=/docs/README.md')
+    expect(callbackResponse.headers.get('location')).toBe('/?path=/project/docs/README.md')
 
     const sessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
     const sessionPayload = await sessionResponse.json() as {

@@ -148,7 +148,7 @@ function printIngestSummary(source: SourceSpec, makeDefault: boolean): void {
   console.log(`- type: ${source.type}`)
   console.log(`- root: ${source.rootPath}`)
   console.log(`- mount: ${getSourceMountPath(source.name)}`)
-  if (makeDefault) console.log('- alias: /docs')
+  if (makeDefault) console.log('- alias: /project/docs')
   if (source.repoUrl) console.log(`- repo: ${source.repoUrl}`)
   if (source.subdir) console.log(`- subdir: ${source.subdir}`)
   console.log('')
@@ -275,7 +275,7 @@ async function listSources(args: ParsedArgs): Promise<void> {
   console.log('')
 
   for (const source of registry.sources) {
-    const defaultMark = source.name === registry.defaultSourceName ? ' (default -> /docs)' : ''
+    const defaultMark = source.name === registry.defaultSourceName ? ' (default -> /project/docs)' : ''
     console.log(`- ${source.name}${defaultMark}`)
     console.log(`  type: ${source.type}`)
     console.log(`  root: ${source.rootPath}`)

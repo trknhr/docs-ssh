@@ -50,6 +50,14 @@ const sshCommand = defineCommand('ssh', async (args) => {
   }
 })
 
+function createTextCommand(name: string, content: string) {
+  return defineCommand(name, async () => ({
+    stdout: content.endsWith('\n') ? content : `${content}\n`,
+    stderr: '',
+    exitCode: 0,
+  }))
+}
+
 export interface CreateBashOptions {
   docsDir?: string
   docsName?: string
@@ -94,37 +102,102 @@ export async function createBash(opts: CreateBashOptions = {}) {
     sshHost,
     sshPort,
   })
+  const rootReadme = [
+    '# docs-ssh',
+    '',
+    'Start here before reading or writing project material.',
+    '',
+    '- `/home` is private durable work for the authenticated principal.',
+    '- `/project` is the current project alias.',
+    '- `/project/docs` is the read-only default docs source.',
+    '- `/project/sources/<name>` contains additional read-only sources.',
+    '- `/projects/default` is the concrete current project path.',
+    '- `/shared` is tenant-wide docs and policies.',
+    '- `/tmp` is temporary and resets between SSH sessions.',
+    '',
+    'Use `/project/tasks/<task-slug>/` for project task work and `/home/agents/codex/handoffs/` for private resume summaries.',
+    '',
+  ].join('\n')
+  const projectReadme = [
+    '# Project',
+    '',
+    `This is the current project alias for \`${sourceStore.projectSlug}\`.`,
+    '',
+    '- `docs/`: read-only default docs source.',
+    '- `sources/<name>/`: read-only named sources.',
+    '- `tasks/`: project-scoped task work.',
+    '- `workspace/`: project-scoped working files.',
+    '- `agents/`: project-facing agent handoffs and artifacts.',
+    '',
+  ].join('\n')
 
   const fs = new ExtendedMountableFs({
     readOnlyPaths: [
-      '/AGENTS.md',
-      '/SKILL.md',
-      '/SETUP.md',
-      ...getWorkspaceReadOnlyPaths(sourceStore.workspaceMountPath),
+      ...getWorkspaceReadOnlyPaths({
+        homeMountPath: sourceStore.homeMountPath,
+        projectMountPath: sourceStore.projectMountPath,
+        projectSlug: sourceStore.projectSlug,
+        projectsMountPath: sourceStore.projectsMountPath,
+        sharedMountPath: sourceStore.sharedMountPath,
+      }),
     ],
     writablePaths: [
       '/bin',
       '/dev',
       '/proc',
-      sourceStore.tmpMountPath,
       '/usr',
       '/usr/bin',
-      ...getWorkspaceWritablePaths(sourceStore.workspaceMountPath),
+      ...getWorkspaceWritablePaths({
+        homeMountPath: sourceStore.homeMountPath,
+        projectMountPath: sourceStore.projectMountPath,
+        projectSlug: sourceStore.projectSlug,
+        projectsMountPath: sourceStore.projectsMountPath,
+        sharedMountPath: sourceStore.sharedMountPath,
+        tmpMountPath: sourceStore.tmpMountPath,
+      }),
     ],
     initialFiles: {
-      '/AGENTS.md': agentsMarkdown,
-      '/SKILL.md': skillMarkdown,
-      '/SETUP.md': setupMarkdown,
+      '/README.md': rootReadme,
+      '/project/README.md': projectReadme,
+      [`/projects/${sourceStore.projectSlug}/README.md`]: projectReadme,
     },
     mounts: [
+      {
+        mountPoint: sourceStore.homeMountPath,
+        filesystem: new ReadWriteFs({ root: sourceStore.homeRootPath }),
+      },
+      {
+        mountPoint: `${sourceStore.projectMountPath}/tasks`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
+      },
+      {
+        mountPoint: `${sourceStore.projectMountPath}/workspace`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/workspace` }),
+      },
+      {
+        mountPoint: `${sourceStore.projectMountPath}/agents`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/agents` }),
+      },
+      {
+        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/tasks`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
+      },
+      {
+        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/workspace`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/workspace` }),
+      },
+      {
+        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/agents`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/agents` }),
+      },
+      {
+        mountPoint: sourceStore.sharedMountPath,
+        filesystem: new ReadWriteFs({ root: sourceStore.sharedRootPath }),
+      },
       ...sourceStore.mounts.map((mount) => ({
         mountPoint: mount.mountPoint,
         filesystem: new OverlayFs({ root: mount.rootPath, mountPoint: '/', readOnly: true }),
       })),
-      {
-        mountPoint: sourceStore.workspaceMountPath,
-        filesystem: new ReadWriteFs({ root: sourceStore.workspaceRootPath }),
-      },
       {
         mountPoint: sourceStore.tmpMountPath,
         filesystem: new InMemoryFs(),
@@ -136,17 +209,19 @@ export async function createBash(opts: CreateBashOptions = {}) {
     fs,
     cwd: '/',
     env: {
-      HOME: sourceStore.workspaceMountPath,
+      HOME: sourceStore.homeMountPath,
       PATH: '/bin:/usr/bin',
       ...opts.env,
       BASH_ALIAS_ll: 'ls -alF',
       BASH_ALIAS_la: 'ls -a',
       BASH_ALIAS_l: 'ls -CF',
-      BASH_ALIAS_agents: 'echo && cat /AGENTS.md',
-      BASH_ALIAS_skill: 'echo && cat /SKILL.md',
-      BASH_ALIAS_setup: 'cat /SETUP.md',
     },
-    customCommands: [sshCommand],
+    customCommands: [
+      sshCommand,
+      createTextCommand('agents', agentsMarkdown),
+      createTextCommand('skill', skillMarkdown),
+      createTextCommand('setup', setupMarkdown),
+    ],
     defenseInDepth: true,
     executionLimits: EXECUTION_LIMITS,
   })

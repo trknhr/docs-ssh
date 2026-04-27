@@ -33,7 +33,7 @@ describe('source-store', () => {
   it('normalizes source names and mount paths', () => {
     expect(normalizeSourceName('  GitHub Docs  ')).toBe('github-docs')
     expect(normalizeSourceName('***')).toBe('source')
-    expect(getSourceMountPath('GitHub Docs')).toBe('/sources/github-docs')
+    expect(getSourceMountPath('GitHub Docs')).toBe('/project/sources/github-docs')
   })
 
   it('makes root paths portable relative to the registry', () => {
@@ -135,17 +135,32 @@ describe('source-store', () => {
       expect.arrayContaining([
         {
           sourceName: 'docs',
-          mountPoint: '/docs',
+          mountPoint: '/project/docs',
           rootPath: '/data/docs',
         },
         {
           sourceName: 'docs',
-          mountPoint: '/sources/docs',
+          mountPoint: '/project/sources/docs',
+          rootPath: '/data/docs',
+        },
+        {
+          sourceName: 'docs',
+          mountPoint: '/projects/default/docs',
+          rootPath: '/data/docs',
+        },
+        {
+          sourceName: 'docs',
+          mountPoint: '/projects/default/sources/docs',
           rootPath: '/data/docs',
         },
         {
           sourceName: 'reference',
-          mountPoint: '/sources/reference',
+          mountPoint: '/project/sources/reference',
+          rootPath: '/data/reference',
+        },
+        {
+          sourceName: 'reference',
+          mountPoint: '/projects/default/sources/reference',
           rootPath: '/data/reference',
         },
       ]),
@@ -174,7 +189,7 @@ describe('source-store', () => {
 
     expect(store.registry.defaultSourceName).toBe('primary')
     expect(store.defaultSource?.name).toBe('primary')
-    expect(store.mounts.find((mount) => mount.mountPoint === '/docs')?.rootPath).toBe('/primary')
+    expect(store.mounts.find((mount) => mount.mountPoint === '/project/docs')?.rootPath).toBe('/primary')
   })
 
   it('reads and writes source registries', async () => {
@@ -217,17 +232,30 @@ describe('source-store', () => {
       expect.arrayContaining([
         {
           sourceName: 'local',
-          mountPoint: '/docs',
+          mountPoint: '/project/docs',
           rootPath: docsDir,
         },
         {
           sourceName: 'local',
-          mountPoint: '/sources/local',
+          mountPoint: '/project/sources/local',
+          rootPath: docsDir,
+        },
+        {
+          sourceName: 'local',
+          mountPoint: '/projects/default/docs',
+          rootPath: docsDir,
+        },
+        {
+          sourceName: 'local',
+          mountPoint: '/projects/default/sources/local',
           rootPath: docsDir,
         },
       ]),
     )
     expect(store.workspaceRootPath).toBe(workspaceDir)
+    expect(store.homeRootPath).toBe(resolve(workspaceDir, 'home'))
+    expect(store.projectRootPath).toBe(resolve(workspaceDir, 'projects', 'default'))
+    expect(store.sharedRootPath).toBe(resolve(workspaceDir, 'shared'))
   })
 
   it('resolves source roots relative to the registry location', async () => {

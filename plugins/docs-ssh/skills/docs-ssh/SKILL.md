@@ -1,11 +1,11 @@
 ---
 name: docs-ssh
-description: Search and read docs mounted by docs-ssh over SSH using a stable local alias.
+description: Search and use a docs-ssh project filesystem over SSH using a stable local alias.
 ---
 
 # docs-ssh
 
-Use the `docs-ssh` SSH alias from `~/.ssh/config` to inspect mounted docs before making changes.
+Use the `docs-ssh` SSH alias from `~/.ssh/config` to inspect the mounted project filesystem before making changes.
 
 If your server operator told you to use a different alias, replace `docs-ssh` in the examples below.
 
@@ -19,39 +19,40 @@ Host docs-ssh
 
 Mounted paths:
 
-- `/AGENTS.md` -> top-level agent instructions
-- `/SKILL.md` -> top-level workflow guidance
-- `/docs` -> default source
-- `/sources/<name>` -> additional named sources
-- `/workspace/README.md` -> workspace layout and writing rules
-- `/workspace/_policy.json` -> machine-readable workspace policy
-- `/workspace/tasks` -> active task-specific work
-- `/workspace/library` -> reusable notes, playbooks, and snippets
-- `/workspace/decisions` -> durable cross-task decisions
-- `/workspace/archive` -> completed work and retired notes
-- `/workspace/shared` -> reserved for future shared workflows
+- `/README.md` -> root filesystem guide and writing rules
+- `/home` -> private durable work for the authenticated principal
+- `/home/agents/codex/handoffs` -> private Codex resume summaries
+- `/project` -> current project alias
+- `/project/docs` -> read-only default source
+- `/project/sources/<name>` -> additional read-only named sources
+- `/project/tasks` -> project-scoped task work
+- `/project/workspace` -> project-scoped working files
+- `/projects/default` -> concrete current project path
+- `/shared` -> tenant-wide docs and policies
 - `/tmp` -> temporary session-local files
 
 Workspace rules:
 
-- Start by reading `/AGENTS.md`, `/SKILL.md`, and `/workspace/README.md` before searching or writing files.
-- Do not create loose files or new top-level directories under `/workspace`.
-- Create active work under `/workspace/tasks/<task-slug>/`.
+- Start by reading `/README.md` and `/project/README.md` before searching or writing files.
+- Use `/home` for private durable work.
+- Use `/project` for current project work.
+- Create project task work under `/project/tasks/<task-slug>/`.
 - For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.
 - After writing a workspace file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.
-- Treat `/workspace/shared` as reserved for future shared workflows.
+- Use `/shared` only for tenant-wide docs and policies.
+- Save handoff summaries under `/home/agents/codex/handoffs/` before finishing.
+- Do not save raw local agent session data unless the user explicitly opts in.
 - Use `/tmp` for temporary files.
 
 Example commands:
 
 ```bash
-ssh docs-ssh cat /AGENTS.md
-ssh docs-ssh cat /SKILL.md
-ssh docs-ssh cat /workspace/README.md
-ssh docs-ssh find /docs -name '*.md' | head
-ssh docs-ssh grep -R "keyword" /docs
-ssh docs-ssh mkdir -p /workspace/tasks/example-task/artifacts
-ssh docs-ssh "printf '%s\n' '# Notes' '- item' > /workspace/tasks/example-task/notes.md"
-ssh docs-ssh sh -lc 'echo "- note" >> /workspace/tasks/example-task/notes.md'
-ssh docs-ssh cat /workspace/tasks/example-task/notes.md
+ssh docs-ssh cat /README.md
+ssh docs-ssh cat /project/README.md
+ssh docs-ssh find /project/docs -name '*.md' | head
+ssh docs-ssh grep -R "keyword" /project/docs
+ssh docs-ssh mkdir -p /project/tasks/example-task/artifacts
+ssh docs-ssh "printf '%s\n' '# Notes' '- item' > /project/tasks/example-task/notes.md"
+ssh docs-ssh sh -lc 'echo "- note" >> /project/tasks/example-task/notes.md'
+ssh docs-ssh cat /project/tasks/example-task/notes.md
 ```

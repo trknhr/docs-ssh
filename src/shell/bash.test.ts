@@ -18,7 +18,7 @@ afterEach(async () => {
 })
 
 describe('createBash', () => {
-  it('mounts helper files, docs, and workspace paths', async () => {
+  it('mounts helper commands, project docs, and v2 workspace paths', async () => {
     const tempDir = await createTempDir()
     const docsDir = resolve(tempDir, 'docs')
     const stateDir = resolve(tempDir, 'state')
@@ -37,18 +37,31 @@ describe('createBash', () => {
 
     expect(sourceStore.defaultSource?.name).toBe('local')
     expect(sourceStore.workspaceRootPath).toBe(workspaceDir)
-    expect(bash.getEnv().HOME).toBe('/workspace')
-    await expect(fs.readFile('/AGENTS.md', 'utf8')).resolves.toContain(
-      'Before implementing against Project Docs, inspect the mounted docs over SSH first.',
+    expect(sourceStore.homeRootPath).toBe(resolve(workspaceDir, 'home'))
+    expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'projects', 'default'))
+    expect(bash.getEnv().HOME).toBe('/home')
+    await expect(fs.readFile('/README.md', 'utf8')).resolves.toContain('/project/docs')
+    const agents = await bash.exec('agents')
+    expect(agents.stdout).toContain(
+      'Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.',
     )
-    await expect(fs.readFile('/AGENTS.md', 'utf8')).resolves.toContain(
+    expect(agents.stdout).toContain(
       'prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`',
     )
-    await expect(fs.readFile('/docs/README.md', 'utf8')).resolves.toBe('# Project Docs\n')
-    await expect(fs.readFile('/workspace/README.md', 'utf8')).resolves.toContain('# Workspace')
+    await expect(fs.readFile('/project/docs/README.md', 'utf8')).resolves.toBe('# Project Docs\n')
+    await expect(fs.readFile('/project/README.md', 'utf8')).resolves.toContain('# Project')
+    await expect(fs.readFile('/home/README.md', 'utf8')).resolves.toContain('# Home')
+    await expect(fs.readdir('/project')).resolves.toEqual([
+      'README.md',
+      'agents',
+      'docs',
+      'sources',
+      'tasks',
+      'workspace',
+    ])
   })
 
-  it('enforces workspace and docs write rules', async () => {
+  it('enforces v2 workspace and docs write rules', async () => {
     const tempDir = await createTempDir()
     const docsDir = resolve(tempDir, 'docs')
     const workspaceDir = resolve(tempDir, 'workspace')
@@ -61,18 +74,26 @@ describe('createBash', () => {
       docsName: 'Project Docs',
     })
 
-    await fs.mkdir('/workspace/tasks/example-task', { recursive: true })
-    await fs.writeFile('/workspace/tasks/example-task/notes.md', 'note')
-    await expect(readFile(resolve(workspaceDir, 'tasks', 'example-task', 'notes.md'), 'utf8')).resolves.toBe('note')
+    await fs.mkdir('/project/tasks/example-task', { recursive: true })
+    await fs.writeFile('/project/tasks/example-task/notes.md', 'note')
+    await expect(
+      readFile(resolve(workspaceDir, 'projects', 'default', 'tasks', 'example-task', 'notes.md'), 'utf8'),
+    ).resolves.toBe('note')
+
+    await fs.mkdir('/home/tasks/private-task', { recursive: true })
+    await fs.writeFile('/home/tasks/private-task/notes.md', 'private')
+    await expect(readFile(resolve(workspaceDir, 'home', 'tasks', 'private-task', 'notes.md'), 'utf8')).resolves.toBe(
+      'private',
+    )
 
     await fs.writeFile('/tmp/temp.txt', 'tmp')
     await expect(fs.readFile('/tmp/temp.txt', 'utf8')).resolves.toBe('tmp')
 
-    await expect(fs.writeFile('/workspace/README.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/workspace/README.md'",
+    await expect(fs.writeFile('/project/README.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/project/README.md'",
     )
-    await expect(fs.writeFile('/docs/new.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/docs/new.md'",
+    await expect(fs.writeFile('/project/docs/new.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/project/docs/new.md'",
     )
   })
 })
