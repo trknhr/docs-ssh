@@ -41,7 +41,7 @@ function createSourceStoreFixture(): SourceStore {
     ],
     defaultSource: projectDocs,
     workspaceMountPath: '/workspace',
-    scratchMountPath: '/scratch',
+    tmpMountPath: '/tmp',
     workspaceRootPath: '/data/workspace',
   }
 }

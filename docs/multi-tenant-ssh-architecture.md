@@ -2,7 +2,7 @@
 
 このメモは、`docs-ssh` を将来的に multi-tenant / service-account / agent-friendly に伸ばすための設計整理です。
 
-現時点の結論は、HTTP API を主な data plane にするのではなく、API は bootstrap/control plane に絞り、実作業は SSH 経由に寄せる、です。AI agent にとっては `ssh` で入った先に `/docs`, `/workspace`, `/AGENTS.md`, `/SKILL.md` が見える方が扱いやすいです。
+現時点の結論は、HTTP API を主な data plane にするのではなく、API は bootstrap/control plane に絞り、実作業は SSH 経由に寄せる、です。AI agent にとっては `ssh` で入った先に `/README.md`, `/home`, `/project`, `/projects`, `/shared`, `/tmp` が見える方が扱いやすいです。
 
 ## 用語
 
@@ -20,8 +20,10 @@
 - `instance` という概念は混乱しやすいので、論理境界は `tenant` に寄せる。
 - `users` は tenant から独立させ、`memberships` で tenant 所属と role を表す。
 - `auth_identities` と長期 `ssh_keys` は principal に紐づける。
-- `docs`, `sources`, `skills` は tenant に紐づける。
-- `workspace` は `tenant_id + principal_id` で分ける。
+- tenant は複数 project を持てる。
+- project 共有データは `/project` / `/projects/<slug>` に見せる。
+- principal 専用データは `/home` に見せる。
+- tenant 共有データは `/shared` に見せる。
 
 ## 目指すモデル
 
@@ -31,13 +33,15 @@ deployment
       ├─ tenant A
       │   ├─ human user
       │   ├─ service account
-      │   ├─ docs / sources / skills
-      │   └─ workspaces per principal
+      │   ├─ projects
+      │   ├─ shared docs / policies
+      │   └─ home per principal
       └─ tenant B
           ├─ human user
           ├─ service account
-          ├─ docs / sources / skills
-          └─ workspaces per principal
+          ├─ projects
+          ├─ shared docs / policies
+          └─ home per principal
 ```
 
 DB は概ね以下の方向に整理する。
@@ -53,7 +57,9 @@ ssh_keys
 ssh_sessions
 api_tokens
 service_account_identities
-tenant_sources
+projects
+project_sources
+tenant_shared_sources
 ```
 
 `principals.kind` はまず `user | service_account` で十分です。将来必要なら `agent_session` を足します。
@@ -203,7 +209,7 @@ service_account_identities
 
 ## SSH-First Data Plane
 
-API は `docs` や `workspace` の通常 read/write を主目的にしません。API は最初の接続情報と policy を返す control plane にします。
+API は filesystem の通常 read/write を主目的にしません。API は最初の接続情報、current project、policy を返す control plane にします。
 
 ```text
 API:
@@ -214,9 +220,11 @@ API:
   - admin 操作
 
 SSH:
-  - docs を読む
-  - workspace を読む/書く
-  - skill / agents / setup を読む
+  - `/README.md` を読む
+  - `/home` で principal 専用の作業を読む/書く
+  - `/project` で current project の docs / tasks / workspace を読む/書く
+  - `/projects` でアクセス可能な project を横断する
+  - `/shared` で tenant 共有 docs / policies を読む
   - grep / find / cat / shell 操作
   - AI agent の実作業
 ```
@@ -227,53 +235,128 @@ bootstrap manifest は以下のような内容にします。
 {
   "tenant": "default",
   "principal": "open-claw-runner",
+  "project": {
+    "slug": "foo",
+    "root": "/project"
+  },
   "ssh": {
     "host": "docs.example.com",
     "port": 2222,
     "username": "sess_...",
     "knownHosts": "docs.example.com ssh-ed25519 AAAA..."
   },
-  "mounts": {
-    "docs": "/docs",
-    "workspace": "/workspace",
-    "scratch": "/scratch"
-  },
-  "entrypoints": {
-    "agents": "/AGENTS.md",
-    "skill": "/SKILL.md",
-    "setup": "/SETUP.md"
+  "paths": {
+    "rootReadme": "/README.md",
+    "home": "/home",
+    "project": "/project",
+    "projects": "/projects",
+    "shared": "/shared",
+    "tmp": "/tmp",
+    "agentState": "/home/agents/codex",
+    "agentHandoffs": "/home/agents/codex/handoffs"
   },
   "recommendedCommands": [
-    "cat /AGENTS.md",
-    "ls /docs",
-    "find /workspace -maxdepth 2 -type f"
+    "cat /README.md",
+    "cat /project/README.md",
+    "find /project/tasks -maxdepth 2 -type f",
+    "find /home/agents/codex/handoffs -maxdepth 1 -type f"
   ]
 }
 ```
 
-## Workspace Scope
+## Home And Project Scope
 
-`/workspace` は tenant と principal ごとに分離します。
+`/home` は tenant と principal ごとに分離します。agent や人間が自由に使う永続領域はここです。
 
 ```text
 state/
   tenants/
     <tenant-id>/
-      sources.json
-      workspaces/
-        principals/
-          <principal-id>/
+      principals/
+        <principal-id>/
+          home/
 ```
 
-SSH 内では常に `/workspace` として見せますが、実体 path は authenticated principal によって変わります。
+SSH 内では常に `/home` として見せますが、実体 path は authenticated principal によって変わります。
 
 ```text
 human user A:
-  /workspace -> state/tenants/<tenant>/workspaces/principals/<principal-a>
+  /home -> state/tenants/<tenant>/principals/<principal-a>/home
 
 service account B:
-  /workspace -> state/tenants/<tenant>/workspaces/principals/<principal-b>
+  /home -> state/tenants/<tenant>/principals/<principal-b>/home
 ```
+
+`/project` は SSH session 作成時に選ばれた current project の alias です。複数 project を見る場合は `/projects/<slug>` を使います。
+
+```text
+state/
+  tenants/
+    <tenant-id>/
+      projects/
+        <project-slug>/
+          docs/
+          tasks/
+          workspace/
+          agents/
+```
+
+```text
+selected project foo:
+  /project -> state/tenants/<tenant>/projects/foo
+  /projects/foo -> state/tenants/<tenant>/projects/foo
+```
+
+`/shared` は tenant 全体で共有する docs / policies の置き場です。project に閉じない情報だけを置きます。
+
+```text
+state/
+  tenants/
+    <tenant-id>/
+      shared/
+        docs/
+        policies/
+```
+
+```text
+tenant shared:
+  /shared -> state/tenants/<tenant>/shared
+```
+
+## Agent State Scope
+
+agent の handoff / resume 用の永続領域は `/home/agents/<agent-name>` に置きます。
+
+```text
+state/
+  tenants/
+    <tenant-id>/
+      principals/
+        <principal-id>/
+          home/
+            agents/
+              <agent-name>/
+                handoffs/
+                sessions/
+                  raw/
+                artifacts/
+```
+
+project に共有したい agent 成果物は `/project/agents/<agent-name>` に置きます。
+
+```text
+state/
+  tenants/
+    <tenant-id>/
+      projects/
+        <project-slug>/
+          agents/
+            <agent-name>/
+              handoffs/
+              artifacts/
+```
+
+raw session data は `/home/agents/<agent-name>/sessions/raw` だけに置きます。`/project` や `/shared` に raw session data を置くのは避けます。
 
 ## Scopes
 
@@ -281,17 +364,21 @@ service account B:
 
 ```text
 bootstrap:read
-docs:read
-skills:read
-workspace:read
-workspace:write
+home:read
+home:write
+project:read
+project:write
+projects:read
+shared:read
 sources:read
 sources:write
 ssh_sessions:create
 admin
 ```
 
-SSH session 作成時には、API token / OIDC exchange で得た principal と scopes を session にコピーします。SSH 接続後の shell では、その scopes に応じて mount や write path を制限します。
+SSH session 作成時には、API token / OIDC exchange で得た principal, current project, scopes を session にコピーします。SSH 接続後の shell では、その scopes に応じて mount や write path を制限します。
+
+project write は project membership / role によって制限します。個人用の `/home` write と、project 共有の `/project` write は別権限として扱います。
 
 ## 実装順
 
@@ -299,16 +386,20 @@ SSH session 作成時には、API token / OIDC exchange で得た principal と 
 2. `principals` を追加する
 3. `users` を `principal_id` にぶら下げる
 4. `ssh_keys` を `user_id` から `principal_id` に寄せる
-5. `workspace` を `tenant_id + principal_id` で分離する
-6. `service_accounts` を追加する
-7. `api_tokens` を追加する
-8. `ssh_sessions` を追加する
-9. `POST /api/v1/ssh-sessions` を追加する
-10. SSH publickey auth で `ssh_sessions` を見る
-11. `GET /api/v1/bootstrap` を追加する
-12. service account OIDC federation を追加する
+5. `projects` を追加する
+6. `/home` を `tenant_id + principal_id` で分離する
+7. `/project` と `/projects/<slug>` を current project / accessible projects として mount する
+8. `/shared` を tenant shared area として mount する
+9. root `/README.md`, `/home/README.md`, `/project/README.md`, `/shared/README.md` を生成する
+10. `service_accounts` を追加する
+11. `api_tokens` を追加する
+12. `ssh_sessions` を追加する
+13. `POST /api/v1/ssh-sessions` を追加する
+14. SSH publickey auth で `ssh_sessions` を見る
+15. SSH helper として `bootstrap --json` を追加する
+16. service account OIDC federation を追加する
 
-最初の大きな境界変更は `workspace` の分離です。これができると、human user と service account の両方を同じ SSH-first data plane に載せやすくなります。
+最初の大きな境界変更は `/home` の分離と root README の導入です。これができると、human user と service account の両方を同じ SSH-first filesystem に載せやすくなります。
 
 ## 残すもの
 
@@ -318,7 +409,7 @@ SSH session 作成時には、API token / OIDC exchange で得た principal と 
 
 ## 現時点の判断
 
-- API-only docs/workspace access にはしない。
+- API-only filesystem access にはしない。
 - SSH を AI agent 用 data plane として主役にする。
 - API は session-manager 的な役割に寄せる。
 - 人間 user も service account も、最終的には短命 SSH session を主導線にする。
@@ -326,7 +417,7 @@ SSH session 作成時には、API token / OIDC exchange で得た principal と 
 
 ## Tenant Filesystem Model
 
-現行の `/docs`, `/workspace`, `/tasks` は用途が曖昧になりやすいので、後方互換は気にせず廃止する方向にします。特に `/workspace` は個人用なのか project 共有なのかが path から分かりにくいです。
+現行の flat な top-level mount は用途が曖昧になりやすいので、後方互換は気にせず廃止する方向にします。特に個人用領域と project 共有領域が path から分かりにくいです。
 
 新しい SSH root は、個人領域と project 共有領域が top-level で分かる構成にします。
 
@@ -337,7 +428,7 @@ SSH session 作成時には、API token / OIDC exchange で得た principal と 
   project/
   projects/
   shared/
-  scratch/
+  tmp/
 ```
 
 各 directory の意味は以下です。
@@ -358,8 +449,8 @@ SSH session 作成時には、API token / OIDC exchange で得た principal と 
 /shared/
   tenant 全体で共有される docs / notes / policies。
 
-/scratch/
-  session-local または短命の一時領域。永続保存を期待しない。
+/tmp/
+  session-local または短命の一時領域。永続保存を期待しない。handoff / resume 用の成果物は `/home` か `/project` に移す。
 ```
 
 `/home` は principal ごとに実体 path を分けます。SSH 内では常に `/home` として見せます。
@@ -421,10 +512,12 @@ selected project foo:
     README.md
     docs/
     policies/
-  scratch/
+  tmp/
 ```
 
-`skills/` directory はいったん作らないことにします。agent native skill の install / share は runtime ごとの差が大きく、docs-ssh の core filesystem に入れると複雑度が上がるためです。project 固有の作業手順や instruction は、当面 `/README.md`, `/project/README.md`, `/project/docs/` に寄せます。
+`skills/` directory は SSH filesystem にはいったん作らないことにします。project 固有の作業手順や instruction は、当面 `/README.md`, `/project/README.md`, `/project/docs/` に寄せます。
+
+一方で、agent 側に入れる薄い integration skill は初期から提供します。これは docs-ssh server 上の skill directory を直接読ませるものではなく、Codex / Claude / Cursor / Gemini などのローカル agent runtime に install する entrypoint です。
 
 `context.json` も初期実装では作りません。machine-readable metadata が必要になったら、`bootstrap --json` の返却値として足します。directory policy はまず `/README.md` に集約します。
 
@@ -495,7 +588,7 @@ ssh docs-ssh bootstrap --agent codex --project foo --task onboarding-flow --json
     "project": "/project",
     "projects": "/projects",
     "shared": "/shared",
-    "scratch": "/scratch",
+    "tmp": "/tmp",
     "agentState": "/home/agents/codex",
     "agentHandoffs": "/home/agents/codex/handoffs",
     "agentRawSessions": "/home/agents/codex/sessions/raw"
@@ -510,9 +603,9 @@ ssh docs-ssh bootstrap --agent codex --project foo --task onboarding-flow --json
 
 ## Agent Integration Scope
 
-agent native skill / plugin の共有は、docs-ssh core にはまだ入れません。Codex, Claude, Cursor, Gemini などで install 形式が違い、remote skill directory を直接読ませる設計は複雑になりやすいためです。
+agent native skill / plugin は初期から提供します。ただし、docs-ssh core filesystem に remote skill directory を持たせて各 runtime に直接読ませる設計にはしません。Codex, Claude, Cursor, Gemini などで install 形式が違うため、docs-ssh 側は thin skill を配布し、project 固有の instruction は SSH 上の README / docs に置きます。
 
-当面の docs-ssh integration は薄くします。
+当面の docs-ssh integration は薄くします。責務は「bootstrap して、読むべき README を読み、決まった場所に handoff を残す」だけです。
 
 ```text
 local agent integration:
@@ -520,11 +613,83 @@ local agent integration:
   - project / task を bootstrap に渡せる
   - `/README.md` と `/project/README.md` を読む
   - handoff を `/home/agents/<agent>/handoffs/` に書く
+  - raw session data は user opt-in なしに保存しない
 
 docs-ssh server:
   - native skill directory は提供しない
   - MCP server も初期実装では提供しない
   - filesystem と README と SSH helper command を契約にする
+  - thin skill の template / export command は提供する
 ```
 
-これにより、docs-ssh は agent runtime に依存しない SSH-first filesystem として保ちます。agent-specific な便利機能は、必要になった時に外側の wrapper / plugin / installer で足します。
+配布経路は複数持てるようにします。
+
+```text
+npx installer:
+  npx docs-ssh-skills install codex --alias docs-ssh
+  npx docs-ssh-skills install claude --alias docs-ssh
+
+gh extension:
+  gh extension install trknhr/gh-docs-ssh
+  gh docs-ssh skill install codex --alias docs-ssh
+
+ssh export fallback:
+  ssh docs-ssh skill --agent codex > ~/.codex/skills/docs-ssh/SKILL.md
+```
+
+`npx` と `gh` は installer / updater として扱います。runtime が実際に読む skill file はローカルに置きます。これにより、agent runtime の skill discovery は通常通り local filesystem に任せられます。
+
+最初に提供する skill は以下の内容にします。
+
+```md
+---
+name: docs-ssh
+description: Use when the user asks to inspect, update, or continue work in a docs-ssh project or task over SSH.
+---
+
+# docs-ssh
+
+Use docs-ssh as the SSH-first filesystem for project docs, tasks, private work, and handoffs.
+
+## Start
+
+1. Determine the requested project and task from the user request.
+2. Run `ssh docs-ssh bootstrap --agent codex --project <project> --task <task> --json`.
+3. Read `/README.md`.
+4. Read `/project/README.md`.
+5. If a task was provided, inspect `/project/tasks/<task>/`.
+
+## Paths
+
+- Use `/home` for private durable work for the current principal.
+- Use `/home/agents/codex/handoffs/` for resume summaries.
+- Use `/project` for the selected project.
+- Use `/project/tasks/<task>/` for project-scoped task work.
+- Use `/project/docs/` for project docs.
+- Use `/shared` only for tenant-wide docs and policies.
+- Use `/tmp` for temporary files.
+
+## Rules
+
+- Do not assume legacy top-level docs, tasks, or workspace paths exist.
+- Do not use HTTP APIs for normal docs or workspace file operations.
+- Do not save raw local agent session data unless the user explicitly opts in.
+- If saving raw session data is requested, write it only under `/home/agents/codex/sessions/raw/`.
+- Before finishing, write a handoff summary under `/home/agents/codex/handoffs/`.
+
+## Handoff
+
+The handoff should include:
+
+- user request
+- selected project and task
+- files read
+- files changed
+- current status
+- next action
+- blockers or open questions
+```
+
+agent 名だけは installer が置換します。Codex なら `codex`、Claude なら `claude` です。skill の本質は全 runtime で同じにし、各 runtime 固有の frontmatter / install path だけを installer 側で吸収します。
+
+これにより、docs-ssh は agent runtime に依存しない SSH-first filesystem として保ちつつ、初回 UX では `npx` / `gh` / `ssh export` で薄い skill をすぐ入れられます。

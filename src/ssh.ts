@@ -6,7 +6,7 @@
 import type { AddressInfo } from 'node:net'
 import { Chalk } from 'chalk'
 import ssh2, { type PublicKeyAuthContext, type ServerChannel } from 'ssh2'
-import { createAuthStore, type AuthUser } from './auth/store.js'
+import { createAuthStore, type AuthPrincipalSession } from './auth/store.js'
 import { normalizeSshPublicKey } from './auth/ssh-key.js'
 import { createBash } from './shell/bash.js'
 import { createShellSession } from './shell/session.js'
@@ -32,9 +32,9 @@ export interface SSHServerOptions {
 }
 
 interface AuthenticatedPrincipal {
+  auth: AuthPrincipalSession
   fingerprint: string
   requestedUsername: string
-  user: AuthUser
 }
 
 function getExecStdinGraceMs(): number {
@@ -59,8 +59,9 @@ function createBanner(docsName: string, principal: AuthenticatedPrincipal): stri
     '\r\n',
     `${docsName} is mounted read-only for shell-based exploration.\r\n`,
     '\r\n',
-    `${chalkInstance.dim('Authenticated as:')} ${principal.user.login} (${principal.user.displayName})\r\n`,
-    ...(principal.requestedUsername !== principal.user.login
+    `${chalkInstance.dim('Authenticated as:')} ${principal.auth.login} (${principal.auth.displayName})\r\n`,
+    `${chalkInstance.dim('Tenant:')} ${principal.auth.tenant.slug}\r\n`,
+    ...(principal.requestedUsername !== principal.auth.login
       ? [`${chalkInstance.dim('Requested SSH user:')} ${principal.requestedUsername}\r\n`]
       : []),
     '\r\n',
@@ -160,14 +161,18 @@ async function collectExecStdin(
 
 function createSessionEnv(principal: AuthenticatedPrincipal): Record<string, string> {
   return {
-    DOCS_SSH_AUTH_DISPLAY_NAME: principal.user.displayName,
+    DOCS_SSH_AUTH_DISPLAY_NAME: principal.auth.displayName,
     DOCS_SSH_AUTH_FINGERPRINT: principal.fingerprint,
-    DOCS_SSH_AUTH_LOGIN: principal.user.login,
+    DOCS_SSH_AUTH_LOGIN: principal.auth.login,
     DOCS_SSH_AUTH_METHOD: 'publickey',
-    DOCS_SSH_AUTH_USER_ID: principal.user.id,
+    DOCS_SSH_AUTH_PRINCIPAL_ID: principal.auth.principal.id,
+    DOCS_SSH_AUTH_PRINCIPAL_KIND: principal.auth.principal.kind,
+    DOCS_SSH_AUTH_TENANT_ID: principal.auth.tenant.id,
+    DOCS_SSH_AUTH_TENANT_SLUG: principal.auth.tenant.slug,
+    DOCS_SSH_AUTH_USER_ID: principal.auth.user?.id ?? '',
     DOCS_SSH_REQUESTED_USERNAME: principal.requestedUsername,
-    LOGNAME: principal.user.login,
-    USER: principal.user.login,
+    LOGNAME: principal.auth.login,
+    USER: principal.auth.login,
   }
 }
 
@@ -179,8 +184,8 @@ function authenticateWithPublicKey(
     algo: ctx.key.algo,
     data: ctx.key.data,
   })
-  const user = authStore.findUserBySshFingerprint(normalizedKey.fingerprint)
-  if (!user) return null
+  const auth = authStore.findPrincipalBySshFingerprint(normalizedKey.fingerprint)
+  if (!auth) return null
 
   if (ctx.signature && ctx.blob) {
     if (normalizedKey.parsedKey.verify(ctx.blob, ctx.signature, ctx.hashAlgo) !== true) {
@@ -191,9 +196,9 @@ function authenticateWithPublicKey(
   }
 
   return {
+    auth,
     fingerprint: normalizedKey.fingerprint,
     requestedUsername: ctx.username,
-    user,
   }
 }
 

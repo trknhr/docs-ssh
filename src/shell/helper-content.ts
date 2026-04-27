@@ -37,7 +37,7 @@ function createWorkspaceList(sourceStore: SourceStore): string[] {
     `- \`${sourceStore.workspaceMountPath}/decisions\` -> durable cross-task decisions`,
     `- \`${sourceStore.workspaceMountPath}/archive\` -> completed work and retired notes`,
     `- \`${sourceStore.workspaceMountPath}/shared\` -> reserved for future shared use`,
-    `- \`${sourceStore.scratchMountPath}\` -> temporary session-local files`,
+    `- \`${sourceStore.tmpMountPath}\` -> temporary session-local files`,
   ]
 }
 
@@ -49,7 +49,7 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
     '- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.',
     '- After writing a workspace file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.',
     `- Treat \`${sourceStore.workspaceMountPath}/shared\` as reserved for future shared workflows.`,
-    `- Use \`${sourceStore.scratchMountPath}\` for temporary files.`,
+    `- Use \`${sourceStore.tmpMountPath}\` for temporary files.`,
   ]
 }
 

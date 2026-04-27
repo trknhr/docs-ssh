@@ -192,7 +192,7 @@ export function buildSourceStore(registry: SourceRegistry): SourceStore {
     mounts,
     defaultSource,
     workspaceMountPath: '/workspace',
-    scratchMountPath: '/scratch',
+    tmpMountPath: '/tmp',
     workspaceRootPath: '',
   }
 }

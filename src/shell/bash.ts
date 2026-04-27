@@ -106,11 +106,10 @@ export async function createBash(opts: CreateBashOptions = {}) {
       '/bin',
       '/dev',
       '/proc',
-      '/tmp',
+      sourceStore.tmpMountPath,
       '/usr',
       '/usr/bin',
       ...getWorkspaceWritablePaths(sourceStore.workspaceMountPath),
-      sourceStore.scratchMountPath,
     ],
     initialFiles: {
       '/AGENTS.md': agentsMarkdown,
@@ -127,7 +126,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
         filesystem: new ReadWriteFs({ root: sourceStore.workspaceRootPath }),
       },
       {
-        mountPoint: sourceStore.scratchMountPath,
+        mountPoint: sourceStore.tmpMountPath,
         filesystem: new InMemoryFs(),
       },
     ],

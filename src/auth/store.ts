@@ -4,20 +4,30 @@ import { dirname, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { normalizeSshPublicKey } from './ssh-key.js'
 
-const AUTH_SCHEMA_VERSION = 1
+const AUTH_SCHEMA_VERSION = 2
 const IDENTIFIER_PATTERN = /[^a-z0-9-]+/g
-const DEFAULT_INSTANCE_SLUG = 'default'
-const DEFAULT_INSTANCE_NAME = 'Personal docs-ssh'
+const DEFAULT_TENANT_SLUG = 'default'
+const DEFAULT_TENANT_NAME = 'Personal docs-ssh'
 const DEFAULT_OWNER_LOGIN = 'owner'
 const DEFAULT_OWNER_NAME = 'Owner'
 
 export type AuthMembershipRole = 'owner' | 'admin' | 'member'
+export type AuthPrincipalKind = 'user' | 'service_account'
 
-export interface AuthInstance {
+export interface AuthTenant {
   createdAt: string
   displayName: string
   id: string
   slug: string
+}
+
+export type AuthInstance = AuthTenant
+
+export interface AuthPrincipal {
+  createdAt: string
+  displayName: string
+  id: string
+  kind: AuthPrincipalKind
 }
 
 export interface AuthUser {
@@ -25,13 +35,16 @@ export interface AuthUser {
   displayName: string
   id: string
   login: string
+  principalId: string
 }
 
 export interface AuthMembership {
   createdAt: string
   instanceId: string
+  principalId: string
   role: AuthMembershipRole
-  userId: string
+  tenantId: string
+  userId: string | null
 }
 
 export interface AuthIdentity {
@@ -39,9 +52,10 @@ export interface AuthIdentity {
   email: string | null
   id: string
   issuer: string
+  principalId: string
   provider: string
   subject: string
-  userId: string
+  userId: string | null
 }
 
 export interface AuthSshKey {
@@ -50,13 +64,25 @@ export interface AuthSshKey {
   fingerprint: string
   id: string
   name: string | null
+  principalId: string
   publicKey: string
-  userId: string
+  userId: string | null
+}
+
+export interface AuthPrincipalSession {
+  displayName: string
+  login: string
+  membership: AuthMembership
+  principal: AuthPrincipal
+  tenant: AuthTenant
+  user: AuthUser | null
 }
 
 export interface SingleTenantOwner {
   instance: AuthInstance
   membership: AuthMembership
+  principal: AuthPrincipal
+  tenant: AuthTenant
   user: AuthUser
 }
 
@@ -90,11 +116,57 @@ export interface AddSshKeyInput {
   userLogin?: string
 }
 
-interface InstanceRow extends AuthInstance {}
-interface MembershipRow extends AuthMembership {}
-interface UserRow extends AuthUser {}
-interface AuthIdentityRow extends AuthIdentity {}
-interface AuthSshKeyRow extends AuthSshKey {}
+interface TenantRow {
+  createdAt: string
+  displayName: string
+  id: string
+  slug: string
+}
+
+interface PrincipalRow {
+  createdAt: string
+  displayName: string
+  id: string
+  kind: AuthPrincipalKind
+}
+
+interface UserRow {
+  createdAt: string
+  displayName: string
+  id: string
+  login: string
+  principalId: string
+}
+
+interface MembershipRow {
+  createdAt: string
+  principalId: string
+  role: AuthMembershipRole
+  tenantId: string
+  userId: string | null
+}
+
+interface AuthIdentityRow {
+  createdAt: string
+  email: string | null
+  id: string
+  issuer: string
+  principalId: string
+  provider: string
+  subject: string
+  userId: string | null
+}
+
+interface AuthSshKeyRow {
+  algorithm: string
+  createdAt: string
+  fingerprint: string
+  id: string
+  name: string | null
+  principalId: string
+  publicKey: string
+  userId: string | null
+}
 
 function normalizeIdentifier(value: string | undefined, fallback: string): string {
   return value
@@ -132,14 +204,37 @@ function migrateDatabase(database: Database.Database): void {
     throw new Error(`Unsupported auth schema version: ${currentVersion}`)
   }
 
-  if (currentVersion >= 1) {
+  if (currentVersion === AUTH_SCHEMA_VERSION) {
     return
   }
 
+  if (currentVersion === 0) {
+    createSchemaV2(database)
+    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
+    return
+  }
+
+  if (currentVersion === 1) {
+    migrateSchemaV1ToV2(database)
+    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
+    return
+  }
+
+  throw new Error(`Unsupported auth schema version: ${currentVersion}`)
+}
+
+function createSchemaV2(database: Database.Database): void {
   database.exec(`
-    CREATE TABLE instances (
+    CREATE TABLE tenants (
       id TEXT PRIMARY KEY,
       slug TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE principals (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK(kind IN ('user', 'service_account')),
       display_name TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -148,20 +243,21 @@ function migrateDatabase(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       login TEXT NOT NULL UNIQUE,
       display_name TEXT NOT NULL,
+      principal_id TEXT NOT NULL UNIQUE REFERENCES principals(id) ON DELETE CASCADE,
       created_at TEXT NOT NULL
     );
 
     CREATE TABLE memberships (
-      instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
       role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
       created_at TEXT NOT NULL,
-      PRIMARY KEY (instance_id, user_id)
+      PRIMARY KEY (tenant_id, principal_id)
     );
 
     CREATE TABLE auth_identities (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
       provider TEXT NOT NULL,
       issuer TEXT NOT NULL,
       subject TEXT NOT NULL,
@@ -172,7 +268,7 @@ function migrateDatabase(database: Database.Database): void {
 
     CREATE TABLE ssh_keys (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
       name TEXT,
       algorithm TEXT NOT NULL,
       public_key TEXT NOT NULL,
@@ -180,15 +276,292 @@ function migrateDatabase(database: Database.Database): void {
       created_at TEXT NOT NULL
     );
 
-    CREATE INDEX idx_memberships_user_id ON memberships(user_id);
-    CREATE INDEX idx_auth_identities_user_id ON auth_identities(user_id);
-    CREATE INDEX idx_ssh_keys_user_id ON ssh_keys(user_id);
-  `)
+    CREATE TABLE service_accounts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL UNIQUE REFERENCES principals(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, slug)
+    );
 
-  database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
+    CREATE TABLE service_account_identities (
+      id TEXT PRIMARY KEY,
+      service_account_id TEXT NOT NULL REFERENCES service_accounts(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      issuer TEXT NOT NULL,
+      audience TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      claim_rules TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (provider, issuer, audience, subject)
+    );
+
+    CREATE TABLE api_tokens (
+      id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      name TEXT,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      revoked_at TEXT
+    );
+
+    CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, slug)
+    );
+
+    CREATE TABLE project_sources (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_name TEXT NOT NULL,
+      mount_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (project_id, source_name)
+    );
+
+    CREATE TABLE tenant_shared_sources (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      source_name TEXT NOT NULL,
+      mount_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, source_name)
+    );
+
+    CREATE TABLE ssh_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      current_project_slug TEXT,
+      username TEXT NOT NULL UNIQUE,
+      algorithm TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+
+    CREATE INDEX idx_memberships_principal_id ON memberships(principal_id);
+    CREATE INDEX idx_auth_identities_principal_id ON auth_identities(principal_id);
+    CREATE INDEX idx_ssh_keys_principal_id ON ssh_keys(principal_id);
+    CREATE INDEX idx_service_accounts_principal_id ON service_accounts(principal_id);
+    CREATE INDEX idx_api_tokens_principal_id ON api_tokens(principal_id);
+    CREATE INDEX idx_projects_tenant_id ON projects(tenant_id);
+    CREATE INDEX idx_ssh_sessions_fingerprint ON ssh_sessions(fingerprint);
+    CREATE INDEX idx_ssh_sessions_principal_id ON ssh_sessions(principal_id);
+  `)
 }
 
-function parseInstance(row: InstanceRow): AuthInstance {
+function migrateSchemaV1ToV2(database: Database.Database): void {
+  const users = database
+    .prepare(
+      `SELECT id, login, display_name AS displayName, created_at AS createdAt
+       FROM users`,
+    )
+    .all() as Array<Omit<UserRow, 'principalId'>>
+
+  const tx = database.transaction(() => {
+    database.exec(`
+      CREATE TABLE tenants (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      INSERT INTO tenants (id, slug, display_name, created_at)
+      SELECT id, slug, display_name, created_at FROM instances;
+
+      CREATE TABLE principals (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('user', 'service_account')),
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `)
+
+    const insertPrincipal = database.prepare(
+      `INSERT INTO principals (id, kind, display_name, created_at)
+       VALUES (?, 'user', ?, ?)`,
+    )
+    for (const user of users) {
+      insertPrincipal.run(user.id, user.displayName, user.createdAt)
+    }
+
+    database.exec(`
+      ALTER TABLE users RENAME TO users_v1;
+
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        login TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        principal_id TEXT NOT NULL UNIQUE REFERENCES principals(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+      );
+
+      INSERT INTO users (id, login, display_name, principal_id, created_at)
+      SELECT id, login, display_name, id, created_at FROM users_v1;
+
+      ALTER TABLE memberships RENAME TO memberships_v1;
+
+      CREATE TABLE memberships (
+        tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, principal_id)
+      );
+
+      INSERT INTO memberships (tenant_id, principal_id, role, created_at)
+      SELECT m.instance_id, u.principal_id, m.role, m.created_at
+      FROM memberships_v1 m
+      INNER JOIN users u ON u.id = m.user_id;
+
+      ALTER TABLE auth_identities RENAME TO auth_identities_v1;
+
+      CREATE TABLE auth_identities (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        issuer TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        email TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (provider, issuer, subject)
+      );
+
+      INSERT INTO auth_identities (id, principal_id, provider, issuer, subject, email, created_at)
+      SELECT ai.id, u.principal_id, ai.provider, ai.issuer, ai.subject, ai.email, ai.created_at
+      FROM auth_identities_v1 ai
+      INNER JOIN users u ON u.id = ai.user_id;
+
+      ALTER TABLE ssh_keys RENAME TO ssh_keys_v1;
+
+      CREATE TABLE ssh_keys (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+        name TEXT,
+        algorithm TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+
+      INSERT INTO ssh_keys (id, principal_id, name, algorithm, public_key, fingerprint, created_at)
+      SELECT sk.id, u.principal_id, sk.name, sk.algorithm, sk.public_key, sk.fingerprint, sk.created_at
+      FROM ssh_keys_v1 sk
+      INNER JOIN users u ON u.id = sk.user_id;
+
+      DROP TABLE ssh_keys_v1;
+      DROP TABLE auth_identities_v1;
+      DROP TABLE memberships_v1;
+      DROP TABLE users_v1;
+      DROP TABLE instances;
+    `)
+
+    createSchemaV2Extensions(database)
+  })
+
+  tx()
+}
+
+function createSchemaV2Extensions(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE service_accounts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL UNIQUE REFERENCES principals(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, slug)
+    );
+
+    CREATE TABLE service_account_identities (
+      id TEXT PRIMARY KEY,
+      service_account_id TEXT NOT NULL REFERENCES service_accounts(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      issuer TEXT NOT NULL,
+      audience TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      claim_rules TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (provider, issuer, audience, subject)
+    );
+
+    CREATE TABLE api_tokens (
+      id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      name TEXT,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      revoked_at TEXT
+    );
+
+    CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, slug)
+    );
+
+    CREATE TABLE project_sources (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      source_name TEXT NOT NULL,
+      mount_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (project_id, source_name)
+    );
+
+    CREATE TABLE tenant_shared_sources (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      source_name TEXT NOT NULL,
+      mount_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, source_name)
+    );
+
+    CREATE TABLE ssh_sessions (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      current_project_slug TEXT,
+      username TEXT NOT NULL UNIQUE,
+      algorithm TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+
+    CREATE INDEX idx_memberships_principal_id ON memberships(principal_id);
+    CREATE INDEX idx_auth_identities_principal_id ON auth_identities(principal_id);
+    CREATE INDEX idx_ssh_keys_principal_id ON ssh_keys(principal_id);
+    CREATE INDEX idx_service_accounts_principal_id ON service_accounts(principal_id);
+    CREATE INDEX idx_api_tokens_principal_id ON api_tokens(principal_id);
+    CREATE INDEX idx_projects_tenant_id ON projects(tenant_id);
+    CREATE INDEX idx_ssh_sessions_fingerprint ON ssh_sessions(fingerprint);
+    CREATE INDEX idx_ssh_sessions_principal_id ON ssh_sessions(principal_id);
+  `)
+}
+
+function parseTenant(row: TenantRow): AuthTenant {
   return {
     createdAt: row.createdAt,
     displayName: row.displayName,
@@ -197,11 +570,22 @@ function parseInstance(row: InstanceRow): AuthInstance {
   }
 }
 
+function parsePrincipal(row: PrincipalRow): AuthPrincipal {
+  return {
+    createdAt: row.createdAt,
+    displayName: row.displayName,
+    id: row.id,
+    kind: row.kind,
+  }
+}
+
 function parseMembership(row: MembershipRow): AuthMembership {
   return {
     createdAt: row.createdAt,
-    instanceId: row.instanceId,
+    instanceId: row.tenantId,
+    principalId: row.principalId,
     role: row.role,
+    tenantId: row.tenantId,
     userId: row.userId,
   }
 }
@@ -212,6 +596,7 @@ function parseUser(row: UserRow): AuthUser {
     displayName: row.displayName,
     id: row.id,
     login: row.login,
+    principalId: row.principalId,
   }
 }
 
@@ -221,6 +606,7 @@ function parseAuthIdentity(row: AuthIdentityRow): AuthIdentity {
     email: row.email,
     id: row.id,
     issuer: row.issuer,
+    principalId: row.principalId,
     provider: row.provider,
     subject: row.subject,
     userId: row.userId,
@@ -234,15 +620,52 @@ function parseAuthSshKey(row: AuthSshKeyRow): AuthSshKey {
     fingerprint: row.fingerprint,
     id: row.id,
     name: row.name,
+    principalId: row.principalId,
     publicKey: row.publicKey,
     userId: row.userId,
   }
 }
 
+function getTenantById(database: Database.Database, tenantId: string): AuthTenant | null {
+  const row = database
+    .prepare(
+      `SELECT id, slug, display_name AS displayName, created_at AS createdAt
+       FROM tenants
+       WHERE id = ?`,
+    )
+    .get(tenantId) as TenantRow | undefined
+
+  return row ? parseTenant(row) : null
+}
+
+function getTenantBySlug(database: Database.Database, slug: string): AuthTenant | null {
+  const row = database
+    .prepare(
+      `SELECT id, slug, display_name AS displayName, created_at AS createdAt
+       FROM tenants
+       WHERE slug = ?`,
+    )
+    .get(slug) as TenantRow | undefined
+
+  return row ? parseTenant(row) : null
+}
+
+function getPrincipalById(database: Database.Database, principalId: string): AuthPrincipal | null {
+  const row = database
+    .prepare(
+      `SELECT id, kind, display_name AS displayName, created_at AS createdAt
+       FROM principals
+       WHERE id = ?`,
+    )
+    .get(principalId) as PrincipalRow | undefined
+
+  return row ? parsePrincipal(row) : null
+}
+
 function getUserByLogin(database: Database.Database, login: string): AuthUser | null {
   const row = database
     .prepare(
-      `SELECT id, login, display_name AS displayName, created_at AS createdAt
+      `SELECT id, login, display_name AS displayName, principal_id AS principalId, created_at AS createdAt
        FROM users
        WHERE login = ?`,
     )
@@ -254,11 +677,23 @@ function getUserByLogin(database: Database.Database, login: string): AuthUser | 
 function getUserById(database: Database.Database, userId: string): AuthUser | null {
   const row = database
     .prepare(
-      `SELECT id, login, display_name AS displayName, created_at AS createdAt
+      `SELECT id, login, display_name AS displayName, principal_id AS principalId, created_at AS createdAt
        FROM users
        WHERE id = ?`,
     )
     .get(userId) as UserRow | undefined
+
+  return row ? parseUser(row) : null
+}
+
+function getUserByPrincipalId(database: Database.Database, principalId: string): AuthUser | null {
+  const row = database
+    .prepare(
+      `SELECT id, login, display_name AS displayName, principal_id AS principalId, created_at AS createdAt
+       FROM users
+       WHERE principal_id = ?`,
+    )
+    .get(principalId) as UserRow | undefined
 
   return row ? parseUser(row) : null
 }
@@ -274,9 +709,9 @@ function requireUserByLogin(database: Database.Database, login: string): AuthUse
 function listOwnerUsers(database: Database.Database): AuthUser[] {
   return database
     .prepare(
-      `SELECT DISTINCT u.id, u.login, u.display_name AS displayName, u.created_at AS createdAt
+      `SELECT DISTINCT u.id, u.login, u.display_name AS displayName, u.principal_id AS principalId, u.created_at AS createdAt
        FROM users u
-       INNER JOIN memberships m ON m.user_id = u.id
+       INNER JOIN memberships m ON m.principal_id = u.principal_id
        WHERE m.role = 'owner'
        ORDER BY m.created_at ASC, u.created_at ASC`,
     )
@@ -308,9 +743,10 @@ function getIdentityByKey(
 ): AuthIdentity | null {
   const row = database
     .prepare(
-      `SELECT id, user_id AS userId, provider, issuer, subject, email, created_at AS createdAt
-       FROM auth_identities
-       WHERE provider = ? AND issuer = ? AND subject = ?`,
+      `SELECT ai.id, ai.principal_id AS principalId, u.id AS userId, ai.provider, ai.issuer, ai.subject, ai.email, ai.created_at AS createdAt
+       FROM auth_identities ai
+       LEFT JOIN users u ON u.principal_id = ai.principal_id
+       WHERE ai.provider = ? AND ai.issuer = ? AND ai.subject = ?`,
     )
     .get(params.provider, params.issuer, params.subject) as AuthIdentityRow | undefined
 
@@ -320,13 +756,34 @@ function getIdentityByKey(
 function getSshKeyByFingerprint(database: Database.Database, fingerprint: string): AuthSshKey | null {
   const row = database
     .prepare(
-      `SELECT id, user_id AS userId, name, algorithm, public_key AS publicKey, fingerprint, created_at AS createdAt
-       FROM ssh_keys
-       WHERE fingerprint = ?`,
+      `SELECT sk.id, sk.principal_id AS principalId, u.id AS userId, sk.name, sk.algorithm, sk.public_key AS publicKey, sk.fingerprint, sk.created_at AS createdAt
+       FROM ssh_keys sk
+       LEFT JOIN users u ON u.principal_id = sk.principal_id
+       WHERE sk.fingerprint = ?`,
     )
     .get(fingerprint) as AuthSshKeyRow | undefined
 
   return row ? parseAuthSshKey(row) : null
+}
+
+function getPrimaryMembershipForPrincipal(
+  database: Database.Database,
+  principalId: string,
+): AuthMembership | null {
+  const row = database
+    .prepare(
+      `SELECT m.tenant_id AS tenantId, m.principal_id AS principalId, u.id AS userId, m.role, m.created_at AS createdAt
+       FROM memberships m
+       LEFT JOIN users u ON u.principal_id = m.principal_id
+       WHERE m.principal_id = ?
+       ORDER BY
+         CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+         m.created_at ASC
+       LIMIT 1`,
+    )
+    .get(principalId) as MembershipRow | undefined
+
+  return row ? parseMembership(row) : null
 }
 
 function countUsers(database: Database.Database): number {
@@ -343,6 +800,7 @@ export interface AuthStore {
   close(): void
   dbPath: string
   ensureSingleTenantOwner(opts?: EnsureSingleTenantOwnerOptions): SingleTenantOwner
+  findPrincipalBySshFingerprint(fingerprint: string): AuthPrincipalSession | null
   findUserByAuthIdentity(params: Pick<AuthIdentity, 'issuer' | 'provider' | 'subject'>): AuthUser | null
   findUserByLogin(login: string): AuthUser | null
   findUserBySshFingerprint(fingerprint: string): AuthUser | null
@@ -361,16 +819,10 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
   const ensureSingleTenantOwnerTx = database.transaction(
     (input: Required<EnsureSingleTenantOwnerOptions>): SingleTenantOwner => {
       const now = createTimestamp()
-      let instance = database
-        .prepare(
-          `SELECT id, slug, display_name AS displayName, created_at AS createdAt
-           FROM instances
-           WHERE slug = ?`,
-        )
-        .get(input.instanceSlug) as InstanceRow | undefined
+      let tenant = getTenantBySlug(database, input.instanceSlug)
 
-      if (!instance) {
-        instance = {
+      if (!tenant) {
+        const tenantRow: TenantRow = {
           createdAt: now,
           displayName: input.instanceName,
           id: randomUUID(),
@@ -378,58 +830,79 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         }
         database
           .prepare(
-            `INSERT INTO instances (id, slug, display_name, created_at)
+            `INSERT INTO tenants (id, slug, display_name, created_at)
              VALUES (?, ?, ?, ?)`,
           )
-          .run(instance.id, instance.slug, instance.displayName, instance.createdAt)
+          .run(tenantRow.id, tenantRow.slug, tenantRow.displayName, tenantRow.createdAt)
+        tenant = parseTenant(tenantRow)
       }
 
-      let user = database
-        .prepare(
-          `SELECT id, login, display_name AS displayName, created_at AS createdAt
-           FROM users
-           WHERE login = ?`,
-        )
-        .get(input.ownerLogin) as UserRow | undefined
+      let user = getUserByLogin(database, input.ownerLogin)
+      let principal: AuthPrincipal
 
       if (!user) {
-        user = {
+        const principalRow: PrincipalRow = {
+          createdAt: now,
+          displayName: input.ownerName,
+          id: randomUUID(),
+          kind: 'user',
+        }
+        database
+          .prepare(
+            `INSERT INTO principals (id, kind, display_name, created_at)
+             VALUES (?, ?, ?, ?)`,
+          )
+          .run(principalRow.id, principalRow.kind, principalRow.displayName, principalRow.createdAt)
+        principal = parsePrincipal(principalRow)
+
+        const userRow: UserRow = {
           createdAt: now,
           displayName: input.ownerName,
           id: randomUUID(),
           login: input.ownerLogin,
+          principalId: principal.id,
         }
         database
           .prepare(
-            `INSERT INTO users (id, login, display_name, created_at)
-             VALUES (?, ?, ?, ?)`,
+            `INSERT INTO users (id, login, display_name, principal_id, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
           )
-          .run(user.id, user.login, user.displayName, user.createdAt)
+          .run(userRow.id, userRow.login, userRow.displayName, userRow.principalId, userRow.createdAt)
+        user = parseUser(userRow)
+      } else {
+        const existingPrincipal = getPrincipalById(database, user.principalId)
+        if (!existingPrincipal) {
+          throw new Error(`Principal "${user.principalId}" for user "${user.login}" was not found.`)
+        }
+        principal = existingPrincipal
       }
 
       database
         .prepare(
-          `INSERT OR IGNORE INTO memberships (instance_id, user_id, role, created_at)
+          `INSERT OR IGNORE INTO memberships (tenant_id, principal_id, role, created_at)
            VALUES (?, ?, 'owner', ?)`,
         )
-        .run(instance.id, user.id, now)
+        .run(tenant.id, principal.id, now)
 
       const membership = database
         .prepare(
-          `SELECT instance_id AS instanceId, user_id AS userId, role, created_at AS createdAt
-           FROM memberships
-           WHERE instance_id = ? AND user_id = ?`,
+          `SELECT m.tenant_id AS tenantId, m.principal_id AS principalId, u.id AS userId, m.role, m.created_at AS createdAt
+           FROM memberships m
+           LEFT JOIN users u ON u.principal_id = m.principal_id
+           WHERE m.tenant_id = ? AND m.principal_id = ?`,
         )
-        .get(instance.id, user.id) as MembershipRow | undefined
+        .get(tenant.id, principal.id) as MembershipRow | undefined
 
       if (!membership) {
         throw new Error('Failed to create the default owner membership.')
       }
 
       return {
-        instance: parseInstance(instance),
+        instance: tenant,
         membership: parseMembership(membership),
-        user: parseUser(user),
+        principal,
+        tenant,
+        user,
       }
     },
   )
@@ -448,8 +921,8 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
       if (countUsers(database) > 0) return null
 
       const owner = ensureSingleTenantOwnerTx({
-        instanceName: DEFAULT_INSTANCE_NAME,
-        instanceSlug: DEFAULT_INSTANCE_SLUG,
+        instanceName: DEFAULT_TENANT_NAME,
+        instanceSlug: DEFAULT_TENANT_SLUG,
         ownerLogin: input.ownerLogin,
         ownerName: input.ownerName,
       })
@@ -459,6 +932,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         email: input.email?.trim() || null,
         id: randomUUID(),
         issuer: input.issuer,
+        principalId: owner.principal.id,
         provider: input.provider,
         subject: input.subject,
         userId: owner.user.id,
@@ -466,12 +940,12 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       database
         .prepare(
-          `INSERT INTO auth_identities (id, user_id, provider, issuer, subject, email, created_at)
+          `INSERT INTO auth_identities (id, principal_id, provider, issuer, subject, email, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           identity.id,
-          identity.userId,
+          identity.principalId,
           identity.provider,
           identity.issuer,
           identity.subject,
@@ -493,8 +967,8 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     },
     ensureSingleTenantOwner(opts: EnsureSingleTenantOwnerOptions = {}): SingleTenantOwner {
       return ensureSingleTenantOwnerTx({
-        instanceName: normalizeLabel(opts.instanceName, DEFAULT_INSTANCE_NAME),
-        instanceSlug: normalizeIdentifier(opts.instanceSlug, DEFAULT_INSTANCE_SLUG),
+        instanceName: normalizeLabel(opts.instanceName, DEFAULT_TENANT_NAME),
+        instanceSlug: normalizeIdentifier(opts.instanceSlug, DEFAULT_TENANT_SLUG),
         ownerLogin: normalizeIdentifier(opts.ownerLogin, DEFAULT_OWNER_LOGIN),
         ownerName: normalizeLabel(opts.ownerName, DEFAULT_OWNER_NAME),
       })
@@ -513,9 +987,9 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         subject,
       })
       if (existing) {
-        if (existing.userId !== user.id) {
+        if (existing.principalId !== user.principalId) {
           throw new Error(
-            `Auth identity "${provider}:${issuer}:${subject}" is already linked to another user.`,
+            `Auth identity "${provider}:${issuer}:${subject}" is already linked to another user or principal.`,
           )
         }
 
@@ -541,6 +1015,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         email: input.email?.trim() || null,
         id: randomUUID(),
         issuer,
+        principalId: user.principalId,
         provider,
         subject,
         userId: user.id,
@@ -548,12 +1023,12 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       database
         .prepare(
-          `INSERT INTO auth_identities (id, user_id, provider, issuer, subject, email, created_at)
+          `INSERT INTO auth_identities (id, principal_id, provider, issuer, subject, email, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           identity.id,
-          identity.userId,
+          identity.principalId,
           identity.provider,
           identity.issuer,
           identity.subject,
@@ -569,9 +1044,9 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
       const existing = getSshKeyByFingerprint(database, normalizedKey.fingerprint)
 
       if (existing) {
-        if (existing.userId !== user.id) {
+        if (existing.principalId !== user.principalId) {
           throw new Error(
-            `SSH key "${normalizedKey.fingerprint}" is already linked to another user.`,
+            `SSH key "${normalizedKey.fingerprint}" is already linked to another user or principal.`,
           )
         }
         return existing
@@ -583,18 +1058,19 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         fingerprint: normalizedKey.fingerprint,
         id: randomUUID(),
         name: input.name?.trim() || null,
+        principalId: user.principalId,
         publicKey: normalizedKey.publicKey,
         userId: user.id,
       }
 
       database
         .prepare(
-          `INSERT INTO ssh_keys (id, user_id, name, algorithm, public_key, fingerprint, created_at)
+          `INSERT INTO ssh_keys (id, principal_id, name, algorithm, public_key, fingerprint, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           sshKey.id,
-          sshKey.userId,
+          sshKey.principalId,
           sshKey.name,
           sshKey.algorithm,
           sshKey.publicKey,
@@ -604,6 +1080,29 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       return parseAuthSshKey(sshKey)
     },
+    findPrincipalBySshFingerprint(fingerprint: string): AuthPrincipalSession | null {
+      const sshKey = getSshKeyByFingerprint(database, fingerprint)
+      if (!sshKey) return null
+
+      const principal = getPrincipalById(database, sshKey.principalId)
+      if (!principal) return null
+
+      const membership = getPrimaryMembershipForPrincipal(database, principal.id)
+      if (!membership) return null
+
+      const tenant = getTenantById(database, membership.tenantId)
+      if (!tenant) return null
+
+      const user = getUserByPrincipalId(database, principal.id)
+      return {
+        displayName: user?.displayName ?? principal.displayName,
+        login: user?.login ?? principal.id,
+        membership,
+        principal,
+        tenant,
+        user,
+      }
+    },
     findUserByAuthIdentity(params: Pick<AuthIdentity, 'issuer' | 'provider' | 'subject'>): AuthUser | null {
       const identity = getIdentityByKey(database, {
         issuer: params.issuer,
@@ -611,15 +1110,13 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         subject: params.subject,
       })
       if (!identity) return null
-      return getUserById(database, identity.userId)
+      return getUserByPrincipalId(database, identity.principalId)
     },
     findUserByLogin(login: string): AuthUser | null {
       return getUserByLogin(database, normalizeIdentifier(login, DEFAULT_OWNER_LOGIN))
     },
     findUserBySshFingerprint(fingerprint: string): AuthUser | null {
-      const sshKey = getSshKeyByFingerprint(database, fingerprint)
-      if (!sshKey) return null
-      return getUserById(database, sshKey.userId)
+      return this.findPrincipalBySshFingerprint(fingerprint)?.user ?? null
     },
     listAuthIdentities(userLogin): AuthIdentity[] {
       const user = userLogin
@@ -635,12 +1132,13 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       return database
         .prepare(
-          `SELECT id, user_id AS userId, provider, issuer, subject, email, created_at AS createdAt
-           FROM auth_identities
-           WHERE user_id = ?
-           ORDER BY created_at ASC`,
+          `SELECT ai.id, ai.principal_id AS principalId, u.id AS userId, ai.provider, ai.issuer, ai.subject, ai.email, ai.created_at AS createdAt
+           FROM auth_identities ai
+           LEFT JOIN users u ON u.principal_id = ai.principal_id
+           WHERE ai.principal_id = ?
+           ORDER BY ai.created_at ASC`,
         )
-        .all(user.id)
+        .all(user.principalId)
         .map((row) => parseAuthIdentity(row as AuthIdentityRow))
     },
     listSshKeys(userLogin): AuthSshKey[] {
@@ -657,12 +1155,13 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       return database
         .prepare(
-          `SELECT id, user_id AS userId, name, algorithm, public_key AS publicKey, fingerprint, created_at AS createdAt
-           FROM ssh_keys
-           WHERE user_id = ?
-           ORDER BY created_at ASC`,
+          `SELECT sk.id, sk.principal_id AS principalId, u.id AS userId, sk.name, sk.algorithm, sk.public_key AS publicKey, sk.fingerprint, sk.created_at AS createdAt
+           FROM ssh_keys sk
+           LEFT JOIN users u ON u.principal_id = sk.principal_id
+           WHERE sk.principal_id = ?
+           ORDER BY sk.created_at ASC`,
         )
-        .all(user.id)
+        .all(user.principalId)
         .map((row) => parseAuthSshKey(row as AuthSshKeyRow))
     },
     signUpFirstUserWithAuthIdentity(input: SignUpFirstUserWithAuthIdentityInput) {

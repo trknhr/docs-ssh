@@ -16,7 +16,7 @@ Current scope:
 - expose `/docs` as the default alias
 - keep source mounts read-only
 - provide `/workspace` as a persistent structured agent workspace
-- provide `/scratch` for temporary session-local files
+- provide `/tmp` for temporary session-local files
 
 Deferred:
 
@@ -223,7 +223,7 @@ Mounted paths:
 - every source is available at `/sources/<name>`
 - the default source is also available at `/docs`
 - `/workspace` persists across sessions and includes scaffolded task/library/decision directories
-- `/scratch` is writable and resets between SSH sessions
+- `/tmp` is writable and resets between SSH sessions
 
 The viewer picks up registry changes on refresh. Existing interactive shell sessions will not see new mounts until you reconnect.
 
@@ -238,7 +238,7 @@ The viewer picks up registry changes on refresh. Existing interactive shell sess
 - `archive/` for completed work
 - `shared/` reserved for future multi-user sharing
 
-From the SSH session, the guidance files are read-only and writes are limited to `/workspace/tasks`, `/workspace/library`, `/workspace/decisions`, and `/workspace/archive`. Agents should create new task material under `/workspace/tasks/<task-slug>/` and use `/scratch` for temporary files.
+From the SSH session, the guidance files are read-only and writes are limited to `/workspace/tasks`, `/workspace/library`, `/workspace/decisions`, and `/workspace/archive`. Agents should create new task material under `/workspace/tasks/<task-slug>/` and use `/tmp` for temporary files.
 
 ## Configuration
 
@@ -271,7 +271,7 @@ If a repo-local `.env` file exists, both the server entrypoint and the CLI load 
 
 ## Auth Bootstrap
 
-For a single-tenant VPS setup, bootstrap one default instance plus one owner principal in the local auth database:
+For a single-tenant VPS setup, bootstrap one default tenant plus one owner principal in the local auth database:
 
 ```bash
 pnpm run cli -- auth init
@@ -285,10 +285,10 @@ pnpm run cli -- auth add-web-identity \
 Defaults:
 
 - the auth DB lives at `.docs-ssh/auth.sqlite`
-- `auth init` creates instance slug `default`
+- `auth init` creates tenant slug `default`
 - `auth init` creates owner login `owner`
 
-You can override these with CLI flags such as `--db-path`, `--instance-slug`, `--owner-login`, and `--owner-name`.
+You can override these with CLI flags such as `--db-path`, `--tenant-slug`, `--owner-login`, and `--owner-name`. The older `--instance-slug` and `--instance-name` flags are still accepted as aliases for existing scripts.
 
 `auth add-web-identity` is the prelink step for web sign-in: the OIDC callback only creates a viewer session when the incoming `(provider, issuer, subject)` tuple already exists in `auth_identities`.
 

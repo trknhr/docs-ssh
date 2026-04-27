@@ -43,7 +43,7 @@ Usage:
   docs-ssh ingest git-repo <repo-url> [--name <name>] [--subdir <path>] [--ref <ref>] [--default]
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
-  docs-ssh auth init [--db-path <path>] [--instance-slug <slug>] [--instance-name <name>] [--owner-login <login>] [--owner-name <name>]
+  docs-ssh auth init [--db-path <path>] [--tenant-slug <slug>] [--tenant-name <name>] [--owner-login <login>] [--owner-name <name>]
   docs-ssh auth add-ssh-key <public-key-path> [--db-path <path>] [--user <login>] [--name <name>]
   docs-ssh auth add-web-identity --issuer <issuer> --subject <subject> [--provider <provider>] [--email <email>] [--user <login>] [--db-path <path>]
   docs-ssh helper agents [--output <path>] [--append]
@@ -297,14 +297,14 @@ async function authInit(args: ParsedArgs): Promise<void> {
 
   try {
     const owner = authStore.ensureSingleTenantOwner({
-      instanceName: getFlagString(args, 'instance-name'),
-      instanceSlug: getFlagString(args, 'instance-slug'),
+      instanceName: getFlagString(args, 'tenant-name') ?? getFlagString(args, 'instance-name'),
+      instanceSlug: getFlagString(args, 'tenant-slug') ?? getFlagString(args, 'instance-slug'),
       ownerLogin: getFlagString(args, 'owner-login'),
       ownerName: getFlagString(args, 'owner-name'),
     })
 
     console.log(`Initialized auth database at ${authStore.dbPath}`)
-    console.log(`- instance: ${owner.instance.slug} (${owner.instance.displayName})`)
+    console.log(`- tenant: ${owner.tenant.slug} (${owner.tenant.displayName})`)
     console.log(`- owner: ${owner.user.login} (${owner.user.displayName})`)
   } finally {
     authStore.close()

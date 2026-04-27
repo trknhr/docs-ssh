@@ -2,7 +2,7 @@ import { access, mkdir, writeFile } from 'node:fs/promises'
 import { posix, resolve } from 'node:path'
 
 const WORKSPACE_MOUNT_PATH = '/workspace'
-const SCRATCH_MOUNT_PATH = '/scratch'
+const TMP_MOUNT_PATH = '/tmp'
 const WORKSPACE_GUIDE_FILES = ['README.md', '_policy.json'] as const
 const TASK_TEMPLATE_FILES = ['brief.md', 'plan.md', 'notes.md', 'handoff.md'] as const
 
@@ -38,7 +38,7 @@ const WORKSPACE_DIRECTORIES: WorkspaceDirectoryTemplate[] = [
       '- Keep task-specific context in the task directory.',
       '- Use lowercase kebab-case for task slugs.',
       '- Put generated outputs in `artifacts/`.',
-      `- Use \`${SCRATCH_MOUNT_PATH}\` for temporary files that do not need to persist.`,
+      `- Use \`${TMP_MOUNT_PATH}\` for temporary files that do not need to persist.`,
       '',
     ].join('\n'),
   },
@@ -139,7 +139,7 @@ function createWorkspaceReadme(): string {
     '',
     `- Do not add additional loose files or new top-level directories under \`${WORKSPACE_MOUNT_PATH}/\`.`,
     `- Read \`${WORKSPACE_MOUNT_PATH}/_policy.json\` before automating writes.`,
-    `- Use \`${SCRATCH_MOUNT_PATH}/\` for temporary files that do not need to persist.`,
+    `- Use \`${TMP_MOUNT_PATH}/\` for temporary files that do not need to persist.`,
     '- Prefer lowercase kebab-case names for task directories and note files.',
     '',
     'Suggested task layout:',
@@ -157,7 +157,7 @@ function createWorkspacePolicy(): string {
   const policy = {
     schemaVersion: 1,
     root: WORKSPACE_MOUNT_PATH,
-    scratchRoot: SCRATCH_MOUNT_PATH,
+    tmpRoot: TMP_MOUNT_PATH,
     readFirst: [`${WORKSPACE_MOUNT_PATH}/README.md`, `${WORKSPACE_MOUNT_PATH}/_policy.json`],
     rules: [
       `Do not create additional loose files or new top-level directories under ${WORKSPACE_MOUNT_PATH}/.`,
@@ -166,7 +166,7 @@ function createWorkspacePolicy(): string {
       `Record durable cross-task decisions under ${WORKSPACE_MOUNT_PATH}/decisions/.`,
       `Move completed work to ${WORKSPACE_MOUNT_PATH}/archive/.`,
       `Treat ${WORKSPACE_MOUNT_PATH}/shared/ as reserved for future multi-user sharing.`,
-      `Use ${SCRATCH_MOUNT_PATH}/ for temporary files.`,
+      `Use ${TMP_MOUNT_PATH}/ for temporary files.`,
     ],
     naming: {
       taskSlugStyle: 'kebab-case',

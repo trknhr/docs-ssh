@@ -65,8 +65,8 @@ describe('createBash', () => {
     await fs.writeFile('/workspace/tasks/example-task/notes.md', 'note')
     await expect(readFile(resolve(workspaceDir, 'tasks', 'example-task', 'notes.md'), 'utf8')).resolves.toBe('note')
 
-    await fs.writeFile('/scratch/temp.txt', 'scratch')
-    await expect(fs.readFile('/scratch/temp.txt', 'utf8')).resolves.toBe('scratch')
+    await fs.writeFile('/tmp/temp.txt', 'tmp')
+    await expect(fs.readFile('/tmp/temp.txt', 'utf8')).resolves.toBe('tmp')
 
     await expect(fs.writeFile('/workspace/README.md', 'blocked')).rejects.toThrow(
       "EROFS: read-only file system, write '/workspace/README.md'",

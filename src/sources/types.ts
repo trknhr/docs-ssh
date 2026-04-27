@@ -28,6 +28,6 @@ export interface SourceStore {
   mounts: SourceMount[]
   defaultSource?: SourceSpec
   workspaceMountPath: '/workspace'
-  scratchMountPath: '/scratch'
+  tmpMountPath: '/tmp'
   workspaceRootPath: string
 }

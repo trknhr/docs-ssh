@@ -198,12 +198,14 @@ describe('createSSHServer', () => {
 
     const result = await execCommand(
       client,
-      'printf \'%s\' "$DOCS_SSH_AUTH_LOGIN|$DOCS_SSH_REQUESTED_USERNAME|$USER|$LOGNAME"',
+      'printf \'%s\' "$DOCS_SSH_AUTH_LOGIN|$DOCS_SSH_AUTH_PRINCIPAL_KIND|$DOCS_SSH_AUTH_TENANT_SLUG|$DOCS_SSH_REQUESTED_USERNAME|$USER|$LOGNAME"',
     )
 
     expect(result.exitCode).toBe(0)
     expect(result.stderr).toBe('')
-    expect(result.stdout).toBe(`${owner.user.login}|workstation-user|${owner.user.login}|${owner.user.login}`)
+    expect(result.stdout).toBe(
+      `${owner.user.login}|user|default|workstation-user|${owner.user.login}|${owner.user.login}`,
+    )
   })
 
   it('rejects public keys that are not stored in the auth database', async () => {

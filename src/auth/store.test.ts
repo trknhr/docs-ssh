@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import Database from 'better-sqlite3'
 import ssh2 from 'ssh2'
 import { createAuthStore } from './store.js'
 
@@ -28,10 +29,15 @@ describe('createAuthStore', () => {
     const first = authStore.ensureSingleTenantOwner()
     const second = authStore.ensureSingleTenantOwner()
 
-    expect(first.instance.slug).toBe('default')
+    expect(first.tenant.slug).toBe('default')
+    expect(first.instance.id).toBe(first.tenant.id)
+    expect(first.principal.kind).toBe('user')
+    expect(first.user.principalId).toBe(first.principal.id)
     expect(first.user.login).toBe('owner')
     expect(first.membership.role).toBe('owner')
-    expect(second.instance.id).toBe(first.instance.id)
+    expect(first.membership.tenantId).toBe(first.tenant.id)
+    expect(first.membership.principalId).toBe(first.principal.id)
+    expect(second.tenant.id).toBe(first.tenant.id)
     expect(second.user.id).toBe(first.user.id)
 
     authStore.close()
@@ -58,8 +64,16 @@ describe('createAuthStore', () => {
 
     expect(sshKey.algorithm).toBe('ssh-ed25519')
     expect(sshKey.fingerprint.startsWith('SHA256:')).toBe(true)
+    expect(sshKey.principalId).toBe(owner.principal.id)
+    expect(sshKey.userId).toBe(owner.user.id)
+    expect(identity.principalId).toBe(owner.principal.id)
     expect(identity.userId).toBe(owner.user.id)
     expect(authStore.findUserBySshFingerprint(sshKey.fingerprint)?.id).toBe(owner.user.id)
+    expect(authStore.findPrincipalBySshFingerprint(sshKey.fingerprint)).toMatchObject({
+      login: 'owner',
+      principal: { id: owner.principal.id, kind: 'user' },
+      tenant: { id: owner.tenant.id, slug: 'default' },
+    })
     expect(
       authStore.findUserByAuthIdentity({
         issuer: identity.issuer,
@@ -71,6 +85,96 @@ describe('createAuthStore', () => {
     expect(authStore.listAuthIdentities().map((entry) => entry.subject)).toEqual(['user-123'])
 
     authStore.close()
+  })
+
+  it('migrates legacy instance-scoped auth databases to tenant and principal scope', async () => {
+    const tempDir = await createTempDir()
+    const dbPath = resolve(tempDir, 'auth.sqlite')
+    const database = new Database(dbPath)
+    database.exec(`
+      CREATE TABLE instances (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        login TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE memberships (
+        instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (instance_id, user_id)
+      );
+
+      CREATE TABLE auth_identities (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        issuer TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        email TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (provider, issuer, subject)
+      );
+
+      CREATE TABLE ssh_keys (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT,
+        algorithm TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+
+      INSERT INTO instances (id, slug, display_name, created_at)
+      VALUES ('tenant-1', 'legacy', 'Legacy Tenant', '2026-04-01T00:00:00.000Z');
+      INSERT INTO users (id, login, display_name, created_at)
+      VALUES ('user-1', 'legacy-owner', 'Legacy Owner', '2026-04-01T00:00:00.000Z');
+      INSERT INTO memberships (instance_id, user_id, role, created_at)
+      VALUES ('tenant-1', 'user-1', 'owner', '2026-04-01T00:00:00.000Z');
+      INSERT INTO auth_identities (id, user_id, provider, issuer, subject, email, created_at)
+      VALUES ('identity-1', 'user-1', 'oidc', 'https://accounts.example.com', 'legacy-sub', 'legacy@example.com', '2026-04-01T00:00:00.000Z');
+      PRAGMA user_version = 1;
+    `)
+    database.close()
+
+    const authStore = createAuthStore({ dbPath })
+    const user = authStore.findUserByLogin('legacy-owner')
+    const identityUser = authStore.findUserByAuthIdentity({
+      issuer: 'https://accounts.example.com',
+      provider: 'oidc',
+      subject: 'legacy-sub',
+    })
+    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const sshKey = authStore.addSshKey({
+      publicKey: keys.public,
+      userLogin: 'legacy-owner',
+    })
+
+    expect(user?.principalId).toBe('user-1')
+    expect(identityUser?.id).toBe('user-1')
+    expect(sshKey.principalId).toBe('user-1')
+    expect(authStore.findPrincipalBySshFingerprint(sshKey.fingerprint)).toMatchObject({
+      login: 'legacy-owner',
+      tenant: { slug: 'legacy' },
+    })
+    authStore.close()
+
+    const migratedDatabase = new Database(dbPath)
+    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(2)
+    expect(
+      migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get(),
+    ).toBeTruthy()
+    migratedDatabase.close()
   })
 
   it('can sign up the first web user into an empty auth store', async () => {

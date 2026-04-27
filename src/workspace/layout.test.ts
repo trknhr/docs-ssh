@@ -58,7 +58,7 @@ describe('workspace layout', () => {
     expect(policy).toMatchObject({
       schemaVersion: 1,
       root: '/workspace',
-      scratchRoot: '/scratch',
+      tmpRoot: '/tmp',
       naming: {
         taskSlugStyle: 'kebab-case',
       },

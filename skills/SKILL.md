@@ -30,7 +30,7 @@ Mounted paths:
 - `/workspace/decisions` -> durable cross-task decisions
 - `/workspace/archive` -> completed work and retired notes
 - `/workspace/shared` -> reserved for future shared workflows
-- `/scratch` -> temporary session-local files
+- `/tmp` -> temporary session-local files
 
 Workspace rules:
 
@@ -40,7 +40,7 @@ Workspace rules:
 - For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.
 - After writing a workspace file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.
 - Treat `/workspace/shared` as reserved for future shared workflows.
-- Use `/scratch` for temporary files.
+- Use `/tmp` for temporary files.
 
 Example commands:
 
