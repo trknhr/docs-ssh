@@ -11,8 +11,12 @@ services:
       SSH_PORT: 2222
       VIEWER_HOST: 0.0.0.0
       VIEWER_PORT: 3000
+      VIEWER_PUBLIC_ORIGIN: ${VIEWER_PUBLIC_ORIGIN:-}
       DOCS_DIR: /data/docs
       DOCS_SSH_STATE_DIR: /data/state
+      DOCS_SSH_OIDC_ISSUER: ${DOCS_SSH_OIDC_ISSUER:-}
+      DOCS_SSH_OIDC_CLIENT_ID: ${DOCS_SSH_OIDC_CLIENT_ID:-}
+      DOCS_SSH_OIDC_CLIENT_SECRET: ${DOCS_SSH_OIDC_CLIENT_SECRET:-}
       WORKSPACE_DIR: /data/workspace
       SSH_HOST_KEY_PATH: /data/state/ssh_host_key
     volumes:

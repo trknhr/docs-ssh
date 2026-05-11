@@ -31,13 +31,12 @@ function createSourceList(sourceStore: SourceStore): string[] {
 function createWorkspaceList(sourceStore: SourceStore): string[] {
   return [
     '- `/README.md` -> root guide and writing rules',
-    `- \`${sourceStore.homeMountPath}\` -> private durable work for the authenticated principal`,
-    `- \`${sourceStore.homeMountPath}/agents/codex/handoffs\` -> private Codex resume summaries`,
+    `- \`${sourceStore.homeMountPath}\` -> private personal notes for the authenticated principal`,
     `- \`${sourceStore.projectMountPath}\` -> current project alias`,
-    `- \`${sourceStore.projectMountPath}/tasks\` -> project-scoped task work`,
-    `- \`${sourceStore.projectMountPath}/workspace\` -> project-scoped working files`,
+    `- \`${sourceStore.projectMountPath}/issues\` -> issue tracking: what to do, why, status, next action, and result links`,
+    `- \`${sourceStore.projectMountPath}/tasks\` -> research and work results`,
+    `- \`${sourceStore.projectMountPath}/docs\` -> polished long-term project references`,
     `- \`${sourceStore.projectsMountPath}/${sourceStore.projectSlug}\` -> concrete current project path`,
-    `- \`${sourceStore.sharedMountPath}\` -> tenant-wide docs and policies`,
     `- \`${sourceStore.tmpMountPath}\` -> temporary session-local files`,
   ]
 }
@@ -45,14 +44,12 @@ function createWorkspaceList(sourceStore: SourceStore): string[] {
 function createWorkspaceRules(sourceStore: SourceStore): string[] {
   return [
     '- Read `/README.md` and `/project/README.md` before writing files.',
-    `- Use \`${sourceStore.homeMountPath}\` for private durable work.`,
-    `- Use \`${sourceStore.projectMountPath}\` for current project work.`,
-    `- Create project task work under \`${sourceStore.projectMountPath}/tasks/<task-slug>/\`.`,
+    `- Use \`${sourceStore.homeMountPath}\` for private personal notes.`,
+    `- Use \`${sourceStore.projectMountPath}/issues\` for issue tracking: what to do, why, status, next action, and result links.`,
+    `- Use \`${sourceStore.projectMountPath}/tasks\` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.`,
+    `- Use \`${sourceStore.projectMountPath}/docs\` only for polished references that should stay useful long-term.`,
     '- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.',
-    '- After writing a workspace file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.',
-    `- Use \`${sourceStore.sharedMountPath}\` only for tenant-wide docs and policies.`,
-    `- Save handoff summaries under \`${sourceStore.homeMountPath}/agents/codex/handoffs/\` before finishing.`,
-    `- Do not save raw local agent session data unless the user explicitly opts in.`,
+    '- After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.',
     `- Use \`${sourceStore.tmpMountPath}\` for temporary files.`,
   ]
 }
@@ -61,8 +58,10 @@ function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   const examples = [
     `${sshPrefix} cat /README.md`,
     `${sshPrefix} cat /project/README.md`,
+    `${sshPrefix} ls /project/issues`,
     `${sshPrefix} find /project/docs -name '*.md' | head`,
     `${sshPrefix} grep -R "keyword" /project/docs`,
+    `${sshPrefix} "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /project/issues/example-issue.md"`,
     `${sshPrefix} mkdir -p /project/tasks/example-task/artifacts`,
     `${sshPrefix} "printf '%s\\n' '# Notes' '- item' > /project/tasks/example-task/notes.md"`,
     `${sshPrefix} sh -lc 'echo \"- note\" >> /project/tasks/example-task/notes.md'`,
@@ -99,7 +98,7 @@ export function createAgentsMarkdown(opts: HelperContentOptions): string {
     '## docs-ssh',
     '',
     `Before implementing against ${opts.docsName}, inspect the mounted project filesystem over SSH first.`,
-    'Use `/project/docs` for the default source and `/project/sources/<name>` for additional ingested sources.',
+    'Use `/project/issues` for issue tracking, `/project/tasks` for research and work results, `/project/docs` for polished references, and `/project/sources/<name>` for additional ingested sources.',
     '',
     'Available paths:',
     ...createSourceList(opts.sourceStore),
@@ -130,7 +129,7 @@ export function createSkillMarkdown(opts: HelperContentOptions): string {
     '',
     `Use ${sshPrefix} to inspect the mounted project filesystem before making changes.`,
     '',
-    'Default and named sources:',
+    'Project paths:',
     ...createSourceList(opts.sourceStore),
     ...createWorkspaceList(opts.sourceStore),
     '',
@@ -152,7 +151,7 @@ export function createSetupMarkdown(opts: HelperContentOptions): string {
   return [
     '# docs-ssh Setup',
     '',
-    `This server exposes ${opts.docsName} through a project-oriented SSH filesystem with private and shared work areas.`,
+    `This server exposes ${opts.docsName} through a project-oriented SSH filesystem with private notes, issues, task results, and docs.`,
     '',
     'Choose one of these setup flows:',
     '',

@@ -55,7 +55,7 @@ function createSourceStoreFixture(): SourceStore {
 }
 
 describe('helper content', () => {
-  it('renders agents markdown with docs, workspace, and named source guidance', () => {
+  it('renders agents markdown with docs, issues, tasks, and named source guidance', () => {
     const markdown = createAgentsMarkdown({
       docsName: 'Project Docs',
       sourceStore: createSourceStoreFixture(),
@@ -66,9 +66,14 @@ describe('helper content', () => {
     expect(markdown).toContain('Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.')
     expect(markdown).toContain('- `/project/docs` -> default source (`project-docs`)')
     expect(markdown).toContain('- `/project/sources/reference`')
-    expect(markdown).toContain('- `/shared` -> tenant-wide docs and policies')
+    expect(markdown).toContain('- `/project/issues` -> issue tracking')
+    expect(markdown).toContain('- `/project/tasks` -> research and work results')
+    expect(markdown).toContain('- `/home` -> private personal notes')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
     expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /project/docs')
+    expect(markdown).toContain(
+      `ssh docs-ssh -p 2222 "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /project/issues/example-issue.md"`,
+    )
     expect(markdown).toContain(`ssh docs-ssh -p 2222 "printf '%s\\n' '# Notes' '- item' > /project/tasks/example-task/notes.md"`)
     expect(markdown).toContain('ssh docs-ssh -p 2222 cat /project/tasks/example-task/notes.md')
     expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /project/sources/reference')

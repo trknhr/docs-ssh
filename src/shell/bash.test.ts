@@ -18,7 +18,7 @@ afterEach(async () => {
 })
 
 describe('createBash', () => {
-  it('mounts helper commands, project docs, and v2 workspace paths', async () => {
+  it('mounts helper commands, project docs, and v2 project paths', async () => {
     const tempDir = await createTempDir()
     const docsDir = resolve(tempDir, 'docs')
     const stateDir = resolve(tempDir, 'state')
@@ -53,15 +53,14 @@ describe('createBash', () => {
     await expect(fs.readFile('/home/README.md', 'utf8')).resolves.toContain('# Home')
     await expect(fs.readdir('/project')).resolves.toEqual([
       'README.md',
-      'agents',
       'docs',
+      'issues',
       'sources',
       'tasks',
-      'workspace',
     ])
   })
 
-  it('enforces v2 workspace and docs write rules', async () => {
+  it('enforces v2 project and docs write rules', async () => {
     const tempDir = await createTempDir()
     const docsDir = resolve(tempDir, 'docs')
     const workspaceDir = resolve(tempDir, 'workspace')
@@ -74,17 +73,20 @@ describe('createBash', () => {
       docsName: 'Project Docs',
     })
 
+    await fs.writeFile('/project/issues/example-issue.md', '# Example issue\n')
+    await expect(
+      readFile(resolve(workspaceDir, 'projects', 'default', 'issues', 'example-issue.md'), 'utf8'),
+    ).resolves.toBe('# Example issue\n')
+
     await fs.mkdir('/project/tasks/example-task', { recursive: true })
     await fs.writeFile('/project/tasks/example-task/notes.md', 'note')
     await expect(
       readFile(resolve(workspaceDir, 'projects', 'default', 'tasks', 'example-task', 'notes.md'), 'utf8'),
     ).resolves.toBe('note')
 
-    await fs.mkdir('/home/tasks/private-task', { recursive: true })
-    await fs.writeFile('/home/tasks/private-task/notes.md', 'private')
-    await expect(readFile(resolve(workspaceDir, 'home', 'tasks', 'private-task', 'notes.md'), 'utf8')).resolves.toBe(
-      'private',
-    )
+    await fs.mkdir('/home/private-notes', { recursive: true })
+    await fs.writeFile('/home/private-notes/notes.md', 'private')
+    await expect(readFile(resolve(workspaceDir, 'home', 'private-notes', 'notes.md'), 'utf8')).resolves.toBe('private')
 
     await fs.writeFile('/tmp/temp.txt', 'tmp')
     await expect(fs.readFile('/tmp/temp.txt', 'utf8')).resolves.toBe('tmp')

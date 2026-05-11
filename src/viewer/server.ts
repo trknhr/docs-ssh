@@ -75,7 +75,7 @@ const MAX_VIEWER_JSON_BODY_BYTES = 64 * 1024
 const VIEWER_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 
 type ViewerFileKind = 'binary' | 'image' | 'markdown' | 'text'
-type ViewerMountType = 'home' | 'project' | 'project-docs' | 'shared' | 'source'
+type ViewerMountType = 'home' | 'project' | 'project-docs' | 'source'
 
 interface ViewerMount {
   aliases: string[]
@@ -274,14 +274,6 @@ async function loadViewerContext(opts: ViewerServerOptions) {
     mountPath: sourceStore.projectMountPath,
     rootPath: sourceStore.projectRootPath,
     type: 'project',
-  })
-
-  mounts.push({
-    aliases: [],
-    label: 'shared',
-    mountPath: sourceStore.sharedMountPath,
-    rootPath: sourceStore.sharedRootPath,
-    type: 'shared',
   })
 
   const sourceMounts = sourceStore.registry.sources

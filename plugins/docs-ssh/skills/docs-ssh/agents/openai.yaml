@@ -1,4 +1,4 @@
 interface:
   display_name: "docs-ssh"
-  short_description: "Inspect mounted docs and workspace files over SSH"
-  default_prompt: "Use $docs-ssh to inspect /README.md and /project/docs, then save project notes under /project/tasks."
+  short_description: "Inspect mounted docs, issues, and task results over SSH"
+  default_prompt: "Use $docs-ssh to inspect /README.md, /project/issues, and /project/docs, then save research or work results under /project/tasks."
