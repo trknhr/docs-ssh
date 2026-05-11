@@ -111,11 +111,12 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '- `/project` is the current project alias.',
     '- `/project/docs` is the read-only default docs source.',
     '- `/project/sources/<name>` contains additional read-only sources.',
+    '- `/project/issues` is project issue tracking: what to do, why, status, next action, and result links.',
+    '- `/project/tasks` stores research and work results.',
     '- `/projects/default` is the concrete current project path.',
-    '- `/shared` is tenant-wide docs and policies.',
     '- `/tmp` is temporary and resets between SSH sessions.',
     '',
-    'Use `/project/tasks/<task-slug>/` for project task work and `/home/agents/codex/handoffs/` for private resume summaries.',
+    'Use `/home` for personal notes, `/project/issues` for issue records, `/project/tasks/<task-slug>/` for task results, and `/project/docs` for polished long-term references.',
     '',
   ].join('\n')
   const projectReadme = [
@@ -125,9 +126,8 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '',
     '- `docs/`: read-only default docs source.',
     '- `sources/<name>/`: read-only named sources.',
-    '- `tasks/`: project-scoped task work.',
-    '- `workspace/`: project-scoped working files.',
-    '- `agents/`: project-facing agent handoffs and artifacts.',
+    '- `issues/`: project issue tracking.',
+    '- `tasks/`: research and work results.',
     '',
   ].join('\n')
 
@@ -138,7 +138,6 @@ export async function createBash(opts: CreateBashOptions = {}) {
         projectMountPath: sourceStore.projectMountPath,
         projectSlug: sourceStore.projectSlug,
         projectsMountPath: sourceStore.projectsMountPath,
-        sharedMountPath: sourceStore.sharedMountPath,
       }),
     ],
     writablePaths: [
@@ -152,7 +151,6 @@ export async function createBash(opts: CreateBashOptions = {}) {
         projectMountPath: sourceStore.projectMountPath,
         projectSlug: sourceStore.projectSlug,
         projectsMountPath: sourceStore.projectsMountPath,
-        sharedMountPath: sourceStore.sharedMountPath,
         tmpMountPath: sourceStore.tmpMountPath,
       }),
     ],
@@ -167,32 +165,20 @@ export async function createBash(opts: CreateBashOptions = {}) {
         filesystem: new ReadWriteFs({ root: sourceStore.homeRootPath }),
       },
       {
+        mountPoint: `${sourceStore.projectMountPath}/issues`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/issues` }),
+      },
+      {
         mountPoint: `${sourceStore.projectMountPath}/tasks`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
       },
       {
-        mountPoint: `${sourceStore.projectMountPath}/workspace`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/workspace` }),
-      },
-      {
-        mountPoint: `${sourceStore.projectMountPath}/agents`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/agents` }),
+        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/issues`,
+        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/issues` }),
       },
       {
         mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/tasks`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
-      },
-      {
-        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/workspace`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/workspace` }),
-      },
-      {
-        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/agents`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/agents` }),
-      },
-      {
-        mountPoint: sourceStore.sharedMountPath,
-        filesystem: new ReadWriteFs({ root: sourceStore.sharedRootPath }),
       },
       ...sourceStore.mounts.map((mount) => ({
         mountPoint: mount.mountPoint,

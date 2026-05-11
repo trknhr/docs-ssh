@@ -15,7 +15,7 @@ Current scope:
 - mount sources at `/project/sources/<name>`
 - expose `/project/docs` as the default source alias
 - keep source mounts read-only
-- provide `/home`, `/project`, and `/shared` as persistent structured work areas
+- provide `/home` for private notes and `/project/issues` plus `/project/tasks` for project work
 - provide `/tmp` for temporary session-local files
 
 Deferred:
@@ -176,7 +176,7 @@ The self-hosting config uses:
 
 - `DOCS_SSH_DOCS_DIR` for the read-only docs mount
 - `DOCS_SSH_STATE_DIR` for ingested source data and the SSH host key
-- `DOCS_SSH_WORKSPACE_DIR` for the persistent structured filesystem backing `/home`, `/project`, `/projects`, and `/shared`
+- `DOCS_SSH_WORKSPACE_DIR` for the persistent structured filesystem backing `/home`, `/project`, and `/projects`
 - `DOCS_SSH_BIND_IP` to control whether the SSH port binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_BIND_IP` to control whether the HTTP viewer binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_PORT` to control the HTTP viewer port
@@ -222,48 +222,35 @@ Mounted paths:
 
 - every source is available at `/project/sources/<name>`
 - the default source is also available at `/project/docs`
-- `/home` persists private principal-scoped work across sessions
+- `/home` persists private personal notes across sessions
 - `/project` is the current project alias backed by `/projects/default`
-- `/shared` persists tenant-wide docs and policies
+- `/project/issues` tracks what to do, why, status, next action, and result links
+- `/project/tasks` stores research and work results
 - `/tmp` is writable and resets between SSH sessions
 
 The viewer picks up registry changes on refresh. Existing interactive shell sessions will not see new mounts until you reconnect.
 
 ## Filesystem Layout
 
-`docs-ssh` seeds a v2 SSH filesystem with private, project, shared, and temporary areas:
+`docs-ssh` seeds a v2 SSH filesystem with private notes, project work, and temporary areas:
 
 ```text
 /
   README.md
   home/
     README.md
-    tasks/
-    workspace/
-    docs/
-    agents/codex/
-      handoffs/
-      sessions/raw/
-      artifacts/
   project/
     README.md
     docs/
     sources/<name>/
+    issues/
     tasks/
-    workspace/
-    agents/codex/
-      handoffs/
-      artifacts/
   projects/
     default/
-  shared/
-    README.md
-    docs/
-    policies/
   tmp/
 ```
 
-From the SSH session, source mounts under `/project/docs` and `/project/sources/<name>` are read-only. Writes are intended for `/home`, `/project/tasks`, `/project/workspace`, `/project/agents`, and `/shared/docs` or `/shared/policies`. Agents should create project task material under `/project/tasks/<task-slug>/`, store private resume summaries under `/home/agents/codex/handoffs/`, and use `/tmp` for temporary files.
+From the SSH session, source mounts under `/project/docs` and `/project/sources/<name>` are read-only. Use `/home` for private personal notes, `/project/issues` for issue records, `/project/tasks/<task-slug>/` for research and work results, and `/project/docs` only for polished long-term references. Use `/tmp` for temporary files.
 
 ## Configuration
 

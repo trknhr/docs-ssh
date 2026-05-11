@@ -23,47 +23,32 @@ afterEach(async () => {
 describe('workspace layout', () => {
   it('returns writable v2 filesystem paths', () => {
     expect(getWorkspaceWritablePaths()).toEqual([
-      '/home/tasks',
-      '/home/workspace',
-      '/home/docs',
-      '/home/agents',
+      '/home',
+      '/project/issues',
       '/project/tasks',
-      '/project/workspace',
-      '/project/agents',
+      '/projects/default/issues',
       '/projects/default/tasks',
-      '/projects/default/workspace',
-      '/projects/default/agents',
-      '/shared/docs',
-      '/shared/policies',
       '/tmp',
     ])
 
     expect(getWorkspaceWritablePaths({ projectSlug: 'demo' })).toContain('/projects/demo/tasks')
+    expect(getWorkspaceWritablePaths({ projectSlug: 'demo' })).toContain('/projects/demo/issues')
   })
 
   it('returns the read-only v2 guide and directory readmes', () => {
     expect(getWorkspaceReadOnlyPaths()).toEqual([
       '/README.md',
       '/home/README.md',
-      '/home/tasks/README.md',
-      '/home/workspace/README.md',
-      '/home/docs/README.md',
-      '/home/agents/README.md',
       '/project/README.md',
       '/project/docs',
       '/project/sources',
+      '/project/issues/README.md',
       '/project/tasks/README.md',
-      '/project/workspace/README.md',
-      '/project/agents/README.md',
       '/projects/default/README.md',
       '/projects/default/docs',
       '/projects/default/sources',
+      '/projects/default/issues/README.md',
       '/projects/default/tasks/README.md',
-      '/projects/default/workspace/README.md',
-      '/projects/default/agents/README.md',
-      '/shared/README.md',
-      '/shared/docs/README.md',
-      '/shared/policies/README.md',
     ])
   })
 
@@ -74,21 +59,22 @@ describe('workspace layout', () => {
 
     const workspaceReadme = await readFile(resolve(rootPath, 'README.md'), 'utf8')
     expect(workspaceReadme).toContain('/project/tasks/<task-slug>/')
-    expect(workspaceReadme).toContain('separates private work')
+    expect(workspaceReadme).toContain('/project/issues/<issue-slug>.md')
+    expect(workspaceReadme).toContain('separates private notes')
 
     const homeReadme = await readFile(resolve(rootPath, 'home', 'README.md'), 'utf8')
     expect(homeReadme).toContain('private durable storage')
+
+    const issuesReadme = await readFile(resolve(rootPath, 'projects', 'default', 'issues', 'README.md'), 'utf8')
+    expect(issuesReadme).toContain('# Issues')
+    expect(issuesReadme).toContain('next action')
 
     const tasksReadme = await readFile(resolve(rootPath, 'projects', 'default', 'tasks', 'README.md'), 'utf8')
     expect(tasksReadme).toContain('# Tasks')
     expect(tasksReadme).toContain('artifacts/')
 
-    const sharedReadme = await readFile(resolve(rootPath, 'shared', 'README.md'), 'utf8')
-    expect(sharedReadme).toContain('tenant-wide shared material')
-
-    await expect(
-      readFile(resolve(rootPath, 'home', 'agents', 'codex', 'sessions', 'raw', 'README.md'), 'utf8'),
-    ).rejects.toThrow()
+    await expect(readFile(resolve(rootPath, 'home', 'agents', 'README.md'), 'utf8')).rejects.toThrow()
+    await expect(readFile(resolve(rootPath, 'shared', 'README.md'), 'utf8')).rejects.toThrow()
   })
 
   it('does not overwrite existing guide files', async () => {
@@ -103,7 +89,9 @@ describe('workspace layout', () => {
     await expect(readFile(resolve(rootPath, 'projects', 'default', 'tasks', 'README.md'), 'utf8')).resolves.toBe(
       'custom tasks guide\n',
     )
-    await expect(readFile(resolve(rootPath, 'home', 'workspace', 'README.md'), 'utf8')).resolves.toContain('# Workspace')
-    await expect(readFile(resolve(rootPath, 'shared', 'policies', 'README.md'), 'utf8')).resolves.toContain('# Policies')
+    await expect(readFile(resolve(rootPath, 'projects', 'default', 'issues', 'README.md'), 'utf8')).resolves.toContain(
+      '# Issues',
+    )
+    await expect(readFile(resolve(rootPath, 'shared', 'policies', 'README.md'), 'utf8')).rejects.toThrow()
   })
 })
