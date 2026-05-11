@@ -37,5 +37,6 @@ export interface SourceStore {
   homeRootPath: string
   projectRootPath: string
   sharedRootPath: string
+  tenantRootPath: string
   workspaceRootPath: string
 }

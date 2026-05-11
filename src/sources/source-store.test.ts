@@ -253,9 +253,10 @@ describe('source-store', () => {
       ]),
     )
     expect(store.workspaceRootPath).toBe(workspaceDir)
-    expect(store.homeRootPath).toBe(resolve(workspaceDir, 'home'))
-    expect(store.projectRootPath).toBe(resolve(workspaceDir, 'projects', 'default'))
-    expect(store.sharedRootPath).toBe(resolve(workspaceDir, 'shared'))
+    expect(store.tenantRootPath).toBe(resolve(workspaceDir, 'tenants', 'default'))
+    expect(store.homeRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'principals', 'anonymous', 'home'))
+    expect(store.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default'))
+    expect(store.sharedRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'shared'))
   })
 
   it('resolves source roots relative to the registry location', async () => {

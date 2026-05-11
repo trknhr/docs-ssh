@@ -37,8 +37,8 @@ describe('createBash', () => {
 
     expect(sourceStore.defaultSource?.name).toBe('local')
     expect(sourceStore.workspaceRootPath).toBe(workspaceDir)
-    expect(sourceStore.homeRootPath).toBe(resolve(workspaceDir, 'home'))
-    expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'projects', 'default'))
+    expect(sourceStore.homeRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'principals', 'anonymous', 'home'))
+    expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default'))
     expect(bash.getEnv().HOME).toBe('/home')
     await expect(fs.readFile('/README.md', 'utf8')).resolves.toContain('/project/docs')
     const agents = await bash.exec('agents')
@@ -75,18 +75,20 @@ describe('createBash', () => {
 
     await fs.writeFile('/project/issues/example-issue.md', '# Example issue\n')
     await expect(
-      readFile(resolve(workspaceDir, 'projects', 'default', 'issues', 'example-issue.md'), 'utf8'),
+      readFile(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default', 'issues', 'example-issue.md'), 'utf8'),
     ).resolves.toBe('# Example issue\n')
 
     await fs.mkdir('/project/tasks/example-task', { recursive: true })
     await fs.writeFile('/project/tasks/example-task/notes.md', 'note')
     await expect(
-      readFile(resolve(workspaceDir, 'projects', 'default', 'tasks', 'example-task', 'notes.md'), 'utf8'),
+      readFile(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default', 'tasks', 'example-task', 'notes.md'), 'utf8'),
     ).resolves.toBe('note')
 
     await fs.mkdir('/home/private-notes', { recursive: true })
     await fs.writeFile('/home/private-notes/notes.md', 'private')
-    await expect(readFile(resolve(workspaceDir, 'home', 'private-notes', 'notes.md'), 'utf8')).resolves.toBe('private')
+    await expect(
+      readFile(resolve(workspaceDir, 'tenants', 'default', 'principals', 'anonymous', 'home', 'private-notes', 'notes.md'), 'utf8'),
+    ).resolves.toBe('private')
 
     await fs.writeFile('/tmp/temp.txt', 'tmp')
     await expect(fs.readFile('/tmp/temp.txt', 'utf8')).resolves.toBe('tmp')
@@ -97,5 +99,65 @@ describe('createBash', () => {
     await expect(fs.writeFile('/project/docs/new.md', 'blocked')).rejects.toThrow(
       "EROFS: read-only file system, write '/project/docs/new.md'",
     )
+  })
+
+  it('uses session context for project roots, bootstrap output, and write scopes', async () => {
+    const tempDir = await createTempDir()
+    const docsDir = resolve(tempDir, 'docs')
+    const workspaceDir = resolve(tempDir, 'workspace')
+    vi.stubEnv('DOCS_SSH_STATE_DIR', resolve(tempDir, 'state'))
+    vi.stubEnv('WORKSPACE_DIR', workspaceDir)
+    await mkdir(docsDir, { recursive: true })
+    await writeFile(resolve(docsDir, 'README.md'), '# Product Docs\n')
+
+    const { bash, fs, sourceStore } = await createBash({
+      docsDir,
+      docsName: 'Product Docs',
+      session: {
+        login: 'alice',
+        principalId: 'principal-alice',
+        principalKind: 'user',
+        projectSlug: 'product-docs',
+        scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+        tenantSlug: 'acme',
+      },
+      workspaceDir,
+    })
+
+    expect(sourceStore.homeRootPath).toBe(
+      resolve(workspaceDir, 'tenants', 'acme', 'principals', 'principal-alice', 'home'),
+    )
+    expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'acme', 'projects', 'product-docs'))
+    await expect(fs.readFile('/project/docs/README.md', 'utf8')).resolves.toBe('# Product Docs\n')
+    await expect(fs.writeFile('/project/tasks/example/notes.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/project/tasks/example/notes.md'",
+    )
+
+    const bootstrap = await bash.exec('bootstrap --json')
+    const payload = JSON.parse(bootstrap.stdout) as {
+      principal: { login: string }
+      project: { slug: string }
+      scopes: string[]
+    }
+    expect(payload.principal.login).toBe('alice')
+    expect(payload.project.slug).toBe('product-docs')
+    expect(payload.scopes).toEqual(['bootstrap:read', 'project:read', 'sources:read'])
+
+    const restricted = await createBash({
+      docsDir,
+      docsName: 'Product Docs',
+      session: {
+        login: 'alice',
+        principalId: 'principal-alice',
+        principalKind: 'user',
+        projectSlug: 'product-docs',
+        scopes: ['project:read', 'sources:read'],
+        tenantSlug: 'acme',
+      },
+      workspaceDir,
+    })
+    const deniedBootstrap = await restricted.bash.exec('bootstrap --json')
+    expect(deniedBootstrap.exitCode).toBe(126)
+    expect(deniedBootstrap.stderr).toContain('bootstrap:read')
   })
 })

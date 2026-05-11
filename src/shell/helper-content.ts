@@ -43,7 +43,7 @@ function createWorkspaceList(sourceStore: SourceStore): string[] {
 
 function createWorkspaceRules(sourceStore: SourceStore): string[] {
   return [
-    '- Read `/README.md` and `/project/README.md` before writing files.',
+    '- Run `bootstrap --json`, then read `/README.md` and `/project/README.md` before writing files.',
     `- Use \`${sourceStore.homeMountPath}\` for private personal notes.`,
     `- Use \`${sourceStore.projectMountPath}/issues\` for issue tracking: what to do, why, status, next action, and result links.`,
     `- Use \`${sourceStore.projectMountPath}/tasks\` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.`,
@@ -56,6 +56,7 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
 
 function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   const examples = [
+    `${sshPrefix} bootstrap --json`,
     `${sshPrefix} cat /README.md`,
     `${sshPrefix} cat /project/README.md`,
     `${sshPrefix} ls /project/issues`,

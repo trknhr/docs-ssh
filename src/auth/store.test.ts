@@ -69,11 +69,13 @@ describe('createAuthStore', () => {
     expect(identity.principalId).toBe(owner.principal.id)
     expect(identity.userId).toBe(owner.user.id)
     expect(authStore.findUserBySshFingerprint(sshKey.fingerprint)?.id).toBe(owner.user.id)
-    expect(authStore.findPrincipalBySshFingerprint(sshKey.fingerprint)).toMatchObject({
+    const principalSession = authStore.findPrincipalBySshFingerprint(sshKey.fingerprint)
+    expect(principalSession).toMatchObject({
       login: 'owner',
       principal: { id: owner.principal.id, kind: 'user' },
       tenant: { id: owner.tenant.id, slug: 'default' },
     })
+    expect(principalSession?.scopes).toContain('project:write')
     expect(
       authStore.findUserByAuthIdentity({
         issuer: identity.issuer,
@@ -170,9 +172,12 @@ describe('createAuthStore', () => {
     authStore.close()
 
     const migratedDatabase = new Database(dbPath)
-    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(2)
+    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(3)
     expect(
       migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get(),
+    ).toBeTruthy()
+    expect(
+      migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_memberships'").get(),
     ).toBeTruthy()
     migratedDatabase.close()
   })
@@ -233,6 +238,64 @@ describe('createAuthStore', () => {
         subject: identity.subject,
       })?.login,
     ).toBe('alice')
+
+    authStore.close()
+  })
+
+  it('creates scoped SSH sessions with project context', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({
+      dbPath: resolve(tempDir, 'auth.sqlite'),
+    })
+    const owner = authStore.ensureSingleTenantOwner({
+      ownerLogin: 'alice',
+      ownerName: 'Alice',
+    })
+    const keys = sshUtils.generateKeyPairSync('ed25519')
+
+    const session = authStore.createSshSession({
+      projectSlug: 'product-docs',
+      publicKey: keys.public,
+      scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+      ttlSeconds: 60,
+      userLogin: 'alice',
+      username: 'sess_test',
+    })
+    const principalSession = authStore.findPrincipalBySshFingerprint(session.fingerprint, session.username)
+
+    expect(session.username).toBe('sess_test')
+    expect(session.currentProjectSlug).toBe('product-docs')
+    expect(authStore.findPrincipalBySshFingerprint(session.fingerprint, 'wrong-user')).toBeNull()
+    expect(principalSession).toMatchObject({
+      login: 'alice',
+      principal: { id: owner.principal.id },
+      project: { slug: 'product-docs' },
+      scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+      sshSession: { id: session.id },
+      tenant: { slug: 'default' },
+    })
+    expect(authStore.listSshSessions({ userLogin: 'alice' }).map((entry) => entry.id)).toEqual([session.id])
+    const revoked = authStore.revokeSshSession({
+      identifier: session.username,
+      userLogin: 'alice',
+    })
+    expect(revoked.id).toBe(session.id)
+    expect(revoked.revokedAt).toEqual(expect.any(String))
+    expect(authStore.findPrincipalBySshFingerprint(session.fingerprint, session.username)).toBeNull()
+    expect(authStore.listSshSessions({ userLogin: 'alice' })).toEqual([])
+    expect(authStore.listSshSessions({ includeRevoked: true, userLogin: 'alice' })).toMatchObject([
+      {
+        id: session.id,
+        revokedAt: revoked.revokedAt,
+      },
+    ])
+    expect(() =>
+      authStore.createSshSession({
+        publicKey: keys.public,
+        ttlSeconds: 0,
+        userLogin: 'alice',
+      }),
+    ).toThrow(/ttlSeconds must be positive/)
 
     authStore.close()
   })

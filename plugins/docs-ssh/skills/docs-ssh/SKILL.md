@@ -31,7 +31,7 @@ Mounted paths:
 
 Workspace rules:
 
-- Start by reading `/README.md` and `/project/README.md` before searching or writing files.
+- Start by running `bootstrap --json`, then read `/README.md` and `/project/README.md` before searching or writing files.
 - Use `/home` for private personal notes.
 - Use `/project/issues` for issue tracking: what to do, why, status, next action, and result links.
 - Use `/project/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.
@@ -43,6 +43,7 @@ Workspace rules:
 Example commands:
 
 ```bash
+ssh docs-ssh bootstrap --json
 ssh docs-ssh cat /README.md
 ssh docs-ssh cat /project/README.md
 ssh docs-ssh ls /project/issues

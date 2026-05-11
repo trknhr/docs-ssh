@@ -4,12 +4,24 @@ import { dirname, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { normalizeSshPublicKey } from './ssh-key.js'
 
-const AUTH_SCHEMA_VERSION = 2
+const AUTH_SCHEMA_VERSION = 3
 const IDENTIFIER_PATTERN = /[^a-z0-9-]+/g
 const DEFAULT_TENANT_SLUG = 'default'
 const DEFAULT_TENANT_NAME = 'Personal docs-ssh'
 const DEFAULT_OWNER_LOGIN = 'owner'
 const DEFAULT_OWNER_NAME = 'Owner'
+const DEFAULT_PROJECT_SLUG = 'default'
+const DEFAULT_PROJECT_NAME = 'Default project'
+const DEFAULT_SESSION_TTL_SECONDS = 60 * 60
+const DEFAULT_SSH_SESSION_SCOPES = [
+  'bootstrap:read',
+  'home:read',
+  'home:write',
+  'project:read',
+  'project:write',
+  'projects:read',
+  'sources:read',
+] as const
 
 export type AuthMembershipRole = 'owner' | 'admin' | 'member'
 export type AuthPrincipalKind = 'user' | 'service_account'
@@ -74,8 +86,42 @@ export interface AuthPrincipalSession {
   login: string
   membership: AuthMembership
   principal: AuthPrincipal
+  project: AuthProject
+  projectMembership: AuthProjectMembership
+  scopes: string[]
+  sshSession: AuthSshSession | null
   tenant: AuthTenant
   user: AuthUser | null
+}
+
+export interface AuthProject {
+  createdAt: string
+  displayName: string
+  id: string
+  slug: string
+  tenantId: string
+}
+
+export interface AuthProjectMembership {
+  createdAt: string
+  principalId: string
+  projectId: string
+  role: AuthMembershipRole
+}
+
+export interface AuthSshSession {
+  algorithm: string
+  createdAt: string
+  currentProjectSlug: string
+  expiresAt: string
+  fingerprint: string
+  id: string
+  principalId: string
+  publicKey: string
+  revokedAt: string | null
+  scopes: string[]
+  tenantId: string
+  username: string
 }
 
 export interface SingleTenantOwner {
@@ -113,6 +159,29 @@ export interface SignUpFirstUserWithAuthIdentityInput {
 export interface AddSshKeyInput {
   name?: string
   publicKey: string
+  userLogin?: string
+}
+
+export interface CreateSshSessionInput {
+  expiresAt?: string
+  projectSlug?: string
+  publicKey: string
+  scopes?: string[]
+  tenantSlug?: string
+  ttlSeconds?: number
+  userLogin?: string
+  username?: string
+}
+
+export interface ListSshSessionsOptions {
+  includeExpired?: boolean
+  includeRevoked?: boolean
+  tenantSlug?: string
+  userLogin?: string
+}
+
+export interface RevokeSshSessionInput {
+  identifier: string
   userLogin?: string
 }
 
@@ -168,6 +237,36 @@ interface AuthSshKeyRow {
   userId: string | null
 }
 
+interface AuthProjectRow {
+  createdAt: string
+  displayName: string
+  id: string
+  slug: string
+  tenantId: string
+}
+
+interface AuthProjectMembershipRow {
+  createdAt: string
+  principalId: string
+  projectId: string
+  role: AuthMembershipRole
+}
+
+interface AuthSshSessionRow {
+  algorithm: string
+  createdAt: string
+  currentProjectSlug: string | null
+  expiresAt: string
+  fingerprint: string
+  id: string
+  principalId: string
+  publicKey: string
+  revokedAt: string | null
+  scopes: string
+  tenantId: string
+  username: string
+}
+
 function normalizeIdentifier(value: string | undefined, fallback: string): string {
   return value
     ?.trim()
@@ -216,6 +315,13 @@ function migrateDatabase(database: Database.Database): void {
 
   if (currentVersion === 1) {
     migrateSchemaV1ToV2(database)
+    migrateSchemaV2ToV3(database)
+    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
+    return
+  }
+
+  if (currentVersion === 2) {
+    migrateSchemaV2ToV3(database)
     database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
     return
   }
@@ -326,6 +432,14 @@ function createSchemaV2(database: Database.Database): void {
       UNIQUE (project_id, source_name)
     );
 
+    CREATE TABLE project_memberships (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, principal_id)
+    );
+
     CREATE TABLE tenant_shared_sources (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -356,6 +470,7 @@ function createSchemaV2(database: Database.Database): void {
     CREATE INDEX idx_service_accounts_principal_id ON service_accounts(principal_id);
     CREATE INDEX idx_api_tokens_principal_id ON api_tokens(principal_id);
     CREATE INDEX idx_projects_tenant_id ON projects(tenant_id);
+    CREATE INDEX idx_project_memberships_principal_id ON project_memberships(principal_id);
     CREATE INDEX idx_ssh_sessions_fingerprint ON ssh_sessions(fingerprint);
     CREATE INDEX idx_ssh_sessions_principal_id ON ssh_sessions(principal_id);
   `)
@@ -561,6 +676,69 @@ function createSchemaV2Extensions(database: Database.Database): void {
   `)
 }
 
+function migrateSchemaV2ToV3(database: Database.Database): void {
+  const tx = database.transaction(() => {
+    database.exec(`
+      CREATE TABLE project_memberships (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, principal_id)
+      );
+
+      CREATE INDEX idx_project_memberships_principal_id ON project_memberships(principal_id);
+    `)
+
+    const now = createTimestamp()
+    const tenants = database
+      .prepare(
+        `SELECT id, slug, display_name AS displayName, created_at AS createdAt
+         FROM tenants`,
+      )
+      .all() as TenantRow[]
+
+    const getProject = database.prepare(
+      `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt
+       FROM projects
+       WHERE tenant_id = ? AND slug = ?`,
+    )
+    const insertProject = database.prepare(
+      `INSERT INTO projects (id, tenant_id, slug, display_name, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    const memberships = database.prepare(
+      `SELECT tenant_id AS tenantId, principal_id AS principalId, role, created_at AS createdAt
+       FROM memberships
+       WHERE tenant_id = ?`,
+    )
+    const insertProjectMembership = database.prepare(
+      `INSERT OR IGNORE INTO project_memberships (project_id, principal_id, role, created_at)
+       VALUES (?, ?, ?, ?)`,
+    )
+
+    for (const tenant of tenants) {
+      let project = getProject.get(tenant.id, DEFAULT_PROJECT_SLUG) as AuthProjectRow | undefined
+      if (!project) {
+        project = {
+          createdAt: now,
+          displayName: DEFAULT_PROJECT_NAME,
+          id: randomUUID(),
+          slug: DEFAULT_PROJECT_SLUG,
+          tenantId: tenant.id,
+        }
+        insertProject.run(project.id, project.tenantId, project.slug, project.displayName, project.createdAt)
+      }
+
+      for (const membership of memberships.all(tenant.id) as MembershipRow[]) {
+        insertProjectMembership.run(project.id, membership.principalId, membership.role, membership.createdAt)
+      }
+    }
+  })
+
+  tx()
+}
+
 function parseTenant(row: TenantRow): AuthTenant {
   return {
     createdAt: row.createdAt,
@@ -624,6 +802,82 @@ function parseAuthSshKey(row: AuthSshKeyRow): AuthSshKey {
     publicKey: row.publicKey,
     userId: row.userId,
   }
+}
+
+function parseProject(row: AuthProjectRow): AuthProject {
+  return {
+    createdAt: row.createdAt,
+    displayName: row.displayName,
+    id: row.id,
+    slug: row.slug,
+    tenantId: row.tenantId,
+  }
+}
+
+function parseProjectMembership(row: AuthProjectMembershipRow): AuthProjectMembership {
+  return {
+    createdAt: row.createdAt,
+    principalId: row.principalId,
+    projectId: row.projectId,
+    role: row.role,
+  }
+}
+
+function normalizeScopes(scopes: string[] | undefined): string[] {
+  const normalized = (scopes && scopes.length > 0 ? scopes : [...DEFAULT_SSH_SESSION_SCOPES])
+    .map((scope) => scope.trim())
+    .filter(Boolean)
+
+  return [...new Set(normalized)].sort()
+}
+
+function parseScopes(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (Array.isArray(parsed)) return normalizeScopes(parsed.filter((entry): entry is string => typeof entry === 'string'))
+  } catch {
+    // Older hand-authored rows can still use a comma-separated scope list.
+  }
+
+  return normalizeScopes(value.split(','))
+}
+
+function parseSshSession(row: AuthSshSessionRow): AuthSshSession {
+  return {
+    algorithm: row.algorithm,
+    createdAt: row.createdAt,
+    currentProjectSlug: row.currentProjectSlug || DEFAULT_PROJECT_SLUG,
+    expiresAt: row.expiresAt,
+    fingerprint: row.fingerprint,
+    id: row.id,
+    principalId: row.principalId,
+    publicKey: row.publicKey,
+    revokedAt: row.revokedAt,
+    scopes: parseScopes(row.scopes),
+    tenantId: row.tenantId,
+    username: row.username,
+  }
+}
+
+function resolveSessionExpiresAt(input: Pick<CreateSshSessionInput, 'expiresAt' | 'ttlSeconds'>): string {
+  const explicitExpiresAt = input.expiresAt?.trim()
+  if (explicitExpiresAt) {
+    const timestamp = Date.parse(explicitExpiresAt)
+    if (Number.isNaN(timestamp)) {
+      throw new Error(`Invalid SSH session expiration: ${input.expiresAt}`)
+    }
+    if (timestamp <= Date.now()) {
+      throw new Error(`SSH session expiration must be in the future: ${input.expiresAt}`)
+    }
+    return new Date(timestamp).toISOString()
+  }
+
+  const ttlSeconds = input.ttlSeconds ?? DEFAULT_SESSION_TTL_SECONDS
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    throw new Error(`SSH session ttlSeconds must be positive: ${ttlSeconds}`)
+  }
+
+  return new Date(Date.now() + ttlSeconds * 1000).toISOString()
 }
 
 function getTenantById(database: Database.Database, tenantId: string): AuthTenant | null {
@@ -786,6 +1040,141 @@ function getPrimaryMembershipForPrincipal(
   return row ? parseMembership(row) : null
 }
 
+function getMembershipForPrincipalInTenant(
+  database: Database.Database,
+  principalId: string,
+  tenantId: string,
+): AuthMembership | null {
+  const row = database
+    .prepare(
+      `SELECT m.tenant_id AS tenantId, m.principal_id AS principalId, u.id AS userId, m.role, m.created_at AS createdAt
+       FROM memberships m
+       LEFT JOIN users u ON u.principal_id = m.principal_id
+       WHERE m.principal_id = ? AND m.tenant_id = ?`,
+    )
+    .get(principalId, tenantId) as MembershipRow | undefined
+
+  return row ? parseMembership(row) : null
+}
+
+function getProjectByTenantAndSlug(
+  database: Database.Database,
+  tenantId: string,
+  slug: string,
+): AuthProject | null {
+  const row = database
+    .prepare(
+      `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt
+       FROM projects
+       WHERE tenant_id = ? AND slug = ?`,
+    )
+    .get(tenantId, slug) as AuthProjectRow | undefined
+
+  return row ? parseProject(row) : null
+}
+
+function getProjectMembership(
+  database: Database.Database,
+  projectId: string,
+  principalId: string,
+): AuthProjectMembership | null {
+  const row = database
+    .prepare(
+      `SELECT project_id AS projectId, principal_id AS principalId, role, created_at AS createdAt
+       FROM project_memberships
+       WHERE project_id = ? AND principal_id = ?`,
+    )
+    .get(projectId, principalId) as AuthProjectMembershipRow | undefined
+
+  return row ? parseProjectMembership(row) : null
+}
+
+function ensureProjectForTenant(
+  database: Database.Database,
+  tenantId: string,
+  slug: string,
+  displayName: string,
+): AuthProject {
+  const normalizedSlug = normalizeIdentifier(slug, DEFAULT_PROJECT_SLUG)
+  const existing = getProjectByTenantAndSlug(database, tenantId, normalizedSlug)
+  if (existing) return existing
+
+  const projectRow: AuthProjectRow = {
+    createdAt: createTimestamp(),
+    displayName: normalizeLabel(displayName, DEFAULT_PROJECT_NAME),
+    id: randomUUID(),
+    slug: normalizedSlug,
+    tenantId,
+  }
+
+  database
+    .prepare(
+      `INSERT INTO projects (id, tenant_id, slug, display_name, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(projectRow.id, projectRow.tenantId, projectRow.slug, projectRow.displayName, projectRow.createdAt)
+
+  return parseProject(projectRow)
+}
+
+function ensureProjectMembership(
+  database: Database.Database,
+  projectId: string,
+  principalId: string,
+  role: AuthMembershipRole,
+): AuthProjectMembership {
+  database
+    .prepare(
+      `INSERT OR IGNORE INTO project_memberships (project_id, principal_id, role, created_at)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(projectId, principalId, role, createTimestamp())
+
+  const membership = getProjectMembership(database, projectId, principalId)
+  if (!membership) {
+    throw new Error('Failed to create project membership.')
+  }
+  return membership
+}
+
+function getActiveSshSessionByFingerprint(
+  database: Database.Database,
+  fingerprint: string,
+  username?: string,
+): AuthSshSession | null {
+  const trimmedUsername = username?.trim()
+  const sql = `SELECT id, tenant_id AS tenantId, principal_id AS principalId, current_project_slug AS currentProjectSlug,
+                      username, algorithm, public_key AS publicKey, fingerprint, scopes,
+                      created_at AS createdAt, expires_at AS expiresAt, revoked_at AS revokedAt
+               FROM ssh_sessions
+               WHERE fingerprint = ?
+                 ${trimmedUsername ? 'AND username = ?' : ''}
+                 AND revoked_at IS NULL
+                 AND expires_at > ?
+               ORDER BY expires_at DESC
+               LIMIT 1`
+  const params = trimmedUsername ? [fingerprint, trimmedUsername, createTimestamp()] : [fingerprint, createTimestamp()]
+  const row = database.prepare(sql).get(...params) as AuthSshSessionRow | undefined
+
+  return row ? parseSshSession(row) : null
+}
+
+function getSshSessionByIdentifier(database: Database.Database, identifier: string): AuthSshSession | null {
+  const row = database
+    .prepare(
+      `SELECT id, tenant_id AS tenantId, principal_id AS principalId, current_project_slug AS currentProjectSlug,
+              username, algorithm, public_key AS publicKey, fingerprint, scopes,
+              created_at AS createdAt, expires_at AS expiresAt, revoked_at AS revokedAt
+       FROM ssh_sessions
+       WHERE id = ? OR username = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .get(identifier, identifier) as AuthSshSessionRow | undefined
+
+  return row ? parseSshSession(row) : null
+}
+
 function countUsers(database: Database.Database): number {
   const row = database
     .prepare('SELECT COUNT(*) AS count FROM users')
@@ -794,18 +1183,57 @@ function countUsers(database: Database.Database): number {
   return row.count
 }
 
+function buildPrincipalSession(
+  database: Database.Database,
+  params: {
+    membership: AuthMembership
+    principal: AuthPrincipal
+    projectSlug?: string
+    scopes?: string[]
+    sshSession?: AuthSshSession | null
+    tenant: AuthTenant
+  },
+): AuthPrincipalSession | null {
+  const project = getProjectByTenantAndSlug(
+    database,
+    params.tenant.id,
+    normalizeIdentifier(params.projectSlug, DEFAULT_PROJECT_SLUG),
+  )
+  if (!project) return null
+
+  const projectMembership = getProjectMembership(database, project.id, params.principal.id)
+  if (!projectMembership) return null
+
+  const user = getUserByPrincipalId(database, params.principal.id)
+  return {
+    displayName: user?.displayName ?? params.principal.displayName,
+    login: user?.login ?? params.principal.id,
+    membership: params.membership,
+    principal: params.principal,
+    project,
+    projectMembership,
+    scopes: normalizeScopes(params.scopes),
+    sshSession: params.sshSession ?? null,
+    tenant: params.tenant,
+    user,
+  }
+}
+
 export interface AuthStore {
   addAuthIdentity(input: AddAuthIdentityInput): AuthIdentity
   addSshKey(input: AddSshKeyInput): AuthSshKey
   close(): void
+  createSshSession(input: CreateSshSessionInput): AuthSshSession
   dbPath: string
   ensureSingleTenantOwner(opts?: EnsureSingleTenantOwnerOptions): SingleTenantOwner
-  findPrincipalBySshFingerprint(fingerprint: string): AuthPrincipalSession | null
+  findPrincipalBySshFingerprint(fingerprint: string, username?: string): AuthPrincipalSession | null
   findUserByAuthIdentity(params: Pick<AuthIdentity, 'issuer' | 'provider' | 'subject'>): AuthUser | null
   findUserByLogin(login: string): AuthUser | null
   findUserBySshFingerprint(fingerprint: string): AuthUser | null
   listAuthIdentities(userLogin?: string): AuthIdentity[]
+  listSshSessions(opts?: ListSshSessionsOptions): AuthSshSession[]
   listSshKeys(userLogin?: string): AuthSshKey[]
+  revokeSshSession(input: RevokeSshSessionInput): AuthSshSession
   signUpFirstUserWithAuthIdentity(input: SignUpFirstUserWithAuthIdentityInput): {
     identity: AuthIdentity
     owner: SingleTenantOwner
@@ -896,6 +1324,9 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
       if (!membership) {
         throw new Error('Failed to create the default owner membership.')
       }
+
+      const project = ensureProjectForTenant(database, tenant.id, DEFAULT_PROJECT_SLUG, DEFAULT_PROJECT_NAME)
+      ensureProjectMembership(database, project.id, principal.id, parseMembership(membership).role)
 
       return {
         instance: tenant,
@@ -1080,7 +1511,96 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       return parseAuthSshKey(sshKey)
     },
-    findPrincipalBySshFingerprint(fingerprint: string): AuthPrincipalSession | null {
+    createSshSession(input: CreateSshSessionInput): AuthSshSession {
+      const user = resolveTargetUser(database, input.userLogin)
+      const principal = getPrincipalById(database, user.principalId)
+      if (!principal) {
+        throw new Error(`Principal "${user.principalId}" for user "${user.login}" was not found.`)
+      }
+
+      const tenant = input.tenantSlug
+        ? getTenantBySlug(database, normalizeIdentifier(input.tenantSlug, DEFAULT_TENANT_SLUG))
+        : (() => {
+            const primaryMembership = getPrimaryMembershipForPrincipal(database, principal.id)
+            return primaryMembership ? getTenantById(database, primaryMembership.tenantId) : null
+          })()
+      if (!tenant) {
+        throw new Error(`Tenant "${input.tenantSlug ?? DEFAULT_TENANT_SLUG}" was not found.`)
+      }
+
+      const membership = getMembershipForPrincipalInTenant(database, principal.id, tenant.id)
+      if (!membership) {
+        throw new Error(`Principal "${principal.id}" is not a member of tenant "${tenant.slug}".`)
+      }
+
+      const projectSlug = normalizeIdentifier(input.projectSlug, DEFAULT_PROJECT_SLUG)
+      const project = ensureProjectForTenant(database, tenant.id, projectSlug, projectSlug)
+      ensureProjectMembership(database, project.id, principal.id, membership.role)
+
+      const normalizedKey = normalizeSshPublicKey(input.publicKey)
+      const scopes = normalizeScopes(input.scopes)
+      const now = createTimestamp()
+      const expiresAt = resolveSessionExpiresAt(input)
+      const sessionRow: AuthSshSessionRow = {
+        algorithm: normalizedKey.algorithm,
+        createdAt: now,
+        currentProjectSlug: project.slug,
+        expiresAt,
+        fingerprint: normalizedKey.fingerprint,
+        id: randomUUID(),
+        principalId: principal.id,
+        publicKey: normalizedKey.publicKey,
+        revokedAt: null,
+        scopes: JSON.stringify(scopes),
+        tenantId: tenant.id,
+        username: input.username?.trim() || `sess_${randomUUID().replaceAll('-', '').slice(0, 16)}`,
+      }
+
+      database
+        .prepare(
+          `INSERT INTO ssh_sessions (id, tenant_id, principal_id, current_project_slug, username,
+                                    algorithm, public_key, fingerprint, scopes, created_at, expires_at, revoked_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          sessionRow.id,
+          sessionRow.tenantId,
+          sessionRow.principalId,
+          sessionRow.currentProjectSlug,
+          sessionRow.username,
+          sessionRow.algorithm,
+          sessionRow.publicKey,
+          sessionRow.fingerprint,
+          sessionRow.scopes,
+          sessionRow.createdAt,
+          sessionRow.expiresAt,
+          sessionRow.revokedAt,
+        )
+
+      return parseSshSession(sessionRow)
+    },
+    findPrincipalBySshFingerprint(fingerprint: string, username?: string): AuthPrincipalSession | null {
+      const sshSession = getActiveSshSessionByFingerprint(database, fingerprint, username)
+      if (sshSession) {
+        const principal = getPrincipalById(database, sshSession.principalId)
+        if (!principal) return null
+
+        const tenant = getTenantById(database, sshSession.tenantId)
+        if (!tenant) return null
+
+        const membership = getMembershipForPrincipalInTenant(database, principal.id, tenant.id)
+        if (!membership) return null
+
+        return buildPrincipalSession(database, {
+          membership,
+          principal,
+          projectSlug: sshSession.currentProjectSlug,
+          scopes: sshSession.scopes,
+          sshSession,
+          tenant,
+        })
+      }
+
       const sshKey = getSshKeyByFingerprint(database, fingerprint)
       if (!sshKey) return null
 
@@ -1093,15 +1613,14 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
       const tenant = getTenantById(database, membership.tenantId)
       if (!tenant) return null
 
-      const user = getUserByPrincipalId(database, principal.id)
-      return {
-        displayName: user?.displayName ?? principal.displayName,
-        login: user?.login ?? principal.id,
+      return buildPrincipalSession(database, {
         membership,
         principal,
+        projectSlug: DEFAULT_PROJECT_SLUG,
+        scopes: [...DEFAULT_SSH_SESSION_SCOPES],
+        sshSession: null,
         tenant,
-        user,
-      }
+      })
     },
     findUserByAuthIdentity(params: Pick<AuthIdentity, 'issuer' | 'provider' | 'subject'>): AuthUser | null {
       const identity = getIdentityByKey(database, {
@@ -1117,6 +1636,50 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     },
     findUserBySshFingerprint(fingerprint: string): AuthUser | null {
       return this.findPrincipalBySshFingerprint(fingerprint)?.user ?? null
+    },
+    listSshSessions(opts: ListSshSessionsOptions = {}): AuthSshSession[] {
+      const user = opts.userLogin
+        ? getUserByLogin(database, normalizeIdentifier(opts.userLogin, DEFAULT_OWNER_LOGIN))
+        : (() => {
+            try {
+              return requireImplicitUser(database)
+            } catch {
+              return null
+            }
+          })()
+      if (!user) return []
+
+      const conditions = ['ss.principal_id = ?']
+      const params: unknown[] = [user.principalId]
+
+      if (opts.tenantSlug) {
+        const tenant = getTenantBySlug(database, normalizeIdentifier(opts.tenantSlug, DEFAULT_TENANT_SLUG))
+        if (!tenant) return []
+        conditions.push('ss.tenant_id = ?')
+        params.push(tenant.id)
+      }
+
+      if (!opts.includeExpired) {
+        conditions.push('ss.expires_at > ?')
+        params.push(createTimestamp())
+      }
+
+      if (!opts.includeRevoked) {
+        conditions.push('ss.revoked_at IS NULL')
+      }
+
+      return database
+        .prepare(
+          `SELECT ss.id, ss.tenant_id AS tenantId, ss.principal_id AS principalId,
+                  ss.current_project_slug AS currentProjectSlug, ss.username, ss.algorithm,
+                  ss.public_key AS publicKey, ss.fingerprint, ss.scopes,
+                  ss.created_at AS createdAt, ss.expires_at AS expiresAt, ss.revoked_at AS revokedAt
+           FROM ssh_sessions ss
+           WHERE ${conditions.join(' AND ')}
+           ORDER BY ss.created_at DESC`,
+        )
+        .all(...params)
+        .map((row) => parseSshSession(row as AuthSshSessionRow))
     },
     listAuthIdentities(userLogin): AuthIdentity[] {
       const user = userLogin
@@ -1163,6 +1726,32 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         )
         .all(user.principalId)
         .map((row) => parseAuthSshKey(row as AuthSshKeyRow))
+    },
+    revokeSshSession(input: RevokeSshSessionInput): AuthSshSession {
+      const identifier = input.identifier.trim()
+      if (!identifier) throw new Error('Missing required SSH session id or username.')
+
+      const user = resolveTargetUser(database, input.userLogin)
+      const session = getSshSessionByIdentifier(database, identifier)
+      if (!session || session.principalId !== user.principalId) {
+        throw new Error(`SSH session "${identifier}" was not found.`)
+      }
+
+      if (!session.revokedAt) {
+        database
+          .prepare(
+            `UPDATE ssh_sessions
+             SET revoked_at = ?
+             WHERE id = ?`,
+          )
+          .run(createTimestamp(), session.id)
+      }
+
+      const revoked = getSshSessionByIdentifier(database, session.id)
+      if (!revoked) {
+        throw new Error(`SSH session "${identifier}" was not found after revoke.`)
+      }
+      return revoked
     },
     signUpFirstUserWithAuthIdentity(input: SignUpFirstUserWithAuthIdentityInput) {
       const issuer = input.issuer.trim()

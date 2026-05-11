@@ -58,12 +58,54 @@ function createTextCommand(name: string, content: string) {
   }))
 }
 
+function hasScope(scopes: Set<string>, scope: string): boolean {
+  return scopes.has(scope) || scopes.has('admin')
+}
+
+function createBootstrapCommand(payload: unknown, canRead: boolean) {
+  return defineCommand('bootstrap', async (args) => {
+    if (!canRead) {
+      return {
+        stdout: '',
+        stderr: 'bootstrap requires bootstrap:read scope.\n',
+        exitCode: 126,
+      }
+    }
+
+    if (args.includes('--json')) {
+      return {
+        stdout: `${JSON.stringify(payload, null, 2)}\n`,
+        stderr: '',
+        exitCode: 0,
+      }
+    }
+
+    return {
+      stdout: 'Run `bootstrap --json` for the machine-readable session manifest.\n',
+      stderr: '',
+      exitCode: 0,
+    }
+  })
+}
+
+export interface CreateBashSessionContext {
+  displayName?: string
+  login?: string
+  principalId?: string
+  principalKind?: string
+  projectSlug?: string
+  scopes?: string[]
+  tenantId?: string
+  tenantSlug?: string
+}
+
 export interface CreateBashOptions {
   docsDir?: string
   docsName?: string
   env?: Record<string, string>
   instanceConfig?: InstanceConfig
   registryPath?: string
+  session?: CreateBashSessionContext
   sshHost?: string
   sshPort?: number
   workspaceDir?: string
@@ -78,10 +120,17 @@ export async function createBash(opts: CreateBashOptions = {}) {
   const sourceStore = await loadSourceStore({
     registryPath,
     fallbackDocsDir: docsDir,
+    principalId: opts.session?.principalId,
+    projectSlug: opts.session?.projectSlug,
+    tenantSlug: opts.session?.tenantSlug,
     workspaceDir,
   })
   await mkdir(sourceStore.workspaceRootPath, { recursive: true })
-  await ensureWorkspaceLayout(sourceStore.workspaceRootPath)
+  await ensureWorkspaceLayout(sourceStore.tenantRootPath, {
+    homeRootPath: sourceStore.homeRootPath,
+    projectSlug: sourceStore.projectSlug,
+    projectRootPath: sourceStore.projectRootPath,
+  })
   const sshHost = opts.sshHost ?? instanceConfig.ssh.connectHost
   const sshPort = opts.sshPort ?? instanceConfig.ssh.connectPort
   const agentsMarkdown = createAgentsMarkdown({
@@ -113,7 +162,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '- `/project/sources/<name>` contains additional read-only sources.',
     '- `/project/issues` is project issue tracking: what to do, why, status, next action, and result links.',
     '- `/project/tasks` stores research and work results.',
-    '- `/projects/default` is the concrete current project path.',
+    `- \`/projects/${sourceStore.projectSlug}\` is the concrete current project path.`,
     '- `/tmp` is temporary and resets between SSH sessions.',
     '',
     'Use `/home` for personal notes, `/project/issues` for issue records, `/project/tasks/<task-slug>/` for task results, and `/project/docs` for polished long-term references.',
@@ -130,6 +179,47 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '- `tasks/`: research and work results.',
     '',
   ].join('\n')
+  const scopes = new Set(opts.session?.scopes ?? [
+    'bootstrap:read',
+    'home:read',
+    'home:write',
+    'project:read',
+    'project:write',
+    'projects:read',
+    'sources:read',
+  ])
+  const canReadHome = hasScope(scopes, 'home:read') || hasScope(scopes, 'home:write')
+  const canWriteHome = hasScope(scopes, 'home:write')
+  const canReadProject = hasScope(scopes, 'project:read') || hasScope(scopes, 'project:write')
+  const canWriteProject = hasScope(scopes, 'project:write')
+  const canReadProjects = hasScope(scopes, 'projects:read')
+  const canReadSources = hasScope(scopes, 'sources:read')
+  const canReadBootstrap = hasScope(scopes, 'bootstrap:read')
+  const bootstrapPayload = {
+    tenant: opts.session?.tenantSlug ?? 'default',
+    principal: {
+      displayName: opts.session?.displayName ?? opts.session?.login ?? 'anonymous',
+      id: opts.session?.principalId ?? 'anonymous',
+      kind: opts.session?.principalKind ?? 'anonymous',
+      login: opts.session?.login ?? 'anonymous',
+    },
+    project: {
+      root: sourceStore.projectMountPath,
+      slug: sourceStore.projectSlug,
+    },
+    paths: {
+      rootReadme: '/README.md',
+      home: sourceStore.homeMountPath,
+      project: sourceStore.projectMountPath,
+      projectDocs: sourceStore.projectDocsMountPath,
+      projectIssues: `${sourceStore.projectMountPath}/issues`,
+      projectTasks: `${sourceStore.projectMountPath}/tasks`,
+      projectSources: `${sourceStore.projectMountPath}/sources`,
+      projects: sourceStore.projectsMountPath,
+      tmp: sourceStore.tmpMountPath,
+    },
+    scopes: [...scopes].sort(),
+  }
 
   const fs = new ExtendedMountableFs({
     readOnlyPaths: [
@@ -146,44 +236,62 @@ export async function createBash(opts: CreateBashOptions = {}) {
       '/proc',
       '/usr',
       '/usr/bin',
-      ...getWorkspaceWritablePaths({
+      ...(canWriteHome || canWriteProject ? getWorkspaceWritablePaths({
         homeMountPath: sourceStore.homeMountPath,
         projectMountPath: sourceStore.projectMountPath,
         projectSlug: sourceStore.projectSlug,
         projectsMountPath: sourceStore.projectsMountPath,
         tmpMountPath: sourceStore.tmpMountPath,
-      }),
+      }).filter((path) => {
+        if (path === sourceStore.tmpMountPath) return true
+        if (path === sourceStore.homeMountPath || path.startsWith(`${sourceStore.homeMountPath}/`)) {
+          return canWriteHome
+        }
+        if (path.startsWith(`${sourceStore.projectMountPath}/`)) {
+          return canWriteProject
+        }
+        const concreteProjectPath = `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}`
+        if (path.startsWith(`${concreteProjectPath}/`)) {
+          return canWriteProject
+        }
+        return false
+      }) : [sourceStore.tmpMountPath]),
     ],
     initialFiles: {
       '/README.md': rootReadme,
-      '/project/README.md': projectReadme,
-      [`/projects/${sourceStore.projectSlug}/README.md`]: projectReadme,
+      ...(canReadProject ? { '/project/README.md': projectReadme } : {}),
+      ...(canReadProjects ? { [`/projects/${sourceStore.projectSlug}/README.md`]: projectReadme } : {}),
     },
     mounts: [
-      {
+      ...(canReadHome ? [{
         mountPoint: sourceStore.homeMountPath,
         filesystem: new ReadWriteFs({ root: sourceStore.homeRootPath }),
-      },
-      {
+      }] : []),
+      ...(canReadProject ? [{
         mountPoint: `${sourceStore.projectMountPath}/issues`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/issues` }),
       },
       {
         mountPoint: `${sourceStore.projectMountPath}/tasks`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
-      },
-      {
+      }] : []),
+      ...(canReadProjects ? [{
         mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/issues`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/issues` }),
       },
       {
         mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/tasks`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
-      },
-      ...sourceStore.mounts.map((mount) => ({
-        mountPoint: mount.mountPoint,
-        filesystem: new OverlayFs({ root: mount.rootPath, mountPoint: '/', readOnly: true }),
-      })),
+      }] : []),
+      ...(canReadProject && canReadSources ? sourceStore.mounts
+        .filter((mount) => {
+          if (mount.mountPoint.startsWith(`${sourceStore.projectsMountPath}/`)) return canReadProjects
+          return true
+        })
+        .map((mount) => ({
+          mountPoint: mount.mountPoint,
+          filesystem: new OverlayFs({ root: mount.rootPath, mountPoint: '/', readOnly: true }),
+        })) : []),
       {
         mountPoint: sourceStore.tmpMountPath,
         filesystem: new InMemoryFs(),
@@ -207,6 +315,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
       createTextCommand('agents', agentsMarkdown),
       createTextCommand('skill', skillMarkdown),
       createTextCommand('setup', setupMarkdown),
+      createBootstrapCommand(bootstrapPayload, canReadBootstrap),
     ],
     defenseInDepth: true,
     executionLimits: EXECUTION_LIMITS,

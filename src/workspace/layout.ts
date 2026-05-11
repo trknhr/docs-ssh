@@ -186,12 +186,20 @@ export function getWorkspaceReadOnlyPaths(opts: {
   ]
 }
 
-export async function ensureWorkspaceLayout(rootPath: string): Promise<void> {
+export async function ensureWorkspaceLayout(
+  rootPath: string,
+  opts: {
+    homeRootPath?: string
+    projectSlug?: string
+    projectRootPath?: string
+  } = {},
+): Promise<void> {
   const resolvedRootPath = resolve(rootPath)
+  const projectSlug = opts.projectSlug ?? DEFAULT_PROJECT_SLUG
   await mkdir(resolvedRootPath, { recursive: true })
 
-  const homeRootPath = resolve(resolvedRootPath, 'home')
-  const projectRootPath = resolve(resolvedRootPath, 'projects', DEFAULT_PROJECT_SLUG)
+  const homeRootPath = resolve(opts.homeRootPath ?? resolve(resolvedRootPath, 'home'))
+  const projectRootPath = resolve(opts.projectRootPath ?? resolve(resolvedRootPath, 'projects', projectSlug))
 
   await writeFileIfMissing(resolve(resolvedRootPath, 'README.md'), createWorkspaceReadme())
 
@@ -199,7 +207,7 @@ export async function ensureWorkspaceLayout(rootPath: string): Promise<void> {
   await writeFileIfMissing(resolve(homeRootPath, 'README.md'), createHomeReadme())
 
   await mkdir(projectRootPath, { recursive: true })
-  await writeFileIfMissing(resolve(projectRootPath, 'README.md'), createProjectReadme(DEFAULT_PROJECT_SLUG))
+  await writeFileIfMissing(resolve(projectRootPath, 'README.md'), createProjectReadme(projectSlug))
   for (const directory of PROJECT_DIRECTORIES) {
     const directoryPath = resolve(projectRootPath, directory.name)
     await mkdir(directoryPath, { recursive: true })

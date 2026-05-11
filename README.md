@@ -116,8 +116,9 @@ The distributable skill file at `skills/SKILL.md` assumes this alias-based setup
 
 ## Agent Helper Files
 
-Inside an SSH session, `docs-ssh` exposes three helper commands:
+Inside an SSH session, `docs-ssh` exposes helper commands:
 
+- `bootstrap --json` prints the current tenant, principal, project, paths, and scopes as a machine-readable session manifest
 - `agents` prints a short instructions snippet for `AGENTS.md` or similar tool instruction files
 - `skill` prints a reusable `SKILL.md`
 - `setup` prints the setup guide with suggested installation paths
@@ -222,10 +223,10 @@ Mounted paths:
 
 - every source is available at `/project/sources/<name>`
 - the default source is also available at `/project/docs`
-- `/home` persists private personal notes across sessions
-- `/project` is the current project alias backed by `/projects/default`
+- `/home` persists private principal-scoped notes under `tenants/<tenant>/principals/<principal>/home`
+- `/project` is the current project alias backed by `/projects/<project>`
 - `/project/issues` tracks what to do, why, status, next action, and result links
-- `/project/tasks` stores research and work results
+- `/project/tasks` stores research and work results under `tenants/<tenant>/projects/<project>`
 - `/tmp` is writable and resets between SSH sessions
 
 The viewer picks up registry changes on refresh. Existing interactive shell sessions will not see new mounts until you reconnect.
@@ -246,7 +247,7 @@ The viewer picks up registry changes on refresh. Existing interactive shell sess
     issues/
     tasks/
   projects/
-    default/
+    <project>/
   tmp/
 ```
 
@@ -305,6 +306,31 @@ You can override these with CLI flags such as `--db-path`, `--tenant-slug`, `--o
 `auth add-web-identity` is the prelink step for web sign-in: the OIDC callback only creates a viewer session when the incoming `(provider, issuer, subject)` tuple already exists in `auth_identities`.
 
 If `auth.sqlite` is still empty, the first successful web OIDC sign-in auto-creates a single-tenant owner user and links that identity immediately. Use `auth init` when you want to choose the owner login or bootstrap the auth DB ahead of time.
+
+## Operator SSH Sessions
+
+Server operators can issue short-lived SSH sessions for agents, workers, or other temporary clients without giving them a long-lived user key. A session is bound to a tenant principal, current project, public key, expiration, and scope list.
+
+Example: create a one-hour read-only project session for an agent key.
+
+```bash
+ssh-keygen -t ed25519 -N '' -f /tmp/docs-ssh-session
+pnpm run cli -- auth create-ssh-session /tmp/docs-ssh-session.pub \
+  --project default \
+  --ttl-seconds 3600 \
+  --scopes bootstrap:read,project:read,sources:read
+```
+
+Connect with the printed username and the matching private key. Inside the SSH session, run `bootstrap --json` first so the client can read its tenant, principal, project, mounted paths, and scopes.
+
+Use these commands to audit or revoke server-issued sessions:
+
+```bash
+pnpm run cli -- auth list-ssh-sessions --all
+pnpm run cli -- auth revoke-ssh-session <session-id-or-username>
+```
+
+Long-lived keys in `ssh_keys` continue to authenticate the owner into the default project. Short-lived rows in `ssh_sessions` are intended for server-issued access that should expire or be revoked independently.
 
 ## Web OIDC Session
 

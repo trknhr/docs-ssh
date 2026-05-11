@@ -47,9 +47,10 @@ function createSourceStoreFixture(): SourceStore {
     projectsMountPath: '/projects',
     sharedMountPath: '/shared',
     tmpMountPath: '/tmp',
-    homeRootPath: '/data/workspace/home',
-    projectRootPath: '/data/workspace/projects/default',
-    sharedRootPath: '/data/workspace/shared',
+    homeRootPath: '/data/workspace/tenants/default/principals/owner/home',
+    projectRootPath: '/data/workspace/tenants/default/projects/default',
+    sharedRootPath: '/data/workspace/tenants/default/shared',
+    tenantRootPath: '/data/workspace/tenants/default',
     workspaceRootPath: '/data/workspace',
   }
 }
@@ -69,7 +70,9 @@ describe('helper content', () => {
     expect(markdown).toContain('- `/project/issues` -> issue tracking')
     expect(markdown).toContain('- `/project/tasks` -> research and work results')
     expect(markdown).toContain('- `/home` -> private personal notes')
+    expect(markdown).toContain('Run `bootstrap --json`')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
+    expect(markdown).toContain('ssh docs-ssh -p 2222 bootstrap --json')
     expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /project/docs')
     expect(markdown).toContain(
       `ssh docs-ssh -p 2222 "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /project/issues/example-issue.md"`,
@@ -90,6 +93,7 @@ describe('helper content', () => {
     expect(markdown).toContain('description: Search and update the Project Docs SSH filesystem using shell tools like grep, find, and cat.')
     expect(markdown).toContain('Use ssh docs.example.com to inspect the mounted project filesystem before making changes.')
     expect(markdown).not.toContain('-p 22')
+    expect(markdown).toContain('ssh docs.example.com bootstrap --json')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
     expect(markdown).toContain('ssh docs.example.com grep -R "keyword" /project/docs')
   })

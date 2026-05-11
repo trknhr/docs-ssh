@@ -61,6 +61,7 @@ function createBanner(docsName: string, principal: AuthenticatedPrincipal): stri
     '\r\n',
     `${chalkInstance.dim('Authenticated as:')} ${principal.auth.login} (${principal.auth.displayName})\r\n`,
     `${chalkInstance.dim('Tenant:')} ${principal.auth.tenant.slug}\r\n`,
+    `${chalkInstance.dim('Project:')} ${principal.auth.project.slug}\r\n`,
     ...(principal.requestedUsername !== principal.auth.login
       ? [`${chalkInstance.dim('Requested SSH user:')} ${principal.requestedUsername}\r\n`]
       : []),
@@ -174,9 +175,27 @@ function createSessionEnv(principal: AuthenticatedPrincipal): Record<string, str
     DOCS_SSH_AUTH_TENANT_ID: principal.auth.tenant.id,
     DOCS_SSH_AUTH_TENANT_SLUG: principal.auth.tenant.slug,
     DOCS_SSH_AUTH_USER_ID: principal.auth.user?.id ?? '',
+    DOCS_SSH_PROJECT_ID: principal.auth.project.id,
+    DOCS_SSH_PROJECT_ROLE: principal.auth.projectMembership.role,
+    DOCS_SSH_PROJECT_SLUG: principal.auth.project.slug,
     DOCS_SSH_REQUESTED_USERNAME: principal.requestedUsername,
+    DOCS_SSH_SCOPES: principal.auth.scopes.join(','),
+    DOCS_SSH_SESSION_ID: principal.auth.sshSession?.id ?? '',
     LOGNAME: principal.auth.login,
     USER: principal.auth.login,
+  }
+}
+
+function createBashSessionContext(principal: AuthenticatedPrincipal) {
+  return {
+    displayName: principal.auth.displayName,
+    login: principal.auth.login,
+    principalId: principal.auth.principal.id,
+    principalKind: principal.auth.principal.kind,
+    projectSlug: principal.auth.project.slug,
+    scopes: principal.auth.scopes,
+    tenantId: principal.auth.tenant.id,
+    tenantSlug: principal.auth.tenant.slug,
   }
 }
 
@@ -188,7 +207,7 @@ function authenticateWithPublicKey(
     algo: ctx.key.algo,
     data: ctx.key.data,
   })
-  const auth = authStore.findPrincipalBySshFingerprint(normalizedKey.fingerprint)
+  const auth = authStore.findPrincipalBySshFingerprint(normalizedKey.fingerprint, ctx.username)
   if (!auth) return null
 
   if (ctx.signature && ctx.blob) {
@@ -302,6 +321,7 @@ export function createSSHServer(opts: SSHServerOptions) {
                 docsName,
                 env: sessionEnv,
                 registryPath,
+                session: createBashSessionContext(principal),
                 sshHost: sshConnectHost,
                 sshPort: sshConnectPort,
                 workspaceDir,
@@ -338,6 +358,7 @@ export function createSSHServer(opts: SSHServerOptions) {
               docsName,
               env: sessionEnv,
               registryPath,
+              session: createBashSessionContext(principal),
               sshHost: sshConnectHost,
               sshPort: sshConnectPort,
               workspaceDir,

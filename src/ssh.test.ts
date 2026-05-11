@@ -37,6 +37,14 @@ async function createTestServer() {
   authStore.addSshKey({
     publicKey: allowedKey.public,
   })
+  const sessionKey = sshUtils.generateKeyPairSync('ed25519')
+  const sshSession = authStore.createSshSession({
+    projectSlug: 'product-docs',
+    publicKey: sessionKey.public,
+    scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+    userLogin: owner.user.login,
+    username: 'sess_product',
+  })
   authStore.close()
 
   const server = createSSHServer({
@@ -58,6 +66,8 @@ async function createTestServer() {
     allowedKey,
     owner,
     port,
+    sessionKey,
+    sshSession,
   }
 }
 
@@ -206,6 +216,41 @@ describe('createSSHServer', () => {
     expect(result.stdout).toBe(
       `${owner.user.login}|user|default|workstation-user|${owner.user.login}|${owner.user.login}`,
     )
+  })
+
+  it('authenticates scoped SSH sessions and exposes project context', async () => {
+    const { port, sessionKey, sshSession } = await createTestServer()
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: sessionKey.private,
+      username: sshSession.username,
+    })
+
+    const result = await execCommand(
+      client,
+      'printf \'%s\' "$DOCS_SSH_SESSION_ID|$DOCS_SSH_PROJECT_SLUG|$DOCS_SSH_SCOPES" && printf "\\n" && bootstrap --json',
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    const newlineIndex = result.stdout.indexOf('\n')
+    const envLine = result.stdout.slice(0, newlineIndex)
+    const bootstrapJson = result.stdout.slice(newlineIndex + 1)
+    expect(envLine).toBe(`${sshSession.id}|product-docs|bootstrap:read,project:read,sources:read`)
+    expect(JSON.parse(bootstrapJson)).toMatchObject({
+      project: { slug: 'product-docs' },
+      scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+    })
+
+    await expect(
+      connectExpectFailure({
+        host: '127.0.0.1',
+        port,
+        privateKey: sessionKey.private,
+        username: 'wrong-session-user',
+      }),
+    ).resolves.toHaveProperty('message')
   })
 
   it('rejects public keys that are not stored in the auth database', async () => {

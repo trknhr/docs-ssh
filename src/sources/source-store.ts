@@ -5,6 +5,8 @@ import type { SourceRegistry, SourceSpec, SourceStore, SourceType } from './type
 const SOURCE_NAME_PATTERN = /[^a-z0-9-]+/g
 const SOURCE_REGISTRY_VERSION = 1
 const DEFAULT_PROJECT_SLUG = 'default'
+const DEFAULT_PRINCIPAL_SLUG = 'anonymous'
+const DEFAULT_TENANT_SLUG = 'default'
 
 export interface StatePaths {
   registryPath: string
@@ -164,11 +166,16 @@ export async function writeSourceRegistry(path: string, registry: SourceRegistry
   await writeFile(path, `${JSON.stringify(registry, null, 2)}\n`)
 }
 
-export function buildSourceStore(registry: SourceRegistry): SourceStore {
+export function buildSourceStore(
+  registry: SourceRegistry,
+  opts: {
+    projectSlug?: string
+  } = {},
+): SourceStore {
   const defaultSourceName = registry.defaultSourceName || registry.sources[0]?.name || 'local'
   const defaultSource = registry.sources.find((source) => source.name === defaultSourceName)
   const projectPath = '/project'
-  const projectSlug = DEFAULT_PROJECT_SLUG
+  const projectSlug = normalizeSourceName(opts.projectSlug ?? DEFAULT_PROJECT_SLUG)
   const concreteProjectPath = posix.join('/projects', projectSlug)
 
   const mounts = registry.sources.flatMap((source) => {
@@ -219,17 +226,24 @@ export function buildSourceStore(registry: SourceRegistry): SourceStore {
     homeRootPath: '',
     projectRootPath: '',
     sharedRootPath: '',
+    tenantRootPath: '',
     workspaceRootPath: '',
   }
 }
 
 export async function loadSourceStore(opts: {
+  principalId?: string
+  projectSlug?: string
   registryPath?: string
   fallbackDocsDir: string
+  tenantSlug?: string
   workspaceDir: string
 }): Promise<SourceStore> {
   const statePaths = getStatePaths()
   const registryPath = resolve(opts.registryPath ?? statePaths.registryPath)
+  const tenantSlug = normalizeSourceName(opts.tenantSlug ?? DEFAULT_TENANT_SLUG)
+  const principalSlug = normalizeSourceName(opts.principalId ?? DEFAULT_PRINCIPAL_SLUG)
+  const tenantRootPath = resolve(opts.workspaceDir, 'tenants', tenantSlug)
   const registry = await readSourceRegistry(registryPath)
   if (registry && registry.sources.length > 0) {
     const resolvedSources = await Promise.all(
@@ -246,21 +260,27 @@ export async function loadSourceStore(opts: {
     const sourceStore = buildSourceStore({
       ...registry,
       sources: resolvedSources,
+    }, {
+      projectSlug: opts.projectSlug,
     })
     return {
       ...sourceStore,
-      homeRootPath: resolve(opts.workspaceDir, 'home'),
-      projectRootPath: resolve(opts.workspaceDir, 'projects', sourceStore.projectSlug),
-      sharedRootPath: resolve(opts.workspaceDir, 'shared'),
+      homeRootPath: resolve(tenantRootPath, 'principals', principalSlug, 'home'),
+      projectRootPath: resolve(tenantRootPath, 'projects', sourceStore.projectSlug),
+      sharedRootPath: resolve(tenantRootPath, 'shared'),
+      tenantRootPath,
       workspaceRootPath: resolve(opts.workspaceDir),
     }
   }
-  const sourceStore = buildSourceStore(createFallbackRegistry(opts.fallbackDocsDir))
+  const sourceStore = buildSourceStore(createFallbackRegistry(opts.fallbackDocsDir), {
+    projectSlug: opts.projectSlug,
+  })
   return {
     ...sourceStore,
-    homeRootPath: resolve(opts.workspaceDir, 'home'),
-    projectRootPath: resolve(opts.workspaceDir, 'projects', sourceStore.projectSlug),
-    sharedRootPath: resolve(opts.workspaceDir, 'shared'),
+    homeRootPath: resolve(tenantRootPath, 'principals', principalSlug, 'home'),
+    projectRootPath: resolve(tenantRootPath, 'projects', sourceStore.projectSlug),
+    sharedRootPath: resolve(tenantRootPath, 'shared'),
+    tenantRootPath,
     workspaceRootPath: resolve(opts.workspaceDir),
   }
 }

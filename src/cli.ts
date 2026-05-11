@@ -45,6 +45,9 @@ Usage:
   docs-ssh sources list
   docs-ssh auth init [--db-path <path>] [--tenant-slug <slug>] [--tenant-name <name>] [--owner-login <login>] [--owner-name <name>]
   docs-ssh auth add-ssh-key <public-key-path> [--db-path <path>] [--user <login>] [--name <name>]
+  docs-ssh auth create-ssh-session <public-key-path> [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--project <slug>] [--scopes <csv>] [--ttl-seconds <seconds>] [--username <name>]
+  docs-ssh auth list-ssh-sessions [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all] [--include-expired] [--include-revoked]
+  docs-ssh auth revoke-ssh-session <session-id-or-username> [--db-path <path>] [--user <login>]
   docs-ssh auth add-web-identity --issuer <issuer> --subject <subject> [--provider <provider>] [--email <email>] [--user <login>] [--db-path <path>]
   docs-ssh helper agents [--output <path>] [--append]
   docs-ssh helper skill [--output <path>]
@@ -98,8 +101,8 @@ function getOptionalIntegerFlag(args: ParsedArgs, name: string): number | undefi
   const value = getFlagString(args, name)
   if (value === undefined) return undefined
 
-  const parsed = parseInt(value, 10)
-  if (Number.isNaN(parsed)) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed)) {
     throw new Error(`Invalid ${name}: ${value}`)
   }
 
@@ -339,6 +342,99 @@ async function authAddSshKey(args: ParsedArgs): Promise<void> {
   }
 }
 
+async function authCreateSshSession(args: ParsedArgs): Promise<void> {
+  const publicKeyPath = args.positionals[2]
+  if (!publicKeyPath) throw new Error('Missing required public key path.')
+
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const session = authStore.createSshSession({
+      projectSlug: getFlagString(args, 'project'),
+      publicKey: await readFile(resolve(publicKeyPath), 'utf8'),
+      scopes: getFlagString(args, 'scopes')?.split(','),
+      tenantSlug: getFlagString(args, 'tenant-slug'),
+      ttlSeconds: getOptionalIntegerFlag(args, 'ttl-seconds'),
+      userLogin: getFlagString(args, 'user'),
+      username: getFlagString(args, 'username'),
+    })
+
+    console.log('Created SSH session')
+    console.log(`- username: ${session.username}`)
+    console.log(`- project: ${session.currentProjectSlug}`)
+    console.log(`- fingerprint: ${session.fingerprint}`)
+    console.log(`- expires: ${session.expiresAt}`)
+    console.log(`- scopes: ${session.scopes.join(',')}`)
+  } finally {
+    authStore.close()
+  }
+}
+
+function getSshSessionStatus(session: {
+  expiresAt: string
+  revokedAt: string | null
+}): string {
+  if (session.revokedAt) return 'revoked'
+  if (Date.parse(session.expiresAt) <= Date.now()) return 'expired'
+  return 'active'
+}
+
+async function authListSshSessions(args: ParsedArgs): Promise<void> {
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const includeAll = getFlagBoolean(args, 'all')
+    const sessions = authStore.listSshSessions({
+      includeExpired: includeAll || getFlagBoolean(args, 'include-expired'),
+      includeRevoked: includeAll || getFlagBoolean(args, 'include-revoked'),
+      tenantSlug: getFlagString(args, 'tenant-slug'),
+      userLogin: getFlagString(args, 'user'),
+    })
+
+    console.log(`SSH sessions (${sessions.length})`)
+    for (const session of sessions) {
+      console.log(`- ${session.id}`)
+      console.log(`  username: ${session.username}`)
+      console.log(`  status: ${getSshSessionStatus(session)}`)
+      console.log(`  tenant: ${session.tenantId}`)
+      console.log(`  project: ${session.currentProjectSlug}`)
+      console.log(`  fingerprint: ${session.fingerprint}`)
+      console.log(`  expires: ${session.expiresAt}`)
+      if (session.revokedAt) console.log(`  revoked: ${session.revokedAt}`)
+      console.log(`  scopes: ${session.scopes.join(',')}`)
+    }
+  } finally {
+    authStore.close()
+  }
+}
+
+async function authRevokeSshSession(args: ParsedArgs): Promise<void> {
+  const identifier = args.positionals[2]
+  if (!identifier) throw new Error('Missing required SSH session id or username.')
+
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const session = authStore.revokeSshSession({
+      identifier,
+      userLogin: getFlagString(args, 'user'),
+    })
+
+    console.log('Revoked SSH session')
+    console.log(`- id: ${session.id}`)
+    console.log(`- username: ${session.username}`)
+    console.log(`- revoked: ${session.revokedAt}`)
+  } finally {
+    authStore.close()
+  }
+}
+
 async function authAddWebIdentity(args: ParsedArgs): Promise<void> {
   const authStore = createAuthStore({
     dbPath: getAuthDbPath(args),
@@ -479,6 +575,21 @@ async function main() {
 
     if (subcommand === 'add-ssh-key') {
       await authAddSshKey(args)
+      return
+    }
+
+    if (subcommand === 'create-ssh-session') {
+      await authCreateSshSession(args)
+      return
+    }
+
+    if (subcommand === 'list-ssh-sessions') {
+      await authListSshSessions(args)
+      return
+    }
+
+    if (subcommand === 'revoke-ssh-session') {
+      await authRevokeSshSession(args)
       return
     }
 
