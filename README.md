@@ -12,10 +12,10 @@ Current scope:
 
 - serve a local docs folder over SSH
 - ingest additional sources into a local registry
-- mount sources at `/project/sources/<name>`
-- expose `/project/docs` as the default source alias
+- mount sources at `/projects/<slug>/sources/<name>`
+- expose `/projects/<slug>/docs` as the default source alias
 - keep source mounts read-only
-- provide `/home` for private notes and `/project/issues` plus `/project/tasks` for project work
+- provide `/home` for private notes and `/projects/<slug>/issues` plus `/projects/<slug>/tasks` for project work
 - provide `/tmp` for temporary session-local files
 
 Deferred:
@@ -52,7 +52,7 @@ Deferred:
    pnpm run dev
    ```
 
-   This starts the SSH server on `127.0.0.1:2222` and the viewer on `127.0.0.1:3000`.
+   This starts the SSH server on `localhost:2222` and the viewer on `localhost:3000`.
    If a repo-local `.env` file exists, `docs-ssh` loads it automatically on startup.
 
    If you want reload-on-save locally, use:
@@ -67,8 +67,8 @@ Deferred:
 
    ```bash
    ssh localhost -p 2222
-   ssh localhost -p 2222 ls /project/docs
-   ssh localhost -p 2222 grep -R "getting started" /project/docs
+   ssh localhost -p 2222 ls /projects/<slug>/docs
+   ssh localhost -p 2222 grep -R "getting started" /projects/<slug>/docs
    ```
 
 6. Open the read-only viewer in a browser:
@@ -108,8 +108,8 @@ After that, users can connect and run helper commands through the same alias:
 
 ```bash
 ssh docs-ssh
-ssh docs-ssh ls /project/docs
-ssh docs-ssh grep -R "getting started" /project/docs
+ssh docs-ssh ls /projects/<slug>/docs
+ssh docs-ssh grep -R "getting started" /projects/<slug>/docs
 ```
 
 The distributable skill file at `skills/SKILL.md` assumes this alias-based setup. If you prefer a different alias, update both the SSH config entry and the commands in the copied skill.
@@ -139,7 +139,7 @@ You can run `docs-ssh` in Docker and keep the source registry plus host key on d
 
 ```bash
 docker compose up --build -d
-ssh localhost -p 2222 ls /project/docs
+ssh localhost -p 2222 ls /projects/<slug>/docs
 ```
 
 Then open `http://localhost:3000` in a browser.
@@ -177,7 +177,7 @@ The self-hosting config uses:
 
 - `DOCS_SSH_DOCS_DIR` for the read-only docs mount
 - `DOCS_SSH_STATE_DIR` for ingested source data and the SSH host key
-- `DOCS_SSH_WORKSPACE_DIR` for the persistent structured filesystem backing `/home`, `/project`, and `/projects`
+- `DOCS_SSH_WORKSPACE_DIR` for the persistent structured filesystem backing `/home` and `/projects`
 - `DOCS_SSH_BIND_IP` to control whether the SSH port binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_BIND_IP` to control whether the HTTP viewer binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_PORT` to control the HTTP viewer port
@@ -221,12 +221,11 @@ pnpm run sources:list
 
 Mounted paths:
 
-- every source is available at `/project/sources/<name>`
-- the default source is also available at `/project/docs`
+- every source is available at `/projects/<slug>/sources/<name>`
+- the default source is also available at `/projects/<slug>/docs`
 - `/home` persists private principal-scoped notes under `tenants/<tenant>/principals/<principal>/home`
-- `/project` is the current project alias backed by `/projects/<project>`
-- `/project/issues` tracks what to do, why, status, next action, and result links
-- `/project/tasks` stores research and work results under `tenants/<tenant>/projects/<project>`
+- `/projects/<slug>/issues` tracks what to do, why, status, next action, and result links
+- `/projects/<slug>/tasks` stores research and work results under `tenants/<tenant>/projects/<project>`
 - `/tmp` is writable and resets between SSH sessions
 
 The viewer picks up registry changes on refresh. Existing interactive shell sessions will not see new mounts until you reconnect.
@@ -240,18 +239,17 @@ The viewer picks up registry changes on refresh. Existing interactive shell sess
   README.md
   home/
     README.md
-  project/
-    README.md
-    docs/
-    sources/<name>/
-    issues/
-    tasks/
   projects/
     <project>/
+      README.md
+      docs/
+      sources/<name>/
+      issues/
+      tasks/
   tmp/
 ```
 
-From the SSH session, source mounts under `/project/docs` and `/project/sources/<name>` are read-only. Use `/home` for private personal notes, `/project/issues` for issue records, `/project/tasks/<task-slug>/` for research and work results, and `/project/docs` only for polished long-term references. Use `/tmp` for temporary files.
+From the SSH session, source mounts under `/projects/<slug>/docs` and `/projects/<slug>/sources/<name>` are read-only. Use `/home` for private personal notes, `/projects/<slug>/issues` for issue records, `/projects/<slug>/tasks/<task-slug>/` for research and work results, and `/projects/<slug>/docs` only for polished long-term references. Use `/tmp` for temporary files.
 
 ## Configuration
 
@@ -284,7 +282,9 @@ If a repo-local `.env` file exists, both the server entrypoint and the CLI load 
 
 ## Auth Bootstrap
 
-For a single-tenant VPS setup, bootstrap one default tenant plus one owner principal in the local auth database:
+v0.1.0 is tenant-aware but optimized for one default tenant in a single deployment. The database and filesystem paths already carry tenant boundaries, but multi-tenant admin UX, tenant switching, invitations, and service-account management are planned for v0.2.0 and later.
+
+For a v0.1.0 single-tenant VPS setup, bootstrap one default tenant plus one owner principal in the local auth database:
 
 ```bash
 pnpm run cli -- auth init
@@ -306,6 +306,41 @@ You can override these with CLI flags such as `--db-path`, `--tenant-slug`, `--o
 `auth add-web-identity` is the prelink step for web sign-in: the OIDC callback only creates a viewer session when the incoming `(provider, issuer, subject)` tuple already exists in `auth_identities`.
 
 If `auth.sqlite` is still empty, the first successful web OIDC sign-in auto-creates a single-tenant owner user and links that identity immediately. Use `auth init` when you want to choose the owner login or bootstrap the auth DB ahead of time.
+
+## Projects
+
+Projects are server-managed resources. Create them from the signed-in web viewer or with the operator CLI; agents and local config files only select an existing project.
+
+```bash
+pnpm run cli -- auth create-project \
+  --project slack-ai-assistant-agentcore-migration \
+  --display-name "Slack AI assistant AgentCore migration"
+pnpm run cli -- auth list-projects
+```
+
+To make a local work directory select a project by default, place `.docs-ssh.toml` in that directory or one of its parents:
+
+```toml
+server = "docs-ssh"
+viewer_origin = "https://docs.example.com"
+project = "slack-ai-assistant-agentcore-migration"
+```
+
+For local development, `server = "docs-ssh-local"` defaults the viewer origin to `http://localhost:3000`, so `viewer_origin` can be omitted. The CLI reads this file when `docs-ssh login` or `auth create-ssh-session` is run without `--project`. The server still verifies that the project exists and that the principal is a member before issuing a session. A typo in the file fails with `Project "<slug>" was not found`; it does not create a new project.
+
+## Short-Lived SSH Sessions
+
+The preferred v0.1.0 access path is a short-lived SSH session issued from a web-authenticated user. Run `docs-ssh login` from a local work directory. The CLI creates a temporary SSH keypair, opens the browser for Web/OIDC approval, exchanges the approval for an expiring SSH session, and stores the private key locally under `~/.docs-ssh/sessions`.
+
+```bash
+docs-ssh login --json
+docs-ssh status
+ssh -i ~/.docs-ssh/sessions/<server>/<project>/id_ed25519 <session-username>@docs-ssh bootstrap --json
+ssh -i ~/.docs-ssh/sessions/<server>/<project>/id_ed25519 <session-username>@docs-ssh cat /projects/<slug>/README.md
+docs-ssh logout
+```
+
+`docs-ssh login --json` returns `sshCommand`, `identityFile`, `username`, `server`, `project`, and `expiresAt` so agent skills can reuse the session without handling browser cookies directly. This binds the web-authenticated user, selected project, generated public key, TTL, and scopes into a single SSH grant. Long-lived SSH keys remain available through operator/CLI workflows for recovery cases.
 
 ## Operator SSH Sessions
 
@@ -352,7 +387,7 @@ pnpm run cli -- auth add-web-identity \
 
 After that, the viewer top bar exposes a sign-in link. Successful login creates a signed web session cookie and resolves the user through `auth_identities`.
 
-Once signed in, the Account panel in the viewer lets the current user register SSH public keys directly into `ssh_keys`. If `auth.sqlite` is still empty, the first successful web sign-in auto-creates the single-tenant owner and then the same viewer session can be used to add SSH keys from the browser.
+Once signed in, the Account panel in the viewer lets the current user create short-lived SSH sessions for existing projects. It does not register long-lived SSH public keys from the browser. If `auth.sqlite` is still empty, the first successful web sign-in auto-creates the single-tenant owner and then the same viewer session can be used to create projects and SSH sessions from the browser.
 
 If there is already at least one local user, unlinked identities are rejected until you prelink them with `auth add-web-identity`.
 

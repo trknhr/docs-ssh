@@ -1,8 +1,15 @@
+#!/usr/bin/env node
 import { execFile } from 'node:child_process'
-import { access, appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { AddressInfo } from 'node:net'
+import { homedir } from 'node:os'
+import { access, appendFile, chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import ssh2 from 'ssh2'
 import { createAuthStore } from './auth/store.js'
+import { inferViewerOrigin } from './cli-login-config.js'
 import { loadLocalEnvFile } from './env.js'
 import { loadInstanceConfig } from './instance-config.js'
 import {
@@ -20,6 +27,7 @@ import {
 } from './sources/source-store.js'
 import type { SourceRegistry, SourceSpec } from './sources/types.js'
 import { getGitRepoPreset } from './ingest/presets.js'
+import { findProjectConfig } from './project-config.js'
 import {
   createAgentsMarkdown,
   createSetupMarkdown,
@@ -27,12 +35,35 @@ import {
 } from './shell/helper-content.js'
 
 const execFileAsync = promisify(execFile)
+const { utils: sshUtils } = ssh2
+
+const DEFAULT_CLI_LOGIN_TTL_SECONDS = 60 * 60
+const DEFAULT_CLI_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 
 loadLocalEnvFile()
 
 interface ParsedArgs {
   positionals: string[]
   flags: Map<string, string | boolean>
+}
+
+interface CliLoginConfig {
+  project: string
+  server: string
+  viewerOrigin: string
+}
+
+interface CliSessionFile {
+  createdAt: string
+  expiresAt: string
+  fingerprint: string
+  identityFile: string
+  project: string
+  scopes: string[]
+  server: string
+  sshCommand: string
+  username: string
+  viewerOrigin: string
 }
 
 function printUsage(): void {
@@ -43,7 +74,12 @@ Usage:
   docs-ssh ingest git-repo <repo-url> [--name <name>] [--subdir <path>] [--ref <ref>] [--default]
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
+  docs-ssh login [--server <alias>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open]
+  docs-ssh status [--server <alias>] [--project <slug>] [--json]
+  docs-ssh logout [--server <alias>] [--project <slug>] [--json]
   docs-ssh auth init [--db-path <path>] [--tenant-slug <slug>] [--tenant-name <name>] [--owner-login <login>] [--owner-name <name>]
+  docs-ssh auth create-project --project <slug> [--display-name <name>] [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
+  docs-ssh auth list-projects [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
   docs-ssh auth add-ssh-key <public-key-path> [--db-path <path>] [--user <login>] [--name <name>]
   docs-ssh auth create-ssh-session <public-key-path> [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--project <slug>] [--scopes <csv>] [--ttl-seconds <seconds>] [--username <name>]
   docs-ssh auth list-ssh-sessions [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all] [--include-expired] [--include-revoked]
@@ -117,6 +153,187 @@ function getRequiredFlagString(args: ParsedArgs, name: string): string {
   return value
 }
 
+function getJsonFlag(args: ParsedArgs): boolean {
+  return getFlagBoolean(args, 'json')
+}
+
+function normalizeViewerOrigin(value: string): string {
+  return value.replace(/\/+$/u, '')
+}
+
+function sanitizePathPart(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/gu, '-')
+    .replace(/^-+|-+$/gu, '') || 'default'
+}
+
+function getDocsSshHome(args: ParsedArgs): string {
+  return resolve(getFlagString(args, 'home') ?? process.env.DOCS_SSH_HOME ?? `${homedir()}/.docs-ssh`)
+}
+
+function getCliSessionDir(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): string {
+  return resolve(
+    getDocsSshHome(args),
+    'sessions',
+    sanitizePathPart(config.server),
+    sanitizePathPart(config.project),
+  )
+}
+
+function getCliSessionPath(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): string {
+  return resolve(getCliSessionDir(args, config), 'session.json')
+}
+
+async function resolveCliLoginConfig(args: ParsedArgs): Promise<CliLoginConfig> {
+  const projectConfig = await findProjectConfig()
+  const server = getFlagString(args, 'server') ?? projectConfig?.server ?? 'docs-ssh'
+  const project = getFlagString(args, 'project') ?? projectConfig?.project ?? 'default'
+  const viewerOrigin = normalizeViewerOrigin(
+    getFlagString(args, 'viewer-origin')
+    ?? projectConfig?.viewerOrigin
+    ?? process.env.DOCS_SSH_VIEWER_ORIGIN
+    ?? inferViewerOrigin(server),
+  )
+
+  return {
+    project,
+    server,
+    viewerOrigin,
+  }
+}
+
+async function readCliSession(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): Promise<CliSessionFile | null> {
+  try {
+    return JSON.parse(await readFile(getCliSessionPath(args, config), 'utf8')) as CliSessionFile
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+function isCliSessionActive(session: CliSessionFile | null): boolean {
+  return Boolean(session && Date.parse(session.expiresAt) > Date.now())
+}
+
+function createSshCommand(session: {
+  identityFile: string
+  server: string
+  username: string
+}): string {
+  return `ssh -i ${session.identityFile} ${session.username}@${session.server}`
+}
+
+async function openBrowser(url: string): Promise<void> {
+  const platform = process.platform
+  if (platform === 'darwin') {
+    await execFileAsync('open', [url])
+    return
+  }
+  if (platform === 'win32') {
+    await execFileAsync('cmd', ['/c', 'start', '', url])
+    return
+  }
+  await execFileAsync('xdg-open', [url])
+}
+
+async function readHttpRequestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+async function createCliLoginCallback(expectedState: string): Promise<{
+  callbackUrl: string
+  close: () => Promise<void>
+  wait: Promise<{ code: string; request: string }>
+}> {
+  const callbackServer = createServer()
+  let timeout: NodeJS.Timeout | null = null
+  let closed = false
+
+  const wait = new Promise<{ code: string; request: string }>((resolveCallback, rejectCallback) => {
+    const finish = (error?: Error, result?: { code: string; request: string }) => {
+      if (timeout) clearTimeout(timeout)
+      if (!closed) {
+        closed = true
+        callbackServer.close()
+      }
+      if (error) {
+        rejectCallback(error)
+        return
+      }
+      resolveCallback(result!)
+    }
+
+    callbackServer.on('request', async (request: IncomingMessage, response: ServerResponse) => {
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      if (url.pathname !== '/callback') {
+        response.writeHead(404)
+        response.end('not found')
+        return
+      }
+
+      const state = url.searchParams.get('state')
+      const code = url.searchParams.get('code')
+      const requestId = url.searchParams.get('request')
+      if (request.method === 'POST') await readHttpRequestBody(request)
+
+      if (state !== expectedState || !code || !requestId) {
+        response.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
+        response.end('<!doctype html><html lang="en"><body><main><h1>Invalid docs-ssh callback</h1></main></body></html>')
+        finish(new Error('Invalid docs-ssh callback.'))
+        return
+      }
+
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      response.end('<!doctype html><html lang="en"><body><main><h1>docs-ssh CLI authorized</h1><p>You can return to the terminal.</p></main></body></html>')
+      finish(undefined, { code, request: requestId })
+    })
+
+    callbackServer.once('error', rejectCallback)
+    timeout = setTimeout(() => {
+      finish(new Error('Timed out waiting for browser login.'))
+    }, DEFAULT_CLI_LOGIN_TIMEOUT_MS)
+  })
+
+  await new Promise<void>((resolveListen, rejectListen) => {
+    callbackServer.once('error', rejectListen)
+    callbackServer.listen(0, '127.0.0.1', () => {
+      callbackServer.off('error', rejectListen)
+      resolveListen()
+    })
+  })
+
+  const port = (callbackServer.address() as AddressInfo).port
+  return {
+    callbackUrl: `http://127.0.0.1:${port}/callback`,
+    close: () =>
+      new Promise((resolveClose) => {
+        if (timeout) clearTimeout(timeout)
+        if (closed) {
+          resolveClose()
+          return
+        }
+        closed = true
+        callbackServer.close(() => resolveClose())
+      }),
+    wait,
+  }
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init)
+  const payload = (await response.json()) as T & { error?: string }
+  if (!response.ok) {
+    throw new Error(typeof payload.error === 'string' ? payload.error : `Request failed with ${response.status}.`)
+  }
+  return payload
+}
+
 function deriveRepoName(repoUrl: string): string {
   return basename(repoUrl).replace(/\.git$/u, '')
 }
@@ -151,7 +368,7 @@ function printIngestSummary(source: SourceSpec, makeDefault: boolean): void {
   console.log(`- type: ${source.type}`)
   console.log(`- root: ${source.rootPath}`)
   console.log(`- mount: ${getSourceMountPath(source.name)}`)
-  if (makeDefault) console.log('- alias: /project/docs')
+  if (makeDefault) console.log('- default docs path: /projects/<slug>/docs')
   if (source.repoUrl) console.log(`- repo: ${source.repoUrl}`)
   if (source.subdir) console.log(`- subdir: ${source.subdir}`)
   console.log('')
@@ -278,12 +495,159 @@ async function listSources(args: ParsedArgs): Promise<void> {
   console.log('')
 
   for (const source of registry.sources) {
-    const defaultMark = source.name === registry.defaultSourceName ? ' (default -> /project/docs)' : ''
+    const defaultMark = source.name === registry.defaultSourceName ? ' (default -> /projects/<slug>/docs)' : ''
     console.log(`- ${source.name}${defaultMark}`)
     console.log(`  type: ${source.type}`)
     console.log(`  root: ${source.rootPath}`)
     console.log(`  mount: ${getSourceMountPath(source.name)}`)
   }
+}
+
+async function cliLogin(args: ParsedArgs): Promise<void> {
+  const config = await resolveCliLoginConfig(args)
+  const json = getJsonFlag(args)
+  const ttlSeconds = getOptionalIntegerFlag(args, 'ttl-seconds') ?? DEFAULT_CLI_LOGIN_TTL_SECONDS
+  const scopes = getFlagString(args, 'scopes')?.split(',')
+  const state = randomBytes(24).toString('base64url')
+  const callback = await createCliLoginCallback(state)
+  const sessionDir = getCliSessionDir(args, config)
+  const identityFile = resolve(sessionDir, 'id_ed25519')
+  const keyPair = sshUtils.generateKeyPairSync('ed25519')
+  const publicKey = String(keyPair.public)
+
+  await mkdir(sessionDir, { recursive: true, mode: 0o700 })
+  await chmod(sessionDir, 0o700)
+  await writeFile(identityFile, String(keyPair.private), { mode: 0o600 })
+  await chmod(identityFile, 0o600)
+
+  try {
+    const requestPayload = await fetchJson<{
+      expiresAt: string
+      id: string
+      loginUrl: string
+    }>(`${config.viewerOrigin}/api/cli-login/requests`, {
+      body: JSON.stringify({
+        callbackUrl: callback.callbackUrl,
+        project: config.project,
+        publicKey,
+        scopes,
+        state,
+        ttlSeconds,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+
+    if (!json) {
+      console.error(`Open this URL to authorize docs-ssh CLI:\n${requestPayload.loginUrl}`)
+    }
+    if (!getFlagBoolean(args, 'no-open')) {
+      await openBrowser(requestPayload.loginUrl)
+    }
+
+    const callbackPayload = await callback.wait
+    const exchangePayload = await fetchJson<{
+      session: {
+        createdAt: string
+        expiresAt: string
+        fingerprint: string
+        project: string
+        scopes: string[]
+        username: string
+      }
+    }>(`${config.viewerOrigin}/api/cli-login/exchange`, {
+      body: JSON.stringify({
+        code: callbackPayload.code,
+        request: callbackPayload.request,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+
+    const sessionFile: CliSessionFile = {
+      createdAt: exchangePayload.session.createdAt,
+      expiresAt: exchangePayload.session.expiresAt,
+      fingerprint: exchangePayload.session.fingerprint,
+      identityFile,
+      project: exchangePayload.session.project,
+      scopes: exchangePayload.session.scopes,
+      server: config.server,
+      sshCommand: createSshCommand({
+        identityFile,
+        server: config.server,
+        username: exchangePayload.session.username,
+      }),
+      username: exchangePayload.session.username,
+      viewerOrigin: config.viewerOrigin,
+    }
+    await writeFile(getCliSessionPath(args, config), `${JSON.stringify(sessionFile, null, 2)}\n`, { mode: 0o600 })
+    await chmod(getCliSessionPath(args, config), 0o600)
+
+    if (json) {
+      console.log(JSON.stringify(sessionFile, null, 2))
+      return
+    }
+
+    console.log('Created docs-ssh SSH session')
+    console.log(`- server: ${sessionFile.server}`)
+    console.log(`- project: ${sessionFile.project}`)
+    console.log(`- username: ${sessionFile.username}`)
+    console.log(`- expires: ${sessionFile.expiresAt}`)
+    console.log(`- identity: ${sessionFile.identityFile}`)
+    console.log(`- command: ${sessionFile.sshCommand}`)
+  } finally {
+    await callback.close()
+  }
+}
+
+async function cliStatus(args: ParsedArgs): Promise<void> {
+  const config = await resolveCliLoginConfig(args)
+  const session = await readCliSession(args, config)
+  const active = isCliSessionActive(session)
+
+  if (getJsonFlag(args)) {
+    console.log(JSON.stringify({
+      active,
+      project: config.project,
+      server: config.server,
+      session,
+    }, null, 2))
+    return
+  }
+
+  if (!session) {
+    console.log(`No docs-ssh session for ${config.server}/${config.project}`)
+    return
+  }
+
+  console.log(active ? 'docs-ssh session is active' : 'docs-ssh session is expired')
+  console.log(`- server: ${session.server}`)
+  console.log(`- project: ${session.project}`)
+  console.log(`- username: ${session.username}`)
+  console.log(`- expires: ${session.expiresAt}`)
+  console.log(`- command: ${session.sshCommand}`)
+}
+
+async function cliLogout(args: ParsedArgs): Promise<void> {
+  const config = await resolveCliLoginConfig(args)
+  const sessionDir = getCliSessionDir(args, config)
+  await rm(sessionDir, { force: true, recursive: true })
+
+  if (getJsonFlag(args)) {
+    console.log(JSON.stringify({
+      removed: true,
+      project: config.project,
+      server: config.server,
+    }, null, 2))
+    return
+  }
+
+  console.log(`Removed local docs-ssh session for ${config.server}/${config.project}`)
+  console.log('The server-side SSH session will stop working when it expires.')
 }
 
 function getAuthDbPath(args: ParsedArgs): string {
@@ -342,6 +706,59 @@ async function authAddSshKey(args: ParsedArgs): Promise<void> {
   }
 }
 
+async function resolveProjectSlugForCommand(args: ParsedArgs): Promise<string | undefined> {
+  const explicitProject = getFlagString(args, 'project')
+  if (explicitProject) return explicitProject
+
+  const projectConfig = await findProjectConfig()
+  return projectConfig?.project
+}
+
+async function authCreateProject(args: ParsedArgs): Promise<void> {
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const project = authStore.createProject({
+      displayName: getFlagString(args, 'display-name'),
+      slug: getRequiredFlagString(args, 'project'),
+      tenantSlug: getFlagString(args, 'tenant-slug'),
+      userLogin: getFlagString(args, 'user'),
+    })
+
+    console.log('Created project')
+    console.log(`- slug: ${project.slug}`)
+    console.log(`- name: ${project.displayName}`)
+    console.log(`- tenant: ${project.tenantId}`)
+  } finally {
+    authStore.close()
+  }
+}
+
+async function authListProjects(args: ParsedArgs): Promise<void> {
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const projects = authStore.listProjects({
+      tenantSlug: getFlagString(args, 'tenant-slug'),
+      userLogin: getFlagString(args, 'user'),
+    })
+
+    console.log(`Projects (${projects.length})`)
+    for (const project of projects) {
+      console.log(`- ${project.slug}`)
+      console.log(`  name: ${project.displayName}`)
+      console.log(`  tenant: ${project.tenantId}`)
+      console.log(`  created: ${project.createdAt}`)
+    }
+  } finally {
+    authStore.close()
+  }
+}
+
 async function authCreateSshSession(args: ParsedArgs): Promise<void> {
   const publicKeyPath = args.positionals[2]
   if (!publicKeyPath) throw new Error('Missing required public key path.')
@@ -352,7 +769,7 @@ async function authCreateSshSession(args: ParsedArgs): Promise<void> {
 
   try {
     const session = authStore.createSshSession({
-      projectSlug: getFlagString(args, 'project'),
+      projectSlug: await resolveProjectSlugForCommand(args),
       publicKey: await readFile(resolve(publicKeyPath), 'utf8'),
       scopes: getFlagString(args, 'scopes')?.split(','),
       tenantSlug: getFlagString(args, 'tenant-slug'),
@@ -480,6 +897,7 @@ async function loadHelperOptions(args: ParsedArgs) {
   const sourceStore = await loadSourceStore({
     registryPath: instanceConfig.statePaths.registryPath,
     fallbackDocsDir: instanceConfig.docsDir,
+    projectSlug: (await findProjectConfig())?.project,
     workspaceDir: instanceConfig.workspaceDir,
   })
 
@@ -567,6 +985,21 @@ async function main() {
     return
   }
 
+  if (command === 'login') {
+    await cliLogin(args)
+    return
+  }
+
+  if (command === 'status') {
+    await cliStatus(args)
+    return
+  }
+
+  if (command === 'logout') {
+    await cliLogout(args)
+    return
+  }
+
   if (command === 'auth') {
     if (subcommand === 'init') {
       await authInit(args)
@@ -575,6 +1008,16 @@ async function main() {
 
     if (subcommand === 'add-ssh-key') {
       await authAddSshKey(args)
+      return
+    }
+
+    if (subcommand === 'create-project') {
+      await authCreateProject(args)
+      return
+    }
+
+    if (subcommand === 'list-projects') {
+      await authListProjects(args)
       return
     }
 

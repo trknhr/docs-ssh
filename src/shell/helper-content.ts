@@ -1,4 +1,4 @@
-import { getSourceMountPath } from '../sources/source-store.js'
+import { getProjectSourceMountPath } from '../sources/source-store.js'
 import type { SourceStore } from '../sources/types.js'
 
 export interface HelperContentOptions {
@@ -22,7 +22,7 @@ function createSourceList(sourceStore: SourceStore): string[] {
   }
 
   for (const source of sourceStore.registry.sources) {
-    lines.push(`- \`${getSourceMountPath(source.name)}\``)
+    lines.push(`- \`${getProjectSourceMountPath(source.name, sourceStore.projectMountPath)}\``)
   }
 
   return lines
@@ -32,22 +32,23 @@ function createWorkspaceList(sourceStore: SourceStore): string[] {
   return [
     '- `/README.md` -> root guide and writing rules',
     `- \`${sourceStore.homeMountPath}\` -> private personal notes for the authenticated principal`,
-    `- \`${sourceStore.projectMountPath}\` -> current project alias`,
+    `- \`${sourceStore.projectMountPath}\` -> current project workspace`,
     `- \`${sourceStore.projectMountPath}/issues\` -> issue tracking: what to do, why, status, next action, and result links`,
     `- \`${sourceStore.projectMountPath}/tasks\` -> research and work results`,
     `- \`${sourceStore.projectMountPath}/docs\` -> polished long-term project references`,
-    `- \`${sourceStore.projectsMountPath}/${sourceStore.projectSlug}\` -> concrete current project path`,
     `- \`${sourceStore.tmpMountPath}\` -> temporary session-local files`,
   ]
 }
 
 function createWorkspaceRules(sourceStore: SourceStore): string[] {
   return [
-    '- Run `bootstrap --json`, then read `/README.md` and `/project/README.md` before writing files.',
+    '- Run `docs-ssh status --json` first. If no active session exists, run `docs-ssh login --json` and use the returned `sshCommand` for SSH access.',
+    `- Run \`bootstrap --json\`, then read \`/README.md\` and \`${sourceStore.projectMountPath}/README.md\` before writing files.`,
     `- Use \`${sourceStore.homeMountPath}\` for private personal notes.`,
     `- Use \`${sourceStore.projectMountPath}/issues\` for issue tracking: what to do, why, status, next action, and result links.`,
     `- Use \`${sourceStore.projectMountPath}/tasks\` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.`,
     `- Use \`${sourceStore.projectMountPath}/docs\` only for polished references that should stay useful long-term.`,
+    `- Do not create new directories directly under \`${sourceStore.projectsMountPath}\`; projects are server-managed resources.`,
     '- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.',
     '- After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.',
     `- Use \`${sourceStore.tmpMountPath}\` for temporary files.`,
@@ -56,17 +57,19 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
 
 function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   const examples = [
+    'docs-ssh status --json',
+    'docs-ssh login --json',
     `${sshPrefix} bootstrap --json`,
     `${sshPrefix} cat /README.md`,
-    `${sshPrefix} cat /project/README.md`,
-    `${sshPrefix} ls /project/issues`,
-    `${sshPrefix} find /project/docs -name '*.md' | head`,
-    `${sshPrefix} grep -R "keyword" /project/docs`,
-    `${sshPrefix} "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /project/issues/example-issue.md"`,
-    `${sshPrefix} mkdir -p /project/tasks/example-task/artifacts`,
-    `${sshPrefix} "printf '%s\\n' '# Notes' '- item' > /project/tasks/example-task/notes.md"`,
-    `${sshPrefix} sh -lc 'echo \"- note\" >> /project/tasks/example-task/notes.md'`,
-    `${sshPrefix} cat /project/tasks/example-task/notes.md`,
+    `${sshPrefix} cat ${sourceStore.projectMountPath}/README.md`,
+    `${sshPrefix} ls ${sourceStore.projectMountPath}/issues`,
+    `${sshPrefix} find ${sourceStore.projectDocsMountPath} -name '*.md' | head`,
+    `${sshPrefix} grep -R "keyword" ${sourceStore.projectDocsMountPath}`,
+    `${sshPrefix} "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > ${sourceStore.projectMountPath}/issues/example-issue.md"`,
+    `${sshPrefix} mkdir -p ${sourceStore.projectMountPath}/tasks/example-task/artifacts`,
+    `${sshPrefix} "printf '%s\\n' '# Notes' '- item' > ${sourceStore.projectMountPath}/tasks/example-task/notes.md"`,
+    `${sshPrefix} sh -lc 'echo \"- note\" >> ${sourceStore.projectMountPath}/tasks/example-task/notes.md'`,
+    `${sshPrefix} cat ${sourceStore.projectMountPath}/tasks/example-task/notes.md`,
   ]
 
   const nonDefaultSource = sourceStore.registry.sources.find(
@@ -74,7 +77,7 @@ function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   )
 
   if (nonDefaultSource) {
-    examples.push(`${sshPrefix} grep -R "keyword" ${getSourceMountPath(nonDefaultSource.name)}`)
+    examples.push(`${sshPrefix} grep -R "keyword" ${getProjectSourceMountPath(nonDefaultSource.name, sourceStore.projectMountPath)}`)
   }
 
   return examples
@@ -99,7 +102,7 @@ export function createAgentsMarkdown(opts: HelperContentOptions): string {
     '## docs-ssh',
     '',
     `Before implementing against ${opts.docsName}, inspect the mounted project filesystem over SSH first.`,
-    'Use `/project/issues` for issue tracking, `/project/tasks` for research and work results, `/project/docs` for polished references, and `/project/sources/<name>` for additional ingested sources.',
+    `Use \`${opts.sourceStore.projectMountPath}/issues\` for issue tracking, \`${opts.sourceStore.projectMountPath}/tasks\` for research and work results, \`${opts.sourceStore.projectDocsMountPath}\` for polished references, and \`${opts.sourceStore.projectMountPath}/sources/<name>\` for additional ingested sources.`,
     '',
     'Available paths:',
     ...createSourceList(opts.sourceStore),

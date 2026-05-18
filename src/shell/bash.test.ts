@@ -40,7 +40,7 @@ describe('createBash', () => {
     expect(sourceStore.homeRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'principals', 'anonymous', 'home'))
     expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default'))
     expect(bash.getEnv().HOME).toBe('/home')
-    await expect(fs.readFile('/README.md', 'utf8')).resolves.toContain('/project/docs')
+    await expect(fs.readFile('/README.md', 'utf8')).resolves.toContain('/projects/default/docs')
     const agents = await bash.exec('agents')
     expect(agents.stdout).toContain(
       'Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.',
@@ -48,10 +48,10 @@ describe('createBash', () => {
     expect(agents.stdout).toContain(
       'prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`',
     )
-    await expect(fs.readFile('/project/docs/README.md', 'utf8')).resolves.toBe('# Project Docs\n')
-    await expect(fs.readFile('/project/README.md', 'utf8')).resolves.toContain('# Project')
+    await expect(fs.readFile('/projects/default/docs/README.md', 'utf8')).resolves.toBe('# Project Docs\n')
+    await expect(fs.readFile('/projects/default/README.md', 'utf8')).resolves.toContain('# Project')
     await expect(fs.readFile('/home/README.md', 'utf8')).resolves.toContain('# Home')
-    await expect(fs.readdir('/project')).resolves.toEqual([
+    await expect(fs.readdir('/projects/default')).resolves.toEqual([
       'README.md',
       'docs',
       'issues',
@@ -73,13 +73,13 @@ describe('createBash', () => {
       docsName: 'Project Docs',
     })
 
-    await fs.writeFile('/project/issues/example-issue.md', '# Example issue\n')
+    await fs.writeFile('/projects/default/issues/example-issue.md', '# Example issue\n')
     await expect(
       readFile(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default', 'issues', 'example-issue.md'), 'utf8'),
     ).resolves.toBe('# Example issue\n')
 
-    await fs.mkdir('/project/tasks/example-task', { recursive: true })
-    await fs.writeFile('/project/tasks/example-task/notes.md', 'note')
+    await fs.mkdir('/projects/default/tasks/example-task', { recursive: true })
+    await fs.writeFile('/projects/default/tasks/example-task/notes.md', 'note')
     await expect(
       readFile(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default', 'tasks', 'example-task', 'notes.md'), 'utf8'),
     ).resolves.toBe('note')
@@ -93,11 +93,14 @@ describe('createBash', () => {
     await fs.writeFile('/tmp/temp.txt', 'tmp')
     await expect(fs.readFile('/tmp/temp.txt', 'utf8')).resolves.toBe('tmp')
 
-    await expect(fs.writeFile('/project/README.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/project/README.md'",
+    await expect(fs.writeFile('/projects/default/README.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/projects/default/README.md'",
     )
-    await expect(fs.writeFile('/project/docs/new.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/project/docs/new.md'",
+    await expect(fs.writeFile('/projects/default/docs/new.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/projects/default/docs/new.md'",
+    )
+    await expect(fs.mkdir('/projects/other/tasks/example', { recursive: true })).rejects.toThrow(
+      "EROFS: read-only file system, mkdir '/projects/other/tasks/example'",
     )
   })
 
@@ -128,9 +131,9 @@ describe('createBash', () => {
       resolve(workspaceDir, 'tenants', 'acme', 'principals', 'principal-alice', 'home'),
     )
     expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'acme', 'projects', 'product-docs'))
-    await expect(fs.readFile('/project/docs/README.md', 'utf8')).resolves.toBe('# Product Docs\n')
-    await expect(fs.writeFile('/project/tasks/example/notes.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/project/tasks/example/notes.md'",
+    await expect(fs.readFile('/projects/product-docs/docs/README.md', 'utf8')).resolves.toBe('# Product Docs\n')
+    await expect(fs.writeFile('/projects/product-docs/tasks/example/notes.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/projects/product-docs/tasks/example/notes.md'",
     )
 
     const bootstrap = await bash.exec('bootstrap --json')

@@ -3,7 +3,6 @@ import { posix, resolve } from 'node:path'
 
 const ROOT_README_PATH = '/README.md'
 const HOME_MOUNT_PATH = '/home'
-const PROJECT_MOUNT_PATH = '/project'
 const PROJECTS_MOUNT_PATH = '/projects'
 const TMP_MOUNT_PATH = '/tmp'
 const DEFAULT_PROJECT_SLUG = 'default'
@@ -26,7 +25,7 @@ const PROJECT_DIRECTORIES: WorkspaceDirectoryTemplate[] = [
       'Suggested issue file:',
       '',
       '```text',
-      '/project/issues/0001-example-issue.md',
+      '/projects/<project-slug>/issues/0001-example-issue.md',
       '```',
       '',
       'Suggested sections:',
@@ -45,18 +44,18 @@ const PROJECT_DIRECTORIES: WorkspaceDirectoryTemplate[] = [
     readme: [
       '# Tasks',
       '',
-      'Store research and work results under `/project/tasks/<task-slug>/`.',
+      'Store research and work results under `/projects/<project-slug>/tasks/<task-slug>/`.',
       '',
       'Suggested task layout:',
       '',
       '```text',
-      '/project/tasks/<task-slug>/',
+      '/projects/<project-slug>/tasks/<task-slug>/',
       '  result.md',
       '  notes.md',
       '  artifacts/',
       '```',
       '',
-      'Use `/project/docs` only for polished references that should stay useful after the task is done.',
+      'Use `/projects/<project-slug>/docs` only for polished references that should stay useful after the task is done.',
       '',
     ].join('\n'),
   },
@@ -80,30 +79,30 @@ function createWorkspaceReadme(): string {
   return [
     '# docs-ssh',
     '',
-    'This SSH filesystem separates private notes, current project work, and temporary files.',
+    'This SSH filesystem separates private notes, project work, and temporary files.',
     '',
     'Top-level paths:',
     '',
     '- `/home/`: private notes for the authenticated principal.',
-    '- `/project/`: alias for the current project.',
     '- `/projects/`: accessible projects by slug.',
     '- `/tmp/`: session-local temporary files.',
     '',
     'Rules:',
     '',
-    '- Read `/README.md` and `/project/README.md` before automating writes.',
+    '- Run `bootstrap --json`, then read `/README.md` and the selected `/projects/<slug>/README.md` before automating writes.',
     '- Use `/home` for private personal notes.',
-    '- Use `/project/issues` for issue tracking: what to do, why, status, next action, and result links.',
-    '- Use `/project/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.',
-    '- Use `/project/docs` only for polished references that should stay useful long-term.',
+    '- Use `/projects/<slug>/issues` for issue tracking: what to do, why, status, next action, and result links.',
+    '- Use `/projects/<slug>/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.',
+    '- Use `/projects/<slug>/docs` only for polished references that should stay useful long-term.',
+    '- Do not create new directories directly under `/projects`; projects are server-managed resources.',
     `- Use \`${TMP_MOUNT_PATH}/\` for temporary files that do not need to persist.`,
     '- Prefer lowercase kebab-case names for issue files, task directories, and note files.',
     '',
     'Current project layout:',
     '',
     '```text',
-    '/project/issues/<issue-slug>.md',
-    '/project/tasks/<task-slug>/',
+    '/projects/<slug>/issues/<issue-slug>.md',
+    '/projects/<slug>/tasks/<task-slug>/',
     '  result.md',
     '  notes.md',
     '  artifacts/',
@@ -120,7 +119,7 @@ function createHomeReadme(): string {
     '',
     'Use it for personal notes, drafts, and private working context that should not be shared through the project.',
     '',
-    'You may create files and directories here freely. Move project-facing issue records to `/project/issues`, task results to `/project/tasks`, and polished references to `/project/docs`.',
+    'You may create files and directories here freely. Move project-facing issue records to `/projects/<slug>/issues`, task results to `/projects/<slug>/tasks`, and polished references to `/projects/<slug>/docs`.',
     '',
   ].join('\n')
 }
@@ -129,7 +128,7 @@ function createProjectReadme(projectSlug = DEFAULT_PROJECT_SLUG): string {
   return [
     '# Project',
     '',
-    `This directory is the current project alias for \`${projectSlug}\`.`,
+    `This directory is the project workspace for \`${projectSlug}\`.`,
     '',
     '- `docs/`: read-only default project docs source.',
     '- `sources/<name>/`: read-only named project sources.',
@@ -146,18 +145,16 @@ export function getWorkspaceWritablePaths(opts: {
   tmpMountPath?: string
 } = {}): string[] {
   const homeMountPath = opts.homeMountPath ?? HOME_MOUNT_PATH
-  const projectMountPath = opts.projectMountPath ?? PROJECT_MOUNT_PATH
   const projectsMountPath = opts.projectsMountPath ?? PROJECTS_MOUNT_PATH
   const projectSlug = opts.projectSlug ?? DEFAULT_PROJECT_SLUG
+  const projectMountPath = opts.projectMountPath ?? posix.join(projectsMountPath, projectSlug)
   const tmpMountPath = opts.tmpMountPath ?? TMP_MOUNT_PATH
-  const concreteProjectPath = posix.join(projectsMountPath, projectSlug)
 
-  return [
+  return [...new Set([
     homeMountPath,
     ...PROJECT_DIRECTORIES.map((directory) => posix.join(projectMountPath, directory.name)),
-    ...PROJECT_DIRECTORIES.map((directory) => posix.join(concreteProjectPath, directory.name)),
     tmpMountPath,
-  ]
+  ])]
 }
 
 export function getWorkspaceReadOnlyPaths(opts: {
@@ -167,23 +164,18 @@ export function getWorkspaceReadOnlyPaths(opts: {
   projectsMountPath?: string
 } = {}): string[] {
   const homeMountPath = opts.homeMountPath ?? HOME_MOUNT_PATH
-  const projectMountPath = opts.projectMountPath ?? PROJECT_MOUNT_PATH
   const projectsMountPath = opts.projectsMountPath ?? PROJECTS_MOUNT_PATH
   const projectSlug = opts.projectSlug ?? DEFAULT_PROJECT_SLUG
-  const concreteProjectPath = posix.join(projectsMountPath, projectSlug)
+  const projectMountPath = opts.projectMountPath ?? posix.join(projectsMountPath, projectSlug)
 
-  return [
+  return [...new Set([
     ROOT_README_PATH,
     posix.join(homeMountPath, 'README.md'),
     posix.join(projectMountPath, 'README.md'),
     posix.join(projectMountPath, 'docs'),
     posix.join(projectMountPath, 'sources'),
     ...PROJECT_DIRECTORIES.map((directory) => posix.join(projectMountPath, directory.name, 'README.md')),
-    posix.join(concreteProjectPath, 'README.md'),
-    posix.join(concreteProjectPath, 'docs'),
-    posix.join(concreteProjectPath, 'sources'),
-    ...PROJECT_DIRECTORIES.map((directory) => posix.join(concreteProjectPath, directory.name, 'README.md')),
-  ]
+  ])]
 }
 
 export async function ensureWorkspaceLayout(

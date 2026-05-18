@@ -4,7 +4,7 @@ export interface RootSummary {
   aliases: string[]
   label: string
   mountPath: string
-  type: 'docs' | 'source' | 'workspace'
+  type: 'home' | 'project' | 'project-docs' | 'source'
 }
 
 export interface ViewerOidcState {
@@ -29,19 +29,18 @@ export interface ViewerSessionResponse {
   session: ViewerSessionUser | null
 }
 
-export interface ViewerSshKey {
-  algorithm: string
+export interface ViewerProject {
   createdAt: string
-  fingerprint: string
-  name: string | null
+  displayName: string
+  slug: string
 }
 
-export interface ViewerSshKeyListResponse {
-  keys: ViewerSshKey[]
+export interface ViewerProjectListResponse {
+  projects: ViewerProject[]
 }
 
-export interface ViewerSshKeyMutationResponse {
-  key: ViewerSshKey
+export interface ViewerProjectMutationResponse {
+  project: ViewerProject
 }
 
 export interface TreeNodeData {

@@ -1,16 +1,16 @@
-import { useDeferredValue, useEffect, useRef, useState, startTransition } from 'react'
+import { useCallback, useDeferredValue, useEffect, useRef, useState, startTransition } from 'react'
 import { Allotment } from 'allotment'
 import DOMPurify from 'dompurify'
 import { Renderer, marked } from 'marked'
 import { Tree, type NodeApi, type NodeRendererProps, type TreeApi } from 'react-arborist'
-import { addSshKey, getFile, getSession, getSshKeys, getTree } from './api'
+import { createProject, getFile, getProjects, getSession, getTree } from './api'
 import type {
   FilePayload,
   RootSummary,
   TreeNodeData,
   ViewerOidcState,
+  ViewerProject,
   ViewerSessionUser,
-  ViewerSshKey,
 } from './types'
 
 function escapeHtml(value: string) {
@@ -76,12 +76,6 @@ function getCurrentReturnTo() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`
 }
 
-function formatTimestamp(timestamp: string) {
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.valueOf())) return timestamp
-  return date.toLocaleString()
-}
-
 function findFirstFile(nodes: TreeNodeData[]): string | null {
   for (const node of nodes) {
     if (node.kind === 'file') return node.path
@@ -105,8 +99,15 @@ function findMountForPath(mounts: RootSummary[], path: string | null): RootSumma
   if (!path) return null
 
   return mounts
-    .filter((mount) => path === mount.mountPath || path.startsWith(`${mount.mountPath}/`))
-    .sort((left, right) => right.mountPath.length - left.mountPath.length)[0]
+    .map((mount) => {
+      const matchedPath = [mount.mountPath, ...mount.aliases]
+        .filter((mountPath) => path === mountPath || path.startsWith(`${mountPath}/`))
+        .sort((left, right) => right.length - left.length)[0]
+      return matchedPath ? { matchedPath, mount } : null
+    })
+    .filter((match): match is { matchedPath: string, mount: RootSummary } => Boolean(match))
+    .sort((left, right) => right.matchedPath.length - left.matchedPath.length)[0]
+    ?.mount
     ?? null
 }
 
@@ -193,11 +194,22 @@ function writeLocationState(path: string | null) {
 }
 
 function useElementSize<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null)
+  const [element, setElement] = useState<T | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
+  const ref = useCallback((node: T | null) => {
+    setElement(node)
+  }, [])
 
   useEffect(() => {
-    if (!ref.current) return
+    if (!element) return
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect()
+      setSize({
+        height: rect.height,
+        width: rect.width,
+      })
+    }
 
     const observer = new ResizeObserver((entries) => {
       const nextEntry = entries[0]
@@ -209,9 +221,17 @@ function useElementSize<T extends HTMLElement>() {
       })
     })
 
-    observer.observe(ref.current)
-    return () => observer.disconnect()
-  }, [])
+    observer.observe(element)
+    updateSize()
+    const frameId = window.requestAnimationFrame(updateSize)
+    window.addEventListener('resize', updateSize)
+
+    return () => {
+      observer.disconnect()
+      window.cancelAnimationFrame(frameId)
+      window.removeEventListener('resize', updateSize)
+    }
+  }, [element])
 
   return { ref, size }
 }
@@ -294,107 +314,146 @@ function PreviewHeader(props: {
 }
 
 function AccountPanel(props: {
-  onNameChange: (value: string) => void
-  onPublicKeyChange: (value: string) => void
-  onSubmit: () => void
+  onCreateProject: () => void
+  onProjectDisplayNameChange: (value: string) => void
+  onProjectSlugChange: (value: string) => void
+  onSelectProject: (slug: string) => void
+  projectCreateError: string | null
+  projectCreateStatus: string | null
+  projectDisplayName: string
+  projectSlug: string
+  projectSubmitting: boolean
+  projects: ViewerProject[]
+  projectsLoading: boolean
+  selectedProject: string | null
   session: ViewerSessionUser
-  sshKeyError: string | null
-  sshKeyName: string
-  sshKeyPublicKey: string
-  sshKeyStatus: string | null
-  sshKeys: ViewerSshKey[]
-  sshKeysLoading: boolean
-  sshKeySubmitting: boolean
 }) {
+  const selectedProject = props.projects.find((project) => project.slug === props.selectedProject) ?? props.projects[0]
+  const [configCopied, setConfigCopied] = useState(false)
+  const projectConfig = selectedProject
+    ? [
+        'server = "docs-ssh"',
+        `project = "${selectedProject.slug}"`,
+        '',
+      ].join('\n')
+    : ''
+
   return (
     <section className="account-dashboard">
       <div className="account-banner">
         <div>
-          <p className="eyebrow">SSH Access</p>
-          <h3>Register a public key for {props.session.login}</h3>
+          <p className="eyebrow">Agent Access</p>
+          <h3>Prepare project config for {props.session.login}</h3>
           <p>
-            Paste the contents of your public key file such as
-            {' '}
-            <code>~/.ssh/id_ed25519.pub</code>
-            {' '}
-            or
-            {' '}
-            <code>~/.ssh/id_rsa.pub</code>
-            .
+            Create or select the project that local agents should use from this work directory.
           </p>
         </div>
         <div className="account-banner__meta">
           <span className="meta-pill">{props.session.userDisplayName}</span>
-          <span className="meta-pill meta-pill--muted">{props.sshKeys.length} linked key{props.sshKeys.length === 1 ? '' : 's'}</span>
+          <span className="meta-pill meta-pill--muted">
+            {selectedProject ? `project: ${selectedProject.slug}` : 'select a project'}
+          </span>
         </div>
       </div>
 
       <div className="account-grid">
         <article className="account-card">
-          <p className="eyebrow">Add Key</p>
-          <h3>Paste a new public key</h3>
+          <p className="eyebrow">Projects</p>
+          <h3>Create or select a project</h3>
           <div className="account-form">
             <label className="field field--stacked">
-              <span>Label</span>
+              <span>Slug</span>
               <input
                 maxLength={120}
-                onChange={(event) => props.onNameChange(event.target.value)}
-                placeholder="Laptop, workstation, CI runner"
+                onChange={(event) => props.onProjectSlugChange(event.target.value)}
+                placeholder="slack-ai-assistant-agentcore-migration"
                 type="text"
-                value={props.sshKeyName}
+                value={props.projectSlug}
               />
             </label>
             <label className="field field--stacked">
-              <span>Public key</span>
-              <textarea
-                onChange={(event) => props.onPublicKeyChange(event.target.value)}
-                placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
-                rows={6}
-                value={props.sshKeyPublicKey}
+              <span>Display name</span>
+              <input
+                maxLength={160}
+                onChange={(event) => props.onProjectDisplayNameChange(event.target.value)}
+                placeholder="Slack AI assistant AgentCore migration"
+                type="text"
+                value={props.projectDisplayName}
               />
             </label>
             <div className="account-form__footer">
               <button
                 className="action-button"
-                disabled={props.sshKeySubmitting}
-                onClick={props.onSubmit}
+                disabled={props.projectSubmitting}
+                onClick={props.onCreateProject}
                 type="button"
               >
-                {props.sshKeySubmitting ? 'Saving key…' : 'Add SSH key'}
+                {props.projectSubmitting ? 'Creating project...' : 'Create project'}
               </button>
-              {props.sshKeyStatus ? (
-                <p className="status-message status-message--success">{props.sshKeyStatus}</p>
+              {props.projectCreateStatus ? (
+                <p className="status-message status-message--success">{props.projectCreateStatus}</p>
               ) : null}
-              {props.sshKeyError ? (
-                <p className="status-message status-message--error">{props.sshKeyError}</p>
+              {props.projectCreateError ? (
+                <p className="status-message status-message--error">{props.projectCreateError}</p>
               ) : null}
             </div>
           </div>
+          {props.projectsLoading ? (
+            <div className="preview-state preview-state--compact">
+              <p>Loading projects...</p>
+            </div>
+          ) : props.projects.length === 0 ? (
+            <div className="preview-state preview-state--compact">
+              <p>No projects available.</p>
+            </div>
+          ) : (
+            <div className="project-list">
+              {props.projects.map((project) => (
+                <button
+                  className={`project-item ${project.slug === selectedProject?.slug ? 'selected' : ''}`}
+                  key={project.slug}
+                  onClick={() => props.onSelectProject(project.slug)}
+                  type="button"
+                >
+                  <strong>{project.displayName}</strong>
+                  <code>{project.slug}</code>
+                </button>
+              ))}
+            </div>
+          )}
         </article>
 
         <article className="account-card">
-          <p className="eyebrow">Registered Keys</p>
-          <h3>Current public keys</h3>
-          {props.sshKeysLoading ? (
-            <div className="preview-state preview-state--compact">
-              <p>Loading registered keys…</p>
-            </div>
-          ) : props.sshKeys.length === 0 ? (
-            <div className="preview-state preview-state--compact">
-              <p>No SSH public keys linked yet.</p>
-            </div>
+          <p className="eyebrow">Agent Config</p>
+          <h3>Use the selected project from this directory</h3>
+          {selectedProject ? (
+            <>
+              <div className="config-snippet-wrap">
+                <pre className="config-snippet">{projectConfig}</pre>
+                <button
+                  className="meta-link meta-button config-copy-button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(projectConfig).then(() => {
+                      setConfigCopied(true)
+                      window.setTimeout(() => setConfigCopied(false), 1400)
+                    })
+                  }}
+                  type="button"
+                >
+                  {configCopied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <p>
+                Store this as
+                {' '}
+                <code>.docs-ssh.toml</code>
+                {' '}
+                in the local work directory. The server still verifies project membership before issuing an SSH session.
+              </p>
+            </>
           ) : (
-            <div className="ssh-key-list">
-              {props.sshKeys.map((sshKey) => (
-                <div className="ssh-key-item" key={sshKey.fingerprint}>
-                  <div className="ssh-key-item__header">
-                    <strong>{sshKey.name?.trim() || 'Unnamed key'}</strong>
-                    <span className="meta-pill meta-pill--muted">{sshKey.algorithm}</span>
-                  </div>
-                  <code>{sshKey.fingerprint}</code>
-                  <p>Added {formatTimestamp(sshKey.createdAt)}</p>
-                </div>
-              ))}
+            <div className="preview-state preview-state--compact">
+              <p>Select or create a project to generate config.</p>
             </div>
           )}
         </article>
@@ -542,91 +601,22 @@ function PreviewPane(props: {
 }
 
 function LoggedOutLanding(props: {
-  docsName: string
-  mounts: RootSummary[]
   oidc: ViewerOidcState
-  sessionLoading: boolean
 }) {
   const authReady = props.oidc.enabled
-  const primaryLabel = props.sessionLoading
-    ? 'Checking session…'
-    : authReady
-      ? 'Sign in with Google'
-      : 'OIDC not configured'
 
   return (
     <section className="logged-out-shell">
-      <div className="logged-out-hero">
-        <div className="logged-out-hero__copy">
-          <p className="eyebrow">Viewer Access</p>
-          <h2>Signed out</h2>
-          <p className="logged-out-hero__lede">
-            This viewer is set up for web identity sign-in. Sign in first to enter {props.docsName}
-            {' '}
-            and attach your browser session to a known account.
-          </p>
-          <div className="logged-out-hero__actions">
-            {authReady ? (
-              <a
-                className="hero-button"
-                href={`/auth/login?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}
-              >
-                {primaryLabel}
-              </a>
-            ) : (
-              <span className="meta-pill meta-pill--muted">{primaryLabel}</span>
-            )}
-            {props.oidc.provider ? (
-              <span className="meta-pill">
-                Provider
-                {' '}
-                {props.oidc.provider}
-              </span>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="logged-out-status">
-          <p className="eyebrow">Session State</p>
-          <div className="logged-out-status__card">
-            <strong>{props.sessionLoading ? 'Checking current session' : 'No active web session'}</strong>
-            <p>
-              {props.sessionLoading
-                ? 'The viewer is verifying your session cookies before deciding whether to open the explorer.'
-                : 'The explorer is intentionally hidden until sign-in succeeds.'}
-            </p>
-          </div>
-          <div className="logged-out-status__card">
-            <strong>What sign-in unlocks</strong>
-            <p>Authenticated web session, linked identity resolution, and the future browser-side SSH key flow.</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="logged-out-grid">
-        <article className="logged-out-card">
-          <p className="eyebrow">Mounted Paths</p>
-          <h3>What will open after sign-in</h3>
-          <div className="logged-out-card__pills">
-            {props.mounts.length > 0 ? props.mounts.map((mount) => (
-              <span className="meta-pill meta-pill--muted" key={mount.mountPath}>
-                {mount.mountPath}
-              </span>
-            )) : <span className="meta-pill meta-pill--muted">Loading mounts…</span>}
-          </div>
-          <p>The authenticated view opens the docs tree and workspace explorer inside the same browser session.</p>
-        </article>
-
-        <article className="logged-out-card">
-          <p className="eyebrow">Flow</p>
-          <h3>What happens next</h3>
-          <ol className="logged-out-steps">
-            <li>Redirect to the configured OIDC provider.</li>
-            <li>Verify the ID token and resolve your linked identity.</li>
-            <li>Return here with a signed session cookie.</li>
-          </ol>
-        </article>
-      </div>
+      {authReady ? (
+        <a
+          className="hero-button"
+          href={`/auth/login?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}
+        >
+          Sign in with Google
+        </a>
+      ) : (
+        <span className="meta-pill meta-pill--muted">OIDC not configured</span>
+      )}
     </section>
   )
 }
@@ -634,7 +624,6 @@ function LoggedOutLanding(props: {
 export function App() {
   const initialLocation = readLocationState()
   const treeRef = useRef<TreeApi<TreeNodeData> | null>(null)
-  const [docsName, setDocsName] = useState('Documentation')
   const [oidc, setOidc] = useState<ViewerOidcState>({ enabled: false })
   const [session, setSession] = useState<ViewerSessionUser | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
@@ -646,19 +635,23 @@ export function App() {
   const [treeTruncated, setTreeTruncated] = useState(false)
   const [file, setFile] = useState<FilePayload | null>(null)
   const [fileLoading, setFileLoading] = useState(false)
-  const [sshKeys, setSshKeys] = useState<ViewerSshKey[]>([])
-  const [sshKeysLoading, setSshKeysLoading] = useState(false)
-  const [sshKeyName, setSshKeyName] = useState('')
-  const [sshKeyPublicKey, setSshKeyPublicKey] = useState('')
-  const [sshKeyError, setSshKeyError] = useState<string | null>(null)
-  const [sshKeyStatus, setSshKeyStatus] = useState<string | null>(null)
-  const [sshKeySubmitting, setSshKeySubmitting] = useState(false)
+  const [projects, setProjects] = useState<ViewerProject[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [selectedProject, setSelectedProject] = useState<string | null>(
+    window.localStorage.getItem('docs-ssh:selected-project'),
+  )
+  const [projectSlug, setProjectSlug] = useState('')
+  const [projectDisplayName, setProjectDisplayName] = useState('')
+  const [projectCreateError, setProjectCreateError] = useState<string | null>(null)
+  const [projectCreateStatus, setProjectCreateStatus] = useState<string | null>(null)
+  const [projectSubmitting, setProjectSubmitting] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const deferredSearchTerm = useDeferredValue(searchTerm)
   const explorerViewport = useElementSize<HTMLDivElement>()
   const activeMount = findMountForPath(mounts, activePath)
-  const treeHeight = explorerViewport.size.height > 0 ? explorerViewport.size.height : 480
-  const showLoggedOutLanding = !session
+  const treeHeight = Math.max(1, explorerViewport.size.height)
+  const showSessionGate = sessionLoading && !session
+  const showLoggedOutLanding = !session && !sessionLoading
   const showAccountPanel = Boolean(session) && !activePath
 
   useEffect(() => {
@@ -686,11 +679,10 @@ export function App() {
     setTreeLoading(true)
     setTreeError(null)
 
-    getTree()
+    getTree(selectedProject ?? undefined)
       .then((payload) => {
         if (cancelled) return
 
-        setDocsName(payload.docsName)
         setMounts(payload.mounts)
         setTree(payload.tree)
         setTreeTruncated(payload.truncated)
@@ -705,7 +697,40 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [selectedProject])
+
+  useEffect(() => {
+    if (!session) {
+      setProjects([])
+      setProjectsLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setProjectsLoading(true)
+
+    getProjects()
+      .then((payload) => {
+        if (cancelled) return
+
+        setProjects(payload.projects)
+        const selectedIsAvailable = selectedProject
+          ? payload.projects.some((project) => project.slug === selectedProject)
+          : false
+        if (!selectedIsAvailable && payload.projects[0]) {
+          selectProject(payload.projects[0].slug)
+        }
+        setProjectsLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setProjectsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [session, selectedProject])
 
   useEffect(() => {
     const handlePopState = () => {
@@ -773,66 +798,43 @@ export function App() {
     treeRef.current.scrollTo(`file:${activePath}`)
   }, [activePath, tree])
 
-  useEffect(() => {
-    if (!session) {
-      setSshKeys([])
-      setSshKeysLoading(false)
-      setSshKeyError(null)
-      setSshKeyStatus(null)
+  const selectProject = (slug: string) => {
+    setSelectedProject(slug)
+    window.localStorage.setItem('docs-ssh:selected-project', slug)
+    startTransition(() => setActivePath(null))
+  }
+
+  const submitProject = async () => {
+    const slug = projectSlug.trim()
+    const displayName = projectDisplayName.trim()
+    if (!slug) {
+      setProjectCreateError('Enter a project slug first.')
+      setProjectCreateStatus(null)
       return
     }
 
-    let cancelled = false
-    setSshKeysLoading(true)
-    setSshKeyError(null)
-
-    getSshKeys()
-      .then((payload) => {
-        if (cancelled) return
-        setSshKeys(payload.keys)
-        setSshKeysLoading(false)
-      })
-      .catch((error) => {
-        if (cancelled) return
-        setSshKeyError(error instanceof Error ? error.message : String(error))
-        setSshKeysLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [session?.userId])
-
-  const submitSshKey = async () => {
-    const publicKey = sshKeyPublicKey.trim()
-    const name = sshKeyName.trim()
-    if (!publicKey) {
-      setSshKeyError('Paste an SSH public key first.')
-      setSshKeyStatus(null)
-      return
-    }
-
-    setSshKeySubmitting(true)
-    setSshKeyError(null)
-    setSshKeyStatus(null)
+    setProjectSubmitting(true)
+    setProjectCreateError(null)
+    setProjectCreateStatus(null)
 
     try {
-      const payload = await addSshKey({
-        name: name || undefined,
-        publicKey,
+      const payload = await createProject({
+        displayName: displayName || undefined,
+        slug,
       })
 
-      setSshKeys((current) => {
-        const next = current.filter((entry) => entry.fingerprint !== payload.key.fingerprint)
-        return [payload.key, ...next]
+      setProjects((current) => {
+        const next = current.filter((entry) => entry.slug !== payload.project.slug)
+        return [...next, payload.project].sort((left, right) => left.slug.localeCompare(right.slug))
       })
-      setSshKeyPublicKey('')
-      setSshKeyName('')
-      setSshKeyStatus(`Saved ${payload.key.fingerprint}`)
+      setProjectSlug('')
+      setProjectDisplayName('')
+      setProjectCreateStatus(`Created ${payload.project.slug}`)
+      selectProject(payload.project.slug)
     } catch (error) {
-      setSshKeyError(error instanceof Error ? error.message : String(error))
+      setProjectCreateError(error instanceof Error ? error.message : String(error))
     } finally {
-      setSshKeySubmitting(false)
+      setProjectSubmitting(false)
     }
   }
 
@@ -840,22 +842,19 @@ export function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">docs-ssh viewer</p>
-          <h1>{docsName}</h1>
+          <p className="eyebrow">Viewer</p>
+          <h1>DOCS-SSH</h1>
         </div>
-        <div className="topbar__actions">
-          <div className="auth-panel">
-            <p className="eyebrow">Web Session</p>
-            {sessionLoading ? (
-              <span className="meta-pill meta-pill--muted">Checking session…</span>
-            ) : session ? (
+        {session ? (
+          <div className="topbar__actions">
+            <div className="auth-panel">
               <div className="auth-panel__body">
                 <button
                   className="meta-link meta-button"
                   onClick={() => startTransition(() => setActivePath(null))}
                   type="button"
                 >
-                  SSH keys
+                  Account
                 </button>
                 <span className="meta-pill">
                   {session.userDisplayName} ({session.login})
@@ -867,40 +866,24 @@ export function App() {
                   Sign out
                 </a>
               </div>
-            ) : oidc.enabled ? (
-              <div className="auth-panel__body">
-                <span className="meta-pill meta-pill--muted">
-                  OIDC ready{oidc.provider ? ` · ${oidc.provider}` : ''}
-                </span>
-                <a
-                  className="meta-link"
-                  href={`/auth/login?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}
-                >
-                  Sign in
-                </a>
-              </div>
-            ) : (
-              <span className="meta-pill meta-pill--muted">OIDC not configured</span>
-            )}
+            </div>
           </div>
-          {!showLoggedOutLanding ? mounts.map((mount) => (
-            <span className="meta-pill meta-pill--muted" key={mount.mountPath}>
-              {mount.mountPath}
-            </span>
-          )) : null}
-        </div>
+        ) : null}
       </header>
 
       <main className="workspace">
-        {showLoggedOutLanding ? (
+        {showSessionGate ? (
+          <section className="session-gate" aria-label="Checking web session">
+            <p className="eyebrow">Web Session</p>
+            <div className="preview-skeleton preview-skeleton--wide" />
+            <div className="preview-skeleton" />
+          </section>
+        ) : showLoggedOutLanding ? (
           <LoggedOutLanding
-            docsName={docsName}
-            mounts={mounts}
             oidc={oidc}
-            sessionLoading={sessionLoading}
           />
         ) : (
-          <Allotment defaultSizes={[28, 72]}>
+          <Allotment className="workspace-split" defaultSizes={[28, 72]}>
             <Allotment.Pane minSize={260} preferredSize={320}>
               <section className="sidebar">
                 <div className="sidebar__toolbar">
@@ -935,6 +918,7 @@ export function App() {
 
                   {!treeError ? (
                     <Tree<TreeNodeData>
+                      className="file-tree"
                       data={tree}
                       disableDrag
                       disableEdit
@@ -976,17 +960,19 @@ export function App() {
                 <div className="preview-body">
                   {showAccountPanel ? (
                     <AccountPanel
-                      onNameChange={setSshKeyName}
-                      onPublicKeyChange={setSshKeyPublicKey}
-                      onSubmit={submitSshKey}
+                      onCreateProject={submitProject}
+                      onProjectDisplayNameChange={setProjectDisplayName}
+                      onProjectSlugChange={setProjectSlug}
+                      onSelectProject={selectProject}
+                      projectCreateError={projectCreateError}
+                      projectCreateStatus={projectCreateStatus}
+                      projectDisplayName={projectDisplayName}
+                      projectSlug={projectSlug}
+                      projectSubmitting={projectSubmitting}
+                      projects={projects}
+                      projectsLoading={projectsLoading}
+                      selectedProject={selectedProject}
                       session={session}
-                      sshKeyError={sshKeyError}
-                      sshKeyName={sshKeyName}
-                      sshKeyPublicKey={sshKeyPublicKey}
-                      sshKeys={sshKeys}
-                      sshKeysLoading={sshKeysLoading}
-                      sshKeyStatus={sshKeyStatus}
-                      sshKeySubmitting={sshKeySubmitting}
                     />
                   ) : (
                     <PreviewPane

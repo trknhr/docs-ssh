@@ -157,21 +157,20 @@ export async function createBash(opts: CreateBashOptions = {}) {
     'Start here before reading or writing project material.',
     '',
     '- `/home` is private durable work for the authenticated principal.',
-    '- `/project` is the current project alias.',
-    '- `/project/docs` is the read-only default docs source.',
-    '- `/project/sources/<name>` contains additional read-only sources.',
-    '- `/project/issues` is project issue tracking: what to do, why, status, next action, and result links.',
-    '- `/project/tasks` stores research and work results.',
-    `- \`/projects/${sourceStore.projectSlug}\` is the concrete current project path.`,
+    `- \`${sourceStore.projectMountPath}\` is the current project workspace.`,
+    `- \`${sourceStore.projectDocsMountPath}\` is the read-only default docs source.`,
+    `- \`${sourceStore.projectMountPath}/sources/<name>\` contains additional read-only sources.`,
+    `- \`${sourceStore.projectMountPath}/issues\` is project issue tracking: what to do, why, status, next action, and result links.`,
+    `- \`${sourceStore.projectMountPath}/tasks\` stores research and work results.`,
     '- `/tmp` is temporary and resets between SSH sessions.',
     '',
-    'Use `/home` for personal notes, `/project/issues` for issue records, `/project/tasks/<task-slug>/` for task results, and `/project/docs` for polished long-term references.',
+    `Use \`/home\` for personal notes, \`${sourceStore.projectMountPath}/issues\` for issue records, \`${sourceStore.projectMountPath}/tasks/<task-slug>/\` for task results, and \`${sourceStore.projectDocsMountPath}\` for polished long-term references.`,
     '',
   ].join('\n')
   const projectReadme = [
     '# Project',
     '',
-    `This is the current project alias for \`${sourceStore.projectSlug}\`.`,
+    `This is the project workspace for \`${sourceStore.projectSlug}\`.`,
     '',
     '- `docs/`: read-only default docs source.',
     '- `sources/<name>/`: read-only named sources.',
@@ -192,7 +191,6 @@ export async function createBash(opts: CreateBashOptions = {}) {
   const canWriteHome = hasScope(scopes, 'home:write')
   const canReadProject = hasScope(scopes, 'project:read') || hasScope(scopes, 'project:write')
   const canWriteProject = hasScope(scopes, 'project:write')
-  const canReadProjects = hasScope(scopes, 'projects:read')
   const canReadSources = hasScope(scopes, 'sources:read')
   const canReadBootstrap = hasScope(scopes, 'bootstrap:read')
   const bootstrapPayload = {
@@ -259,8 +257,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
     ],
     initialFiles: {
       '/README.md': rootReadme,
-      ...(canReadProject ? { '/project/README.md': projectReadme } : {}),
-      ...(canReadProjects ? { [`/projects/${sourceStore.projectSlug}/README.md`]: projectReadme } : {}),
+      ...(canReadProject ? { [`${sourceStore.projectMountPath}/README.md`]: projectReadme } : {}),
     },
     mounts: [
       ...(canReadHome ? [{
@@ -275,19 +272,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
         mountPoint: `${sourceStore.projectMountPath}/tasks`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
       }] : []),
-      ...(canReadProjects ? [{
-        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/issues`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/issues` }),
-      },
-      {
-        mountPoint: `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}/tasks`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
-      }] : []),
       ...(canReadProject && canReadSources ? sourceStore.mounts
-        .filter((mount) => {
-          if (mount.mountPoint.startsWith(`${sourceStore.projectsMountPath}/`)) return canReadProjects
-          return true
-        })
         .map((mount) => ({
           mountPoint: mount.mountPoint,
           filesystem: new OverlayFs({ root: mount.rootPath, mountPoint: '/', readOnly: true }),

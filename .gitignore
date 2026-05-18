@@ -3,6 +3,7 @@ dist
 viewer-dist
 ssh_host_key
 .docs-ssh
+.docs-ssh.toml
 .env
 .env.selfhost
 .DS_Store

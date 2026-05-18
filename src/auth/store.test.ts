@@ -251,6 +251,11 @@ describe('createAuthStore', () => {
       ownerLogin: 'alice',
       ownerName: 'Alice',
     })
+    const project = authStore.createProject({
+      displayName: 'Product Docs',
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
     const keys = sshUtils.generateKeyPairSync('ed25519')
 
     const session = authStore.createSshSession({
@@ -264,7 +269,7 @@ describe('createAuthStore', () => {
     const principalSession = authStore.findPrincipalBySshFingerprint(session.fingerprint, session.username)
 
     expect(session.username).toBe('sess_test')
-    expect(session.currentProjectSlug).toBe('product-docs')
+    expect(session.currentProjectSlug).toBe(project.slug)
     expect(authStore.findPrincipalBySshFingerprint(session.fingerprint, 'wrong-user')).toBeNull()
     expect(principalSession).toMatchObject({
       login: 'alice',
@@ -289,6 +294,18 @@ describe('createAuthStore', () => {
         revokedAt: revoked.revokedAt,
       },
     ])
+    expect(authStore.listProjects({ userLogin: 'alice' }).map((entry) => entry.slug)).toEqual([
+      'default',
+      'product-docs',
+    ])
+    expect(() =>
+      authStore.createSshSession({
+        projectSlug: 'missing-project',
+        publicKey: keys.public,
+        ttlSeconds: 60,
+        userLogin: 'alice',
+      }),
+    ).toThrow(/Project "missing-project" was not found/)
     expect(() =>
       authStore.createSshSession({
         publicKey: keys.public,

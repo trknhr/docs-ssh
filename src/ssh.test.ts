@@ -38,6 +38,11 @@ async function createTestServer() {
     publicKey: allowedKey.public,
   })
   const sessionKey = sshUtils.generateKeyPairSync('ed25519')
+  authStore.createProject({
+    displayName: 'Product Docs',
+    slug: 'product-docs',
+    userLogin: owner.user.login,
+  })
   const sshSession = authStore.createSshSession({
     projectSlug: 'product-docs',
     publicKey: sessionKey.public,

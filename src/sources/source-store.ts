@@ -26,7 +26,7 @@ export function getSourceMountPath(name: string): string {
   return getProjectSourceMountPath(name)
 }
 
-export function getProjectSourceMountPath(name: string, projectMountPath = '/project'): string {
+export function getProjectSourceMountPath(name: string, projectMountPath = '/projects/default'): string {
   return posix.join(projectMountPath, 'sources', normalizeSourceName(name))
 }
 
@@ -174,17 +174,11 @@ export function buildSourceStore(
 ): SourceStore {
   const defaultSourceName = registry.defaultSourceName || registry.sources[0]?.name || 'local'
   const defaultSource = registry.sources.find((source) => source.name === defaultSourceName)
-  const projectPath = '/project'
   const projectSlug = normalizeSourceName(opts.projectSlug ?? DEFAULT_PROJECT_SLUG)
   const concreteProjectPath = posix.join('/projects', projectSlug)
 
   const mounts = registry.sources.flatMap((source) => {
     const sourceMounts = [
-      {
-        sourceName: source.name,
-        mountPoint: getProjectSourceMountPath(source.name, projectPath),
-        rootPath: source.rootPath,
-      },
       {
         sourceName: source.name,
         mountPoint: getProjectSourceMountPath(source.name, concreteProjectPath),
@@ -193,11 +187,6 @@ export function buildSourceStore(
     ]
 
     if (source.name === defaultSourceName) {
-      sourceMounts.push({
-        sourceName: source.name,
-        mountPoint: posix.join(projectPath, 'docs'),
-        rootPath: source.rootPath,
-      })
       sourceMounts.push({
         sourceName: source.name,
         mountPoint: posix.join(concreteProjectPath, 'docs'),
@@ -217,8 +206,8 @@ export function buildSourceStore(
     mounts,
     defaultSource,
     homeMountPath: '/home',
-    projectDocsMountPath: '/project/docs',
-    projectMountPath: '/project',
+    projectDocsMountPath: posix.join(concreteProjectPath, 'docs'),
+    projectMountPath: concreteProjectPath,
     projectSlug,
     projectsMountPath: '/projects',
     sharedMountPath: '/shared',
@@ -256,10 +245,18 @@ export async function loadSourceStore(opts: {
         }),
       })),
     )
+    const mountableSources = []
+    for (const source of resolvedSources) {
+      if (await pathExists(source.rootPath)) mountableSources.push(source)
+    }
+    const defaultSourceName = mountableSources.some((source) => source.name === registry.defaultSourceName)
+      ? registry.defaultSourceName
+      : mountableSources[0]?.name ?? ''
 
     const sourceStore = buildSourceStore({
       ...registry,
-      sources: resolvedSources,
+      defaultSourceName,
+      sources: mountableSources,
     }, {
       projectSlug: opts.projectSlug,
     })
@@ -272,7 +269,11 @@ export async function loadSourceStore(opts: {
       workspaceRootPath: resolve(opts.workspaceDir),
     }
   }
-  const sourceStore = buildSourceStore(createFallbackRegistry(opts.fallbackDocsDir), {
+  const fallbackDocsDir = resolve(opts.fallbackDocsDir)
+  const fallbackRegistry = await pathExists(fallbackDocsDir)
+    ? createFallbackRegistry(fallbackDocsDir)
+    : createEmptyRegistry()
+  const sourceStore = buildSourceStore(fallbackRegistry, {
     projectSlug: opts.projectSlug,
   })
   return {

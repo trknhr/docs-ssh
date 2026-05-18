@@ -1,41 +1,61 @@
 ---
 name: docs-ssh
-description: Search and use a docs-ssh project filesystem over SSH using a stable local alias.
+description: Search and use a docs-ssh project filesystem over SSH using a configured local alias.
 ---
 
 # docs-ssh
 
-Use the `docs-ssh` SSH alias from `~/.ssh/config` to inspect the mounted project filesystem before making changes.
+Resolve the SSH target before inspecting the mounted project filesystem:
 
-If your server operator told you to use a different alias, replace `docs-ssh` in the examples below.
+- Starting from the current working directory, look upward for `.docs-ssh.toml`.
+- If the file contains `server = "<alias>"`, use that SSH alias.
+- If no config file or server value exists, use `docs-ssh`.
+- If the file contains `project = "<slug>"`, treat it as the intended current project when creating or checking SSH sessions.
+- Run `docs-ssh status --json` first. If there is no active session, run `docs-ssh login --json`; it opens the browser for Web/OIDC approval and returns the SSH command to use.
+- Do not create directories directly under `/projects`; projects are server-managed resources.
 
-Expected SSH config:
+Common SSH config:
 
 ```sshconfig
+Host docs-ssh-local
+  HostName localhost
+  Port 2222
+
 Host docs-ssh
   HostName <server-host-or-ip>
   Port 2222
 ```
 
+In this repo, local development normally uses `.docs-ssh.toml` with:
+
+```toml
+server = "docs-ssh-local"
+project = "docs-ssh"
+```
+
+When a scoped SSH session is issued, connect as `<session-username>@<server>` so `/projects/<slug>` contains the configured project. Connecting as the normal local SSH user falls back to that principal's default project.
+
+`docs-ssh login --json` returns `sshCommand`, `identityFile`, `username`, `server`, `project`, and `expiresAt`. Use the returned `sshCommand` as the prefix for SSH commands when available.
+
 Mounted paths:
 
 - `/README.md` -> root filesystem guide and writing rules
 - `/home` -> private personal notes for the authenticated principal
-- `/project` -> current project alias
-- `/project/docs` -> read-only default source
-- `/project/sources/<name>` -> additional read-only named sources
-- `/project/issues` -> issue tracking: what to do, why, status, next action, and result links
-- `/project/tasks` -> research and work results
-- `/projects/default` -> concrete current project path
+- `/projects/<slug>` -> project workspace selected by slug
+- `/projects/<slug>/docs` -> read-only default source
+- `/projects/<slug>/sources/<name>` -> additional read-only named sources
+- `/projects/<slug>/issues` -> issue tracking: what to do, why, status, next action, and result links
+- `/projects/<slug>/tasks` -> research and work results
 - `/tmp` -> temporary session-local files
 
 Workspace rules:
 
-- Start by running `bootstrap --json`, then read `/README.md` and `/project/README.md` before searching or writing files.
+- Start by running `bootstrap --json`, then read `/README.md` and `/projects/<slug>/README.md` before searching or writing files.
 - Use `/home` for private personal notes.
-- Use `/project/issues` for issue tracking: what to do, why, status, next action, and result links.
-- Use `/project/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.
-- Use `/project/docs` only for polished references that should stay useful long-term.
+- Use `/projects/<slug>/issues` for issue tracking: what to do, why, status, next action, and result links.
+- Use `/projects/<slug>/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.
+- Use `/projects/<slug>/docs` only for polished references that should stay useful long-term.
+- Do not create new directories directly under `/projects`; projects are server-managed resources.
 - For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.
 - After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.
 - Use `/tmp` for temporary files.
@@ -43,15 +63,17 @@ Workspace rules:
 Example commands:
 
 ```bash
-ssh docs-ssh bootstrap --json
-ssh docs-ssh cat /README.md
-ssh docs-ssh cat /project/README.md
-ssh docs-ssh ls /project/issues
-ssh docs-ssh find /project/docs -name '*.md' | head
-ssh docs-ssh grep -R "keyword" /project/docs
-ssh docs-ssh "printf '%s\n' '# Example issue' 'status: open' 'next: inspect docs' > /project/issues/example-issue.md"
-ssh docs-ssh mkdir -p /project/tasks/example-task/artifacts
-ssh docs-ssh "printf '%s\n' '# Notes' '- item' > /project/tasks/example-task/notes.md"
-ssh docs-ssh sh -lc 'echo "- note" >> /project/tasks/example-task/notes.md'
-ssh docs-ssh cat /project/tasks/example-task/notes.md
+docs-ssh status --json
+docs-ssh login --json
+ssh <server> bootstrap --json
+ssh <server> cat /README.md
+ssh <server> cat /projects/<slug>/README.md
+ssh <server> ls /projects/<slug>/issues
+ssh <server> find /projects/<slug>/docs -name '*.md' | head
+ssh <server> grep -R "keyword" /projects/<slug>/docs
+ssh <server> "printf '%s\n' '# Example issue' 'status: open' 'next: inspect docs' > /projects/<slug>/issues/example-issue.md"
+ssh <server> mkdir -p /projects/<slug>/tasks/example-task/artifacts
+ssh <server> "printf '%s\n' '# Notes' '- item' > /projects/<slug>/tasks/example-task/notes.md"
+ssh <server> sh -lc 'echo "- note" >> /projects/<slug>/tasks/example-task/notes.md'
+ssh <server> cat /projects/<slug>/tasks/example-task/notes.md
 ```

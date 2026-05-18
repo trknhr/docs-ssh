@@ -25,24 +25,24 @@ function createSourceStoreFixture(): SourceStore {
     mounts: [
       {
         sourceName: projectDocs.name,
-        mountPoint: '/project/sources/project-docs',
+        mountPoint: '/projects/default/sources/project-docs',
         rootPath: projectDocs.rootPath,
       },
       {
         sourceName: projectDocs.name,
-        mountPoint: '/project/docs',
+        mountPoint: '/projects/default/docs',
         rootPath: projectDocs.rootPath,
       },
       {
         sourceName: reference.name,
-        mountPoint: '/project/sources/reference',
+        mountPoint: '/projects/default/sources/reference',
         rootPath: reference.rootPath,
       },
     ],
     defaultSource: projectDocs,
     homeMountPath: '/home',
-    projectDocsMountPath: '/project/docs',
-    projectMountPath: '/project',
+    projectDocsMountPath: '/projects/default/docs',
+    projectMountPath: '/projects/default',
     projectSlug: 'default',
     projectsMountPath: '/projects',
     sharedMountPath: '/shared',
@@ -65,21 +65,22 @@ describe('helper content', () => {
     })
 
     expect(markdown).toContain('Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.')
-    expect(markdown).toContain('- `/project/docs` -> default source (`project-docs`)')
-    expect(markdown).toContain('- `/project/sources/reference`')
-    expect(markdown).toContain('- `/project/issues` -> issue tracking')
-    expect(markdown).toContain('- `/project/tasks` -> research and work results')
+    expect(markdown).toContain('- `/projects/default/docs` -> default source (`project-docs`)')
+    expect(markdown).toContain('- `/projects/default/sources/reference`')
+    expect(markdown).toContain('- `/projects/default/issues` -> issue tracking')
+    expect(markdown).toContain('- `/projects/default/tasks` -> research and work results')
     expect(markdown).toContain('- `/home` -> private personal notes')
     expect(markdown).toContain('Run `bootstrap --json`')
+    expect(markdown).toContain('Do not create new directories directly under `/projects`')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
     expect(markdown).toContain('ssh docs-ssh -p 2222 bootstrap --json')
-    expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /project/docs')
+    expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /projects/default/docs')
     expect(markdown).toContain(
-      `ssh docs-ssh -p 2222 "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /project/issues/example-issue.md"`,
+      `ssh docs-ssh -p 2222 "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /projects/default/issues/example-issue.md"`,
     )
-    expect(markdown).toContain(`ssh docs-ssh -p 2222 "printf '%s\\n' '# Notes' '- item' > /project/tasks/example-task/notes.md"`)
-    expect(markdown).toContain('ssh docs-ssh -p 2222 cat /project/tasks/example-task/notes.md')
-    expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /project/sources/reference')
+    expect(markdown).toContain(`ssh docs-ssh -p 2222 "printf '%s\\n' '# Notes' '- item' > /projects/default/tasks/example-task/notes.md"`)
+    expect(markdown).toContain('ssh docs-ssh -p 2222 cat /projects/default/tasks/example-task/notes.md')
+    expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /projects/default/sources/reference')
   })
 
   it('renders skill markdown and omits -p for the standard ssh port', () => {
@@ -95,7 +96,7 @@ describe('helper content', () => {
     expect(markdown).not.toContain('-p 22')
     expect(markdown).toContain('ssh docs.example.com bootstrap --json')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
-    expect(markdown).toContain('ssh docs.example.com grep -R "keyword" /project/docs')
+    expect(markdown).toContain('ssh docs.example.com grep -R "keyword" /projects/default/docs')
   })
 
   it('renders setup markdown with installation flows and tool paths', () => {

@@ -54,6 +54,8 @@ function formatPrompt(cwd: string): string {
 }
 
 function createBanner(docsName: string, principal: AuthenticatedPrincipal): string {
+  const projectPath = `/projects/${principal.auth.project.slug}`
+
   return [
     `${blue('docs-ssh')}\r\n`,
     '\r\n',
@@ -69,17 +71,17 @@ function createBanner(docsName: string, principal: AuthenticatedPrincipal): stri
     `${chalkInstance.dim('Useful paths:')}\r\n`,
     '  /README.md\r\n',
     '  /home\r\n',
-    '  /project/issues\r\n',
-    '  /project/docs\r\n',
-    '  /project/tasks\r\n',
-    '  /project/sources/<name>\r\n',
+    `  ${projectPath}/issues\r\n`,
+    `  ${projectPath}/docs\r\n`,
+    `  ${projectPath}/tasks\r\n`,
+    `  ${projectPath}/sources/<name>\r\n`,
     '\r\n',
     `${chalkInstance.dim('Examples:')}\r\n`,
     '  cat /README.md\r\n',
-    '  ls /project/docs\r\n',
-    "  grep -R 'keyword' /project/docs\r\n",
-    '  ls /project/issues\r\n',
-    '  mkdir -p /project/tasks/example-task\r\n',
+    `  ls ${projectPath}/docs\r\n`,
+    `  grep -R 'keyword' ${projectPath}/docs\r\n`,
+    `  ls ${projectPath}/issues\r\n`,
+    `  mkdir -p ${projectPath}/tasks/example-task\r\n`,
     '\r\n',
   ].join('')
 }

@@ -33,7 +33,7 @@ describe('source-store', () => {
   it('normalizes source names and mount paths', () => {
     expect(normalizeSourceName('  GitHub Docs  ')).toBe('github-docs')
     expect(normalizeSourceName('***')).toBe('source')
-    expect(getSourceMountPath('GitHub Docs')).toBe('/project/sources/github-docs')
+    expect(getSourceMountPath('GitHub Docs')).toBe('/projects/default/sources/github-docs')
   })
 
   it('makes root paths portable relative to the registry', () => {
@@ -135,16 +135,6 @@ describe('source-store', () => {
       expect.arrayContaining([
         {
           sourceName: 'docs',
-          mountPoint: '/project/docs',
-          rootPath: '/data/docs',
-        },
-        {
-          sourceName: 'docs',
-          mountPoint: '/project/sources/docs',
-          rootPath: '/data/docs',
-        },
-        {
-          sourceName: 'docs',
           mountPoint: '/projects/default/docs',
           rootPath: '/data/docs',
         },
@@ -152,11 +142,6 @@ describe('source-store', () => {
           sourceName: 'docs',
           mountPoint: '/projects/default/sources/docs',
           rootPath: '/data/docs',
-        },
-        {
-          sourceName: 'reference',
-          mountPoint: '/project/sources/reference',
-          rootPath: '/data/reference',
         },
         {
           sourceName: 'reference',
@@ -189,7 +174,7 @@ describe('source-store', () => {
 
     expect(store.registry.defaultSourceName).toBe('primary')
     expect(store.defaultSource?.name).toBe('primary')
-    expect(store.mounts.find((mount) => mount.mountPoint === '/project/docs')?.rootPath).toBe('/primary')
+    expect(store.mounts.find((mount) => mount.mountPoint === '/projects/default/docs')?.rootPath).toBe('/primary')
   })
 
   it('reads and writes source registries', async () => {
@@ -232,16 +217,6 @@ describe('source-store', () => {
       expect.arrayContaining([
         {
           sourceName: 'local',
-          mountPoint: '/project/docs',
-          rootPath: docsDir,
-        },
-        {
-          sourceName: 'local',
-          mountPoint: '/project/sources/local',
-          rootPath: docsDir,
-        },
-        {
-          sourceName: 'local',
           mountPoint: '/projects/default/docs',
           rootPath: docsDir,
         },
@@ -257,6 +232,74 @@ describe('source-store', () => {
     expect(store.homeRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'principals', 'anonymous', 'home'))
     expect(store.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default'))
     expect(store.sharedRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'shared'))
+  })
+
+  it('loads without source mounts when the fallback docs directory is missing', async () => {
+    const tempDir = await createTempDir()
+    const workspaceDir = resolve(tempDir, 'workspace')
+    await mkdir(workspaceDir, { recursive: true })
+
+    const store = await loadSourceStore({
+      registryPath: resolve(tempDir, 'missing.json'),
+      fallbackDocsDir: resolve(tempDir, 'missing-docs'),
+      workspaceDir,
+    })
+
+    expect(store.defaultSource).toBeUndefined()
+    expect(store.mounts).toEqual([])
+    expect(store.projectMountPath).toBe('/projects/default')
+    expect(store.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default'))
+  })
+
+  it('skips registry sources whose resolved roots are missing', async () => {
+    const tempDir = await createTempDir()
+    const registryPath = resolve(tempDir, 'sources.json')
+    const existingDocsDir = resolve(tempDir, 'existing-docs')
+    const workspaceDir = resolve(tempDir, 'workspace')
+    await mkdir(existingDocsDir, { recursive: true })
+    await mkdir(workspaceDir, { recursive: true })
+
+    await writeSourceRegistry(registryPath, {
+      version: 1,
+      defaultSourceName: 'missing-docs',
+      sources: [
+        createSourceSpec({
+          name: 'missing-docs',
+          type: 'local-folder',
+          rootPath: './missing-docs',
+          createdAt: '2026-04-06T00:00:00.000Z',
+        }),
+        createSourceSpec({
+          name: 'existing-docs',
+          type: 'local-folder',
+          rootPath: makeRootPathPortable(registryPath, existingDocsDir),
+          createdAt: '2026-04-06T00:00:00.000Z',
+        }),
+      ],
+    })
+
+    const store = await loadSourceStore({
+      registryPath,
+      fallbackDocsDir: resolve(tempDir, 'fallback-docs'),
+      workspaceDir,
+    })
+
+    expect(store.defaultSource?.name).toBe('existing-docs')
+    expect(store.mounts).toEqual(
+      expect.arrayContaining([
+        {
+          sourceName: 'existing-docs',
+          mountPoint: '/projects/default/docs',
+          rootPath: existingDocsDir,
+        },
+        {
+          sourceName: 'existing-docs',
+          mountPoint: '/projects/default/sources/existing-docs',
+          rootPath: existingDocsDir,
+        },
+      ]),
+    )
+    expect(store.mounts.some((mount) => mount.sourceName === 'missing-docs')).toBe(false)
   })
 
   it('resolves source roots relative to the registry location', async () => {

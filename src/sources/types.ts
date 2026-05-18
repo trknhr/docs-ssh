@@ -28,8 +28,8 @@ export interface SourceStore {
   mounts: SourceMount[]
   defaultSource?: SourceSpec
   homeMountPath: '/home'
-  projectDocsMountPath: '/project/docs'
-  projectMountPath: '/project'
+  projectDocsMountPath: string
+  projectMountPath: string
   projectSlug: string
   projectsMountPath: '/projects'
   sharedMountPath: '/shared'

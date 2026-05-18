@@ -24,8 +24,6 @@ describe('workspace layout', () => {
   it('returns writable v2 filesystem paths', () => {
     expect(getWorkspaceWritablePaths()).toEqual([
       '/home',
-      '/project/issues',
-      '/project/tasks',
       '/projects/default/issues',
       '/projects/default/tasks',
       '/tmp',
@@ -39,11 +37,6 @@ describe('workspace layout', () => {
     expect(getWorkspaceReadOnlyPaths()).toEqual([
       '/README.md',
       '/home/README.md',
-      '/project/README.md',
-      '/project/docs',
-      '/project/sources',
-      '/project/issues/README.md',
-      '/project/tasks/README.md',
       '/projects/default/README.md',
       '/projects/default/docs',
       '/projects/default/sources',
@@ -58,8 +51,8 @@ describe('workspace layout', () => {
     await ensureWorkspaceLayout(rootPath)
 
     const workspaceReadme = await readFile(resolve(rootPath, 'README.md'), 'utf8')
-    expect(workspaceReadme).toContain('/project/tasks/<task-slug>/')
-    expect(workspaceReadme).toContain('/project/issues/<issue-slug>.md')
+    expect(workspaceReadme).toContain('/projects/<slug>/tasks/<task-slug>/')
+    expect(workspaceReadme).toContain('/projects/<slug>/issues/<issue-slug>.md')
     expect(workspaceReadme).toContain('separates private notes')
 
     const homeReadme = await readFile(resolve(rootPath, 'home', 'README.md'), 'utf8')

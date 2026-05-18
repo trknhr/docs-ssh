@@ -101,78 +101,15 @@ textarea {
 
 .workspace {
   min-height: 0;
+  overflow: hidden;
 }
 
 .logged-out-shell {
+  align-content: center;
   display: grid;
-  gap: 1.2rem;
+  justify-items: center;
   min-height: 100%;
   padding: 1.2rem;
-}
-
-.logged-out-hero {
-  background:
-    linear-gradient(135deg, rgba(10, 18, 34, 0.96), rgba(8, 15, 30, 0.98)),
-    radial-gradient(circle at top right, rgba(34, 195, 238, 0.14), transparent 26rem);
-  border: 1px solid var(--border);
-  border-radius: 1.5rem;
-  display: grid;
-  gap: 1.2rem;
-  grid-template-columns: minmax(0, 1.5fr) minmax(18rem, 0.9fr);
-  overflow: hidden;
-  padding: 1.4rem;
-  position: relative;
-}
-
-.logged-out-hero::after {
-  background: linear-gradient(90deg, transparent, rgba(34, 195, 238, 0.18), transparent);
-  content: '';
-  height: 1px;
-  left: 1.4rem;
-  position: absolute;
-  right: 1.4rem;
-  top: 5.2rem;
-}
-
-.logged-out-hero__copy,
-.logged-out-status {
-  display: grid;
-  gap: 0.95rem;
-}
-
-.logged-out-hero__copy h2,
-.logged-out-card h3 {
-  letter-spacing: -0.04em;
-  line-height: 1;
-  margin: 0;
-}
-
-.logged-out-hero__copy h2 {
-  font-size: clamp(2.5rem, 7vw, 4.8rem);
-  margin-top: 0.15rem;
-}
-
-.logged-out-hero__lede,
-.logged-out-status__card p,
-.logged-out-card p,
-.logged-out-steps {
-  color: var(--text-muted);
-  margin: 0;
-}
-
-.logged-out-hero__lede {
-  font-size: 1.04rem;
-  line-height: 1.7;
-  max-width: 42rem;
-  padding-top: 0.7rem;
-}
-
-.logged-out-hero__actions,
-.logged-out-card__pills {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
 }
 
 .hero-button {
@@ -182,9 +119,10 @@ textarea {
   box-shadow: 0 12px 32px rgba(8, 145, 178, 0.24);
   color: #021420;
   display: inline-flex;
+  font-size: 1rem;
   font-weight: 700;
   letter-spacing: 0.01em;
-  padding: 0.8rem 1.15rem;
+  padding: 0.85rem 1.25rem;
   text-decoration: none;
 }
 
@@ -192,60 +130,10 @@ textarea {
   filter: brightness(1.05);
 }
 
-.logged-out-status {
-  align-content: start;
-  background: rgba(7, 12, 24, 0.56);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 1.2rem;
-  padding: 1rem;
-}
-
-.logged-out-status__card,
-.logged-out-card {
-  background: rgba(148, 163, 184, 0.05);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 1.15rem;
-  display: grid;
-  gap: 0.55rem;
-  padding: 1rem;
-}
-
-.logged-out-status__card strong {
-  color: var(--text);
-  font-size: 0.96rem;
-}
-
-.logged-out-grid {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.logged-out-card {
-  background:
-    linear-gradient(180deg, rgba(17, 24, 39, 0.94), rgba(9, 17, 30, 0.96)),
-    radial-gradient(circle at top left, rgba(34, 195, 238, 0.08), transparent 18rem);
-  min-height: 13rem;
-}
-
-.logged-out-card h3 {
-  font-size: 1.5rem;
-}
-
-.logged-out-card__pills {
-  padding: 0.15rem 0;
-}
-
-.logged-out-steps {
-  display: grid;
-  gap: 0.6rem;
-  line-height: 1.65;
-  padding-left: 1.2rem;
-}
-
-.allotment {
+.workspace-split {
   background: transparent;
   height: 100%;
+  min-height: 0;
 }
 
 .allotment-module_splitView__L-yRc > .allotment-module_sashContainer__fzwJF > .allotment-module_sash__K-9lB::before {
@@ -254,7 +142,9 @@ textarea {
 
 .sidebar,
 .preview-panel {
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -274,8 +164,31 @@ textarea {
 }
 
 .sidebar__tree {
-  min-height: 18rem;
+  min-height: 0;
   overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.file-tree {
+  scrollbar-color: rgba(148, 163, 184, 0.46) transparent;
+  scrollbar-gutter: stable;
+}
+
+.file-tree::-webkit-scrollbar {
+  height: 0.65rem;
+  width: 0.65rem;
+}
+
+.file-tree::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.42);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.file-tree::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.64);
+  background-clip: padding-box;
 }
 
 .sidebar__notice {
@@ -311,7 +224,8 @@ textarea {
 
 .preview-body {
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1rem 1.25rem 1.5rem;
 }
 
@@ -492,6 +406,14 @@ textarea {
   margin: 0;
 }
 
+.session-gate {
+  align-content: start;
+  display: grid;
+  gap: 0.9rem;
+  max-width: 34rem;
+  padding: 1.2rem;
+}
+
 .account-dashboard {
   display: grid;
   gap: 1rem;
@@ -547,6 +469,10 @@ textarea {
   padding: 1rem 1.1rem;
 }
 
+.account-card--wide {
+  grid-column: 1 / -1;
+}
+
 .account-form {
   display: grid;
   gap: 0.9rem;
@@ -577,37 +503,57 @@ textarea {
   color: #bbf7d0;
 }
 
-.ssh-key-list {
+.project-list {
   display: grid;
   gap: 0.75rem;
 }
 
-.ssh-key-item {
+.project-item {
   background: rgba(148, 163, 184, 0.05);
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 1rem;
+  color: inherit;
+  cursor: pointer;
   display: grid;
-  gap: 0.5rem;
-  padding: 0.9rem;
+  gap: 0.45rem;
+  padding: 0.85rem 0.9rem;
+  text-align: left;
 }
 
-.ssh-key-item__header {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  justify-content: space-between;
+.project-item:hover,
+.project-item.selected {
+  background: rgba(34, 195, 238, 0.11);
+  border-color: rgba(34, 195, 238, 0.34);
 }
 
-.ssh-key-item strong {
+.project-item strong {
   color: var(--text);
 }
 
-.ssh-key-item code {
+.project-item code,
+.config-snippet {
   color: #bae6fd;
   font-family: var(--font-mono);
-  font-size: 0.9rem;
-  overflow-wrap: anywhere;
+}
+
+.config-snippet-wrap {
+  position: relative;
+}
+
+.config-snippet {
+  background: rgba(2, 6, 23, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 0.85rem;
+  margin: 0;
+  overflow-x: auto;
+  padding: 0.85rem 5.75rem 0.85rem 0.85rem;
+}
+
+.config-copy-button {
+  background: rgba(15, 23, 42, 0.86);
+  position: absolute;
+  right: 0.65rem;
+  top: 0.65rem;
 }
 
 .preview-skeleton {
@@ -760,24 +706,18 @@ textarea {
     width: 100%;
   }
 
-  .workspace .allotment {
+  .workspace {
+    overflow: auto;
+  }
+
+  .workspace .workspace-split {
     height: auto;
     min-height: calc(100vh - 6rem);
   }
 
-  .logged-out-shell {
-    padding: 0.9rem;
-  }
-
-  .logged-out-hero,
-  .logged-out-grid,
   .account-grid,
   .account-banner {
     grid-template-columns: 1fr;
-  }
-
-  .logged-out-hero::after {
-    display: none;
   }
 
   .account-banner__meta {

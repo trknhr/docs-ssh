@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { basename, extname, posix, resolve, sep } from 'node:path'
-import { createAuthStore, type AuthSshKey } from '../auth/store.js'
+import { createAuthStore, type AuthPrincipalSession, type AuthProject, type AuthSshKey, type AuthSshSession, type AuthStore } from '../auth/store.js'
 import { OidcClient, createPendingOidcLogin, getViewerOrigin, type OidcAuthConfig } from '../auth/oidc.js'
 import {
   clearPendingOidcCookie,
@@ -72,7 +73,9 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024
 const MAX_TREE_NODES = 10_000
 const MAX_VIEWER_JSON_BODY_BYTES = 64 * 1024
+const CLI_LOGIN_REQUEST_TTL_MS = 5 * 60 * 1000
 const VIEWER_SESSION_TTL_MS = 12 * 60 * 60 * 1000
+const PROTECTED_VIEWER_DATA_ROUTES = new Set(['/api/sources', '/api/tree', '/api/file', '/api/raw'])
 
 type ViewerFileKind = 'binary' | 'image' | 'markdown' | 'text'
 type ViewerMountType = 'home' | 'project' | 'project-docs' | 'source'
@@ -106,6 +109,33 @@ interface ViewerServerOptions {
   sessionSecret?: Buffer | string
   staticDir?: string
   workspaceDir?: string
+}
+
+interface ActiveViewerSession {
+  email?: string
+  expiresAt: number
+  issuer: string
+  login: string
+  provider: string
+  subject: string
+  userDisplayName: string
+  userId: string
+}
+
+interface CliLoginRequest {
+  approveToken: string
+  callbackUrl: string
+  code?: string
+  consumedAt?: number
+  createdAt: number
+  expiresAt: number
+  id: string
+  project?: string
+  publicKey: string
+  result?: ReturnType<typeof toViewerSshSessionPayload>
+  scopes?: string[]
+  state: string
+  ttlSeconds?: number
 }
 
 function classifyFile(path: string): ViewerFileKind {
@@ -198,6 +228,25 @@ function toViewerSshKeyPayload(sshKey: AuthSshKey) {
   }
 }
 
+function toViewerSshSessionPayload(session: AuthSshSession) {
+  return {
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    fingerprint: session.fingerprint,
+    project: session.currentProjectSlug,
+    scopes: session.scopes,
+    username: session.username,
+  }
+}
+
+function toViewerProjectPayload(project: AuthProject) {
+  return {
+    createdAt: project.createdAt,
+    displayName: project.displayName,
+    slug: project.slug,
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -226,13 +275,132 @@ function deriveFirstOwnerName(email?: string): string | undefined {
   return email?.trim() || undefined
 }
 
-async function loadViewerContext(opts: ViewerServerOptions) {
+function getRequestedProjectSlug(url: URL): string | undefined {
+  const explicitProject = url.searchParams.get('project')?.trim()
+  if (explicitProject) return explicitProject
+
+  const requestedPath = url.searchParams.get('path')?.trim()
+  if (!requestedPath) return undefined
+
+  const normalizedPath = normalizeVirtualPath(requestedPath)
+  const [, root, slug] = normalizedPath.split('/')
+  return root === 'projects' && slug ? slug : undefined
+}
+
+function isProtectedViewerDataRoute(pathname: string): boolean {
+  return PROTECTED_VIEWER_DATA_ROUTES.has(pathname)
+}
+
+function buildViewerReturnTo(url: URL): string {
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
+function getViewerRequestOrigin(request: IncomingMessage, publicOrigin?: string): string {
+  if (publicOrigin) return publicOrigin.replace(/\/+$/u, '')
+
+  const host = request.headers.host
+  return host ? `http://${host}` : 'http://localhost'
+}
+
+function isLocalCallbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(url.hostname)
+  } catch {
+    return false
+  }
+}
+
+function appendQueryParams(url: string, params: Record<string, string>): string {
+  const nextUrl = new URL(url)
+  for (const [key, value] of Object.entries(params)) {
+    nextUrl.searchParams.set(key, value)
+  }
+  return nextUrl.toString()
+}
+
+function createCliLoginRequestHtml(request: CliLoginRequest, session: ActiveViewerSession): string {
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head><meta charset="utf-8"><title>Authorize docs-ssh CLI</title></head>',
+    '<body>',
+    '<main>',
+    '<h1>Authorize docs-ssh CLI</h1>',
+    `<p>Signed in as <strong>${escapeHtml(session.userDisplayName || session.login)}</strong>.</p>`,
+    '<dl>',
+    `<div><dt>Project</dt><dd><code>${escapeHtml(request.project ?? 'default')}</code></dd></div>`,
+    `<div><dt>Expires</dt><dd><code>${escapeHtml(new Date(request.expiresAt).toISOString())}</code></dd></div>`,
+    '</dl>',
+    `<form method="post" action="/cli-login/${encodeURIComponent(request.id)}/approve">`,
+    `<input type="hidden" name="approveToken" value="${escapeHtml(request.approveToken)}">`,
+    '<button type="submit">Authorize SSH session</button>',
+    '</form>',
+    '</main>',
+    '</body>',
+    '</html>',
+  ].join('')
+}
+
+function createCliLoginCompleteHtml(): string {
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head><meta charset="utf-8"><title>docs-ssh CLI authorized</title></head>',
+    '<body><main><h1>docs-ssh CLI authorized</h1><p>You can return to the terminal.</p></main></body>',
+    '</html>',
+  ].join('')
+}
+
+function getValidCliLoginRequest(
+  requests: Map<string, CliLoginRequest>,
+  id: string | undefined,
+): CliLoginRequest | null {
+  if (!id) return null
+  const request = requests.get(id)
+  if (!request) return null
+  if (request.expiresAt <= Date.now()) {
+    requests.delete(id)
+    return null
+  }
+  return request
+}
+
+async function loadViewerContext(
+  opts: ViewerServerOptions,
+  context: {
+    authStore?: AuthStore | null
+    projectSlug?: string
+    session?: ActiveViewerSession | null
+  } = {},
+) {
   const statePaths = getStatePaths()
+  const principalSession = context.authStore && context.session
+    ? context.authStore.findUserProjectSession(context.session.login, context.projectSlug)
+    : null
+  if (context.projectSlug && context.authStore && context.session && !principalSession) {
+    throw new Error(`Project "${context.projectSlug}" was not found or is not accessible.`)
+  }
+
+  const projectSessions = context.authStore && context.session
+    ? context.authStore
+      .listProjects({ userLogin: context.session.login })
+      .map((project) => context.authStore!.findUserProjectSession(context.session!.login, project.slug))
+      .filter((session): session is AuthPrincipalSession => Boolean(session))
+    : []
+  const visibleProjectSessions = principalSession && !projectSessions.some((session) => session.project.id === principalSession.project.id)
+    ? [...projectSessions, principalSession]
+    : projectSessions
+
   const sourceStore = await loadSourceStore({
     registryPath: opts.registryPath,
     fallbackDocsDir: opts.docsDir,
+    principalId: principalSession?.principal.id,
+    projectSlug: principalSession?.project.slug ?? context.projectSlug,
+    tenantSlug: principalSession?.tenant.slug,
     workspaceDir: resolve(opts.workspaceDir ?? `${statePaths.stateDir}/workspace`),
   })
+  const projectMountPath = sourceStore.projectMountPath
 
   const defaultSourceName = sourceStore.registry.defaultSourceName
   const defaultSource = sourceStore.registry.sources.find((source) => source.name === defaultSourceName)
@@ -251,10 +419,12 @@ async function loadViewerContext(opts: ViewerServerOptions) {
             : left.localeCompare(right),
       )
 
+    const canonicalDocsMountPath = posix.join(projectMountPath, 'docs')
+
     mounts.push({
-      aliases: aliases.filter((alias) => alias !== sourceStore.projectDocsMountPath),
+      aliases: aliases.filter((alias) => alias !== canonicalDocsMountPath),
       label: 'project docs',
-      mountPath: sourceStore.projectDocsMountPath,
+      mountPath: canonicalDocsMountPath,
       rootPath: defaultSource.rootPath,
       type: 'project-docs',
     })
@@ -268,13 +438,36 @@ async function loadViewerContext(opts: ViewerServerOptions) {
     type: 'home',
   })
 
-  mounts.push({
-    aliases: [`${sourceStore.projectsMountPath}/${sourceStore.projectSlug}`],
-    label: 'project',
-    mountPath: sourceStore.projectMountPath,
-    rootPath: sourceStore.projectRootPath,
-    type: 'project',
-  })
+  if (visibleProjectSessions.length > 0) {
+    for (const projectSession of visibleProjectSessions) {
+      const projectSourceStore = projectSession.project.slug === sourceStore.projectSlug
+        ? sourceStore
+        : await loadSourceStore({
+          registryPath: opts.registryPath,
+          fallbackDocsDir: opts.docsDir,
+          principalId: projectSession.principal.id,
+          projectSlug: projectSession.project.slug,
+          tenantSlug: projectSession.tenant.slug,
+          workspaceDir: resolve(opts.workspaceDir ?? `${statePaths.stateDir}/workspace`),
+        })
+
+      mounts.push({
+        aliases: [],
+        label: `projects/${projectSession.project.slug}`,
+        mountPath: `${projectSourceStore.projectsMountPath}/${projectSession.project.slug}`,
+        rootPath: projectSourceStore.projectRootPath,
+        type: 'project',
+      })
+    }
+  } else {
+    mounts.push({
+      aliases: [],
+      label: `projects/${sourceStore.projectSlug}`,
+      mountPath: projectMountPath,
+      rootPath: sourceStore.projectRootPath,
+      type: 'project',
+    })
+  }
 
   const sourceMounts = sourceStore.registry.sources
     .filter((source) => source.name !== defaultSourceName)
@@ -282,7 +475,7 @@ async function loadViewerContext(opts: ViewerServerOptions) {
     .map((source) => ({
       aliases: [],
       label: source.name,
-      mountPath: getProjectSourceMountPath(source.name, sourceStore.projectMountPath),
+      mountPath: getProjectSourceMountPath(source.name, projectMountPath),
       rootPath: source.rootPath,
       type: 'source' as const,
     }))
@@ -299,16 +492,27 @@ function isMountMatch(mountPath: string, path: string): boolean {
   return path === mountPath || path.startsWith(`${mountPath}/`)
 }
 
-function findMountByPath(mounts: ViewerMount[], path: string): ViewerMount | null {
+function getMatchingMountPath(mount: ViewerMount, path: string): string | null {
+  for (const mountPath of [mount.mountPath, ...mount.aliases]) {
+    if (isMountMatch(mountPath, path)) return mountPath
+  }
+  return null
+}
+
+function findMountByPath(mounts: ViewerMount[], path: string): { matchedPath: string, mount: ViewerMount } | null {
   return mounts
-    .filter((mount) => isMountMatch(mount.mountPath, path))
-    .sort((left, right) => right.mountPath.length - left.mountPath.length)[0]
+    .map((mount) => {
+      const matchedPath = getMatchingMountPath(mount, path)
+      return matchedPath ? { matchedPath, mount } : null
+    })
+    .filter((match): match is { matchedPath: string, mount: ViewerMount } => Boolean(match))
+    .sort((left, right) => right.matchedPath.length - left.matchedPath.length)[0]
     ?? null
 }
 
-function getMountRelativePath(mount: ViewerMount, path: string): string {
-  if (path === mount.mountPath) return ''
-  return path.slice(mount.mountPath.length + 1)
+function getMountRelativePath(matchedPath: string, path: string): string {
+  if (path === matchedPath) return ''
+  return path.slice(matchedPath.length + 1)
 }
 
 function toTreeNodeId(kind: 'directory' | 'file', path: string): string {
@@ -405,16 +609,16 @@ function resolveViewerPath(mounts: ViewerMount[], requestedPath: string) {
     throw new Error('Path does not point to a mounted file.')
   }
 
-  const mount = findMountByPath(mounts, path)
-  if (!mount) {
+  const match = findMountByPath(mounts, path)
+  if (!match) {
     throw new Error(`Unknown path "${path}".`)
   }
 
-  const relativePath = getMountRelativePath(mount, path)
+  const relativePath = getMountRelativePath(match.matchedPath, path)
   return {
-    absolutePath: ensureInsideRoot(mount.rootPath, relativePath || '.'),
-    aliases: mount.aliases,
-    mountPath: mount.mountPath,
+    absolutePath: ensureInsideRoot(match.mount.rootPath, relativePath || '.'),
+    aliases: match.mount.aliases,
+    mountPath: match.mount.mountPath,
     path,
     relativePath,
   }
@@ -445,7 +649,7 @@ function sendMethodNotAllowed(response: ServerResponse) {
   sendJson(response, 405, { error: 'Method not allowed.' })
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+async function readRequestBodyText(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = []
   let totalBytes = 0
 
@@ -463,11 +667,21 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
     throw new Error('Request body was empty.')
   }
 
+  return raw
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+  const raw = await readRequestBodyText(request)
+
   try {
     return JSON.parse(raw) as unknown
   } catch {
     throw new Error('Request body was not valid JSON.')
   }
+}
+
+async function readFormBody(request: IncomingMessage): Promise<URLSearchParams> {
+  return new URLSearchParams(await readRequestBodyText(request))
 }
 
 function redirect(
@@ -539,6 +753,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
   const authStore = opts.authDbPath ? createAuthStore({ dbPath: opts.authDbPath }) : null
   const oidcClient = opts.oidc ? new OidcClient(opts.oidc) : null
   const sessionSecret = opts.sessionSecret ? deriveViewerSessionSecret(opts.sessionSecret) : null
+  const cliLoginRequests = new Map<string, CliLoginRequest>()
 
   const getActiveSession = (request: IncomingMessage) => {
     if (!authStore || !sessionSecret) return null
@@ -562,8 +777,23 @@ export function createViewerServer(opts: ViewerServerOptions) {
       const url = new URL(request.url ?? '/', 'http://localhost')
       const headOnly = method === 'HEAD'
       const isSshKeyRoute = url.pathname === '/api/auth/ssh-keys'
+      const isSshSessionRoute = url.pathname === '/api/ssh-sessions'
+      const isProjectRoute = url.pathname === '/api/projects'
+      const isCliLoginRequestRoute = url.pathname === '/api/cli-login/requests'
+      const isCliLoginExchangeRoute = url.pathname === '/api/cli-login/exchange'
+      const cliLoginViewMatch = /^\/cli-login\/([^/]+)$/u.exec(url.pathname)
+      const cliLoginApproveMatch = /^\/cli-login\/([^/]+)\/approve$/u.exec(url.pathname)
 
-      if (method !== 'GET' && method !== 'HEAD' && !(isSshKeyRoute && method === 'POST')) {
+      if (
+        method !== 'GET'
+        && method !== 'HEAD'
+        && !(isSshKeyRoute && method === 'POST')
+        && !(isSshSessionRoute && method === 'POST')
+        && !(isProjectRoute && method === 'POST')
+        && !(isCliLoginRequestRoute && method === 'POST')
+        && !(isCliLoginExchangeRoute && method === 'POST')
+        && !(cliLoginApproveMatch && method === 'POST')
+      ) {
         sendMethodNotAllowed(response)
         return
       }
@@ -598,6 +828,202 @@ export function createViewerServer(opts: ViewerServerOptions) {
           },
           headOnly,
         )
+        return
+      }
+
+      if (isCliLoginRequestRoute) {
+        if (method !== 'POST') {
+          sendMethodNotAllowed(response)
+          return
+        }
+
+        let payload
+        try {
+          payload = await readJsonBody(request) as {
+            callbackUrl?: unknown
+            project?: unknown
+            publicKey?: unknown
+            scopes?: unknown
+            state?: unknown
+            ttlSeconds?: unknown
+          }
+        } catch (error) {
+          sendJson(response, 400, {
+            error: error instanceof Error ? error.message : String(error),
+          })
+          return
+        }
+
+        if (typeof payload.publicKey !== 'string' || payload.publicKey.trim().length === 0) {
+          sendJson(response, 400, { error: 'Missing SSH public key.' })
+          return
+        }
+        if (typeof payload.callbackUrl !== 'string' || !isLocalCallbackUrl(payload.callbackUrl)) {
+          sendJson(response, 400, { error: 'callbackUrl must be a local http URL.' })
+          return
+        }
+        if (typeof payload.state !== 'string' || payload.state.trim().length === 0) {
+          sendJson(response, 400, { error: 'Missing state.' })
+          return
+        }
+        if (payload.project !== undefined && payload.project !== null && typeof payload.project !== 'string') {
+          sendJson(response, 400, { error: 'Project slug must be a string.' })
+          return
+        }
+        const ttlSeconds = payload.ttlSeconds
+        if (ttlSeconds !== undefined && ttlSeconds !== null && (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds) || ttlSeconds <= 0)) {
+          sendJson(response, 400, { error: 'ttlSeconds must be a positive integer.' })
+          return
+        }
+        if (
+          payload.scopes !== undefined
+          && (!Array.isArray(payload.scopes) || !payload.scopes.every((scope) => typeof scope === 'string'))
+        ) {
+          sendJson(response, 400, { error: 'scopes must be an array of strings.' })
+          return
+        }
+
+        const id = randomUUID()
+        const createdAt = Date.now()
+        const loginRequest: CliLoginRequest = {
+          approveToken: randomUUID(),
+          callbackUrl: payload.callbackUrl,
+          createdAt,
+          expiresAt: createdAt + CLI_LOGIN_REQUEST_TTL_MS,
+          id,
+          project: typeof payload.project === 'string' && payload.project.trim() ? payload.project.trim() : undefined,
+          publicKey: payload.publicKey,
+          scopes: Array.isArray(payload.scopes) ? payload.scopes : undefined,
+          state: payload.state,
+          ttlSeconds: typeof ttlSeconds === 'number' ? ttlSeconds : undefined,
+        }
+        cliLoginRequests.set(id, loginRequest)
+
+        const origin = getViewerRequestOrigin(request, opts.publicOrigin)
+        sendJson(response, 200, {
+          expiresAt: new Date(loginRequest.expiresAt).toISOString(),
+          id,
+          loginUrl: `${origin}/cli-login/${encodeURIComponent(id)}`,
+        }, headOnly)
+        return
+      }
+
+      if (cliLoginViewMatch) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+
+        const loginRequest = getValidCliLoginRequest(cliLoginRequests, cliLoginViewMatch[1])
+        if (!loginRequest) {
+          sendHtml(response, 404, '<!doctype html><html lang="en"><body><main><h1>CLI login request expired</h1><p>Run docs-ssh login again.</p></main></body></html>', headOnly)
+          return
+        }
+
+        const session = getActiveSession(request)
+        if (!session) {
+          redirect(response, `/auth/login?returnTo=${encodeURIComponent(url.pathname)}`, { headOnly })
+          return
+        }
+
+        sendHtml(response, 200, createCliLoginRequestHtml(loginRequest, session), headOnly)
+        return
+      }
+
+      if (cliLoginApproveMatch) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+
+        const loginRequest = getValidCliLoginRequest(cliLoginRequests, cliLoginApproveMatch[1])
+        if (!loginRequest) {
+          sendHtml(response, 404, '<!doctype html><html lang="en"><body><main><h1>CLI login request expired</h1><p>Run docs-ssh login again.</p></main></body></html>', headOnly)
+          return
+        }
+
+        const session = getActiveSession(request)
+        if (!session) {
+          redirect(response, `/auth/login?returnTo=${encodeURIComponent(`/cli-login/${loginRequest.id}`)}`, { headOnly })
+          return
+        }
+
+        let form
+        try {
+          form = await readFormBody(request)
+        } catch (error) {
+          sendHtml(response, 400, `<!doctype html><html lang="en"><body><main><h1>Invalid approval</h1><p>${escapeHtml(error instanceof Error ? error.message : String(error))}</p></main></body></html>`)
+          return
+        }
+
+        if (form.get('approveToken') !== loginRequest.approveToken) {
+          sendHtml(response, 403, '<!doctype html><html lang="en"><body><main><h1>Invalid approval token</h1></main></body></html>')
+          return
+        }
+
+        try {
+          const sshSession = authStore.createSshSession({
+            projectSlug: loginRequest.project,
+            publicKey: loginRequest.publicKey,
+            scopes: loginRequest.scopes,
+            ttlSeconds: loginRequest.ttlSeconds,
+            userLogin: session.login,
+          })
+          loginRequest.code = randomUUID()
+          loginRequest.result = toViewerSshSessionPayload(sshSession)
+          redirect(
+            response,
+            appendQueryParams(loginRequest.callbackUrl, {
+              code: loginRequest.code,
+              request: loginRequest.id,
+              state: loginRequest.state,
+            }),
+          )
+        } catch (error) {
+          sendHtml(response, 400, `<!doctype html><html lang="en"><body><main><h1>Could not authorize CLI login</h1><p>${escapeHtml(error instanceof Error ? error.message : String(error))}</p></main></body></html>`)
+        }
+        return
+      }
+
+      if (isCliLoginExchangeRoute) {
+        if (method !== 'POST') {
+          sendMethodNotAllowed(response)
+          return
+        }
+
+        let payload
+        try {
+          payload = await readJsonBody(request) as {
+            code?: unknown
+            request?: unknown
+          }
+        } catch (error) {
+          sendJson(response, 400, {
+            error: error instanceof Error ? error.message : String(error),
+          })
+          return
+        }
+
+        if (typeof payload.request !== 'string' || typeof payload.code !== 'string') {
+          sendJson(response, 400, { error: 'Missing request or code.' })
+          return
+        }
+
+        const loginRequest = getValidCliLoginRequest(cliLoginRequests, payload.request)
+        if (!loginRequest || loginRequest.code !== payload.code || !loginRequest.result) {
+          sendJson(response, 404, { error: 'CLI login request was not found or is not approved.' })
+          return
+        }
+        if (loginRequest.consumedAt) {
+          sendJson(response, 410, { error: 'CLI login code was already consumed.' })
+          return
+        }
+
+        loginRequest.consumedAt = Date.now()
+        cliLoginRequests.delete(loginRequest.id)
+        sendJson(response, 200, {
+          session: loginRequest.result,
+        })
         return
       }
 
@@ -656,6 +1082,146 @@ export function createViewerServer(opts: ViewerServerOptions) {
             })
             sendJson(response, 200, {
               key: toViewerSshKeyPayload(sshKey),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        sendMethodNotAllowed(response)
+        return
+      }
+
+      if (isSshSessionRoute) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in to create SSH sessions.' }, headOnly)
+          return
+        }
+
+        if (method === 'POST') {
+          let payload
+          try {
+            payload = await readJsonBody(request) as {
+              project?: unknown
+              publicKey?: unknown
+              scopes?: unknown
+              ttlSeconds?: unknown
+            }
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return
+          }
+
+          if (typeof payload.publicKey !== 'string' || payload.publicKey.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing SSH public key.' })
+            return
+          }
+          if (payload.project !== undefined && payload.project !== null && typeof payload.project !== 'string') {
+            sendJson(response, 400, { error: 'Project slug must be a string.' })
+            return
+          }
+          const ttlSeconds = payload.ttlSeconds
+          if (ttlSeconds !== undefined && ttlSeconds !== null && (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds) || ttlSeconds <= 0)) {
+            sendJson(response, 400, { error: 'ttlSeconds must be a positive integer.' })
+            return
+          }
+          if (
+            payload.scopes !== undefined
+            && (!Array.isArray(payload.scopes) || !payload.scopes.every((scope) => typeof scope === 'string'))
+          ) {
+            sendJson(response, 400, { error: 'scopes must be an array of strings.' })
+            return
+          }
+
+          try {
+            const sshSession = authStore.createSshSession({
+              projectSlug: typeof payload.project === 'string' ? payload.project : undefined,
+              publicKey: payload.publicKey,
+              scopes: Array.isArray(payload.scopes) ? payload.scopes : undefined,
+              ttlSeconds: typeof ttlSeconds === 'number' ? ttlSeconds : undefined,
+              userLogin: session.login,
+            })
+            sendJson(response, 200, {
+              session: toViewerSshSessionPayload(sshSession),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        sendMethodNotAllowed(response)
+        return
+      }
+
+      if (isProjectRoute) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in to manage projects.' }, headOnly)
+          return
+        }
+
+        if (method === 'GET' || method === 'HEAD') {
+          sendJson(
+            response,
+            200,
+            {
+              projects: authStore.listProjects({ userLogin: session.login }).map(toViewerProjectPayload),
+            },
+            headOnly,
+          )
+          return
+        }
+
+        if (method === 'POST') {
+          let payload
+          try {
+            payload = await readJsonBody(request) as {
+              displayName?: unknown
+              slug?: unknown
+            }
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return
+          }
+
+          if (typeof payload.slug !== 'string' || payload.slug.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing project slug.' })
+            return
+          }
+          if (payload.displayName !== undefined && payload.displayName !== null && typeof payload.displayName !== 'string') {
+            sendJson(response, 400, { error: 'Project display name must be a string.' })
+            return
+          }
+
+          try {
+            const project = authStore.createProject({
+              displayName: typeof payload.displayName === 'string' ? payload.displayName : undefined,
+              slug: payload.slug,
+              userLogin: session.login,
+            })
+            sendJson(response, 200, {
+              project: toViewerProjectPayload(project),
             })
           } catch (error) {
             sendJson(response, 400, {
@@ -814,7 +1380,34 @@ export function createViewerServer(opts: ViewerServerOptions) {
         return
       }
 
-      const context = await loadViewerContext(opts)
+      const session = getActiveSession(request)
+      if (authStore && sessionSecret && isProtectedViewerDataRoute(url.pathname) && !session) {
+        if (url.pathname === '/api/raw' && oidcClient) {
+          response.writeHead(302, {
+            'Cache-Control': 'no-store',
+            Location: `/auth/login?returnTo=${encodeURIComponent(buildViewerReturnTo(url))}`,
+          })
+          response.end()
+          return
+        }
+
+        sendJson(response, 401, { error: 'Sign in to access viewer data.' }, headOnly)
+        return
+      }
+
+      let context
+      try {
+        context = await loadViewerContext(opts, {
+          authStore,
+          projectSlug: getRequestedProjectSlug(url),
+          session,
+        })
+      } catch (error) {
+        sendJson(response, 404, {
+          error: error instanceof Error ? error.message : String(error),
+        }, headOnly)
+        return
+      }
       const publicMounts = context.mounts.map((mount) => ({
         aliases: mount.aliases,
         label: mount.label,

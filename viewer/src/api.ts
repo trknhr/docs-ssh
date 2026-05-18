@@ -1,9 +1,9 @@
 import type {
   FileResponse,
   TreeResponse,
+  ViewerProjectListResponse,
+  ViewerProjectMutationResponse,
   ViewerSessionResponse,
-  ViewerSshKeyListResponse,
-  ViewerSshKeyMutationResponse,
 } from './types'
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -17,8 +17,9 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload
 }
 
-export async function getTree() {
-  return fetchJson<TreeResponse>('/api/tree')
+export async function getTree(project?: string) {
+  const suffix = project ? `?project=${encodeURIComponent(project)}` : ''
+  return fetchJson<TreeResponse>(`/api/tree${suffix}`)
 }
 
 export async function getFile(path: string): Promise<FileResponse> {
@@ -36,15 +37,15 @@ export async function getSession() {
   return fetchJson<ViewerSessionResponse>('/api/auth/session')
 }
 
-export async function getSshKeys() {
-  return fetchJson<ViewerSshKeyListResponse>('/api/auth/ssh-keys')
+export async function getProjects() {
+  return fetchJson<ViewerProjectListResponse>('/api/projects')
 }
 
-export async function addSshKey(input: {
-  name?: string
-  publicKey: string
+export async function createProject(input: {
+  displayName?: string
+  slug: string
 }) {
-  return fetchJson<ViewerSshKeyMutationResponse>('/api/auth/ssh-keys', {
+  return fetchJson<ViewerProjectMutationResponse>('/api/projects', {
     body: JSON.stringify(input),
     headers: {
       'Content-Type': 'application/json',

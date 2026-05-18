@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "docs-ssh": "./dist/src/cli.js"
+  },
   "packageManager": "pnpm@10.24.0",
   "scripts": {
     "build": "pnpm run build:server && pnpm run build:viewer",

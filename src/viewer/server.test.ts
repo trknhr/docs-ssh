@@ -333,7 +333,7 @@ describe('createViewerServer OIDC session flow', () => {
     const jar = new CookieJar()
 
     const loginResponse = await fetchWithCookies(
-      `${viewer.baseUrl}/auth/login?returnTo=${encodeURIComponent('/?path=/project/docs/README.md')}`,
+      `${viewer.baseUrl}/auth/login?returnTo=${encodeURIComponent('/?path=/projects/default/docs/README.md')}`,
       jar,
     )
     expect(loginResponse.status).toBe(302)
@@ -344,7 +344,7 @@ describe('createViewerServer OIDC session flow', () => {
 
     const callbackResponse = await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
     expect(callbackResponse.status).toBe(302)
-    expect(callbackResponse.headers.get('location')).toBe('/?path=/project/docs/README.md')
+    expect(callbackResponse.headers.get('location')).toBe('/?path=/projects/default/docs/README.md')
 
     const sessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
     const sessionPayload = await sessionResponse.json() as {
@@ -366,6 +366,55 @@ describe('createViewerServer OIDC session flow', () => {
       subject: 'user-123',
       userDisplayName: viewer.owner!.user.displayName,
     })
+  })
+
+  it('requires a signed-in session for viewer file data and raw files', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'owner@example.com',
+      subject: 'user-123',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      linkedIdentity: {
+        issuer: provider.issuer,
+        provider: 'oidc',
+        subject: 'user-123',
+      },
+    })
+    const rawPath = '/projects/default/docs/README.md'
+    const encodedRawPath = encodeURIComponent(rawPath)
+
+    const treeResponse = await fetch(`${viewer.baseUrl}/api/tree`)
+    const treePayload = await treeResponse.json() as { error: string }
+    expect(treeResponse.status).toBe(401)
+    expect(treePayload.error).toContain('Sign in')
+
+    const fileResponse = await fetch(`${viewer.baseUrl}/api/file?path=${encodedRawPath}`)
+    const filePayload = await fileResponse.json() as { error: string }
+    expect(fileResponse.status).toBe(401)
+    expect(filePayload.error).toContain('Sign in')
+
+    const rawResponse = await fetch(`${viewer.baseUrl}/api/raw?path=${encodedRawPath}`, {
+      redirect: 'manual',
+    })
+    expect(rawResponse.status).toBe(302)
+    const rawLocation = rawResponse.headers.get('location')
+    expect(rawLocation).toBeTruthy()
+    const rawLoginUrl = new URL(rawLocation!, viewer.baseUrl)
+    expect(rawLoginUrl.pathname).toBe('/auth/login')
+    expect(rawLoginUrl.searchParams.get('returnTo')).toBe(`/api/raw?path=${encodedRawPath}`)
+
+    const jar = new CookieJar()
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    const signedRawResponse = await fetchWithCookies(`${viewer.baseUrl}/api/raw?path=${encodedRawPath}`, jar)
+    expect(signedRawResponse.status).toBe(200)
+    expect(await signedRawResponse.text()).toBe('# Viewer Docs\n')
   })
 
   it('signs up the first web user automatically when auth.db is empty', async () => {
@@ -510,6 +559,172 @@ describe('createViewerServer OIDC session flow', () => {
     })
   })
 
+  it('creates projects and exposes every accessible project in the tree', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'owner@example.com',
+      subject: 'user-123',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      linkedIdentity: {
+        issuer: provider.issuer,
+        provider: 'oidc',
+        subject: 'user-123',
+      },
+    })
+    const jar = new CookieJar()
+
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    const initialProjectsResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar)
+    const initialProjects = await initialProjectsResponse.json() as {
+      projects: Array<{ slug: string }>
+    }
+    expect(initialProjects.projects.map((project) => project.slug)).toEqual(['default'])
+
+    const createProjectResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar, {
+      body: JSON.stringify({
+        displayName: 'Product Docs',
+        slug: 'product-docs',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const createProjectPayload = await createProjectResponse.json() as {
+      project: {
+        displayName: string
+        slug: string
+      }
+    }
+    expect(createProjectResponse.status).toBe(200)
+    expect(createProjectPayload.project).toMatchObject({
+      displayName: 'Product Docs',
+      slug: 'product-docs',
+    })
+
+    const treeResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tree?project=product-docs`, jar)
+    const treePayload = await treeResponse.json() as {
+      mounts: Array<{ aliases: string[], mountPath: string }>
+      tree: Array<{ name: string, path: string }>
+    }
+    expect(treeResponse.status).toBe(200)
+    expect(treePayload.mounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          aliases: [],
+          mountPath: '/projects/default',
+        }),
+        expect.objectContaining({
+          aliases: [],
+          mountPath: '/projects/product-docs',
+        }),
+      ]),
+    )
+    expect(treePayload.tree.map((node) => node.path)).toEqual(
+      expect.arrayContaining(['/projects/default', '/projects/product-docs']),
+    )
+
+    const missingTreeResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tree?project=missing-project`, jar)
+    expect(missingTreeResponse.status).toBe(404)
+
+    const sessionKeyPair = sshUtils.generateKeyPairSync('ed25519')
+    const createSessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/ssh-sessions`, jar, {
+      body: JSON.stringify({
+        project: 'product-docs',
+        publicKey: sessionKeyPair.public,
+        ttlSeconds: 600,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const createSessionPayload = await createSessionResponse.json() as {
+      session: {
+        expiresAt: string
+        fingerprint: string
+        project: string
+        username: string
+      }
+    }
+    expect(createSessionResponse.status).toBe(200)
+    expect(createSessionPayload.session).toMatchObject({
+      project: 'product-docs',
+    })
+    expect(createSessionPayload.session.username).toMatch(/^sess_[a-f0-9]{16}$/)
+    expect(createSessionPayload.session.fingerprint.startsWith('SHA256:')).toBe(true)
+    expect(Date.parse(createSessionPayload.session.expiresAt)).toBeGreaterThan(Date.now())
+
+    const cliSessionKeyPair = sshUtils.generateKeyPairSync('ed25519')
+    const cliRequestResponse = await fetch(`${viewer.baseUrl}/api/cli-login/requests`, {
+      body: JSON.stringify({
+        callbackUrl: 'http://127.0.0.1:54321/callback',
+        project: 'product-docs',
+        publicKey: cliSessionKeyPair.public,
+        state: 'cli-state',
+        ttlSeconds: 600,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const cliRequestPayload = await cliRequestResponse.json() as {
+      id: string
+      loginUrl: string
+    }
+    expect(cliRequestResponse.status).toBe(200)
+    expect(cliRequestPayload.loginUrl).toBe(`${viewer.baseUrl}/cli-login/${cliRequestPayload.id}`)
+
+    const cliLoginResponse = await fetchWithCookies(cliRequestPayload.loginUrl, jar)
+    expect(cliLoginResponse.status).toBe(200)
+    const cliLoginHtml = await cliLoginResponse.text()
+    const approveToken = /name="approveToken" value="([^"]+)"/u.exec(cliLoginHtml)?.[1]
+    expect(approveToken).toBeTruthy()
+
+    const cliApproveResponse = await fetchWithCookies(`${viewer.baseUrl}/cli-login/${cliRequestPayload.id}/approve`, jar, {
+      body: new URLSearchParams({ approveToken: approveToken! }),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      method: 'POST',
+    })
+    expect(cliApproveResponse.status).toBe(302)
+    const cliCallbackUrl = new URL(cliApproveResponse.headers.get('location')!)
+    expect(cliCallbackUrl.origin).toBe('http://127.0.0.1:54321')
+    expect(cliCallbackUrl.searchParams.get('state')).toBe('cli-state')
+    expect(cliCallbackUrl.searchParams.get('request')).toBe(cliRequestPayload.id)
+
+    const cliExchangeResponse = await fetch(`${viewer.baseUrl}/api/cli-login/exchange`, {
+      body: JSON.stringify({
+        code: cliCallbackUrl.searchParams.get('code'),
+        request: cliCallbackUrl.searchParams.get('request'),
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const cliExchangePayload = await cliExchangeResponse.json() as {
+      session: {
+        fingerprint: string
+        project: string
+        username: string
+      }
+    }
+    expect(cliExchangeResponse.status).toBe(200)
+    expect(cliExchangePayload.session.project).toBe('product-docs')
+    expect(cliExchangePayload.session.username).toMatch(/^sess_[a-f0-9]{16}$/)
+    expect(cliExchangePayload.session.fingerprint.startsWith('SHA256:')).toBe(true)
+  })
+
   it('rejects SSH key management without a signed-in session', async () => {
     const clientId = 'docs-ssh-viewer'
     const provider = await createFakeOidcProvider({
@@ -539,5 +754,18 @@ describe('createViewerServer OIDC session flow', () => {
     const addPayload = await addResponse.json() as { error: string }
     expect(addResponse.status).toBe(401)
     expect(addPayload.error).toContain('Sign in')
+
+    const createSessionResponse = await fetch(`${viewer.baseUrl}/api/ssh-sessions`, {
+      body: JSON.stringify({
+        publicKey: keyPair.public,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const createSessionPayload = await createSessionResponse.json() as { error: string }
+    expect(createSessionResponse.status).toBe(401)
+    expect(createSessionPayload.error).toContain('Sign in')
   })
 })
