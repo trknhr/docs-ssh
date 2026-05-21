@@ -108,6 +108,9 @@ describe('helper content', () => {
     })
 
     expect(markdown).toContain('Choose one of these setup flows:')
+    expect(markdown).toContain('git clone https://github.com/trknhr/docs-ssh.git')
+    expect(markdown).toContain('npm link')
+    expect(markdown).toContain('docs-ssh status --json')
     expect(markdown).toContain('ssh docs-ssh -p 2222 agents >> AGENTS.md')
     expect(markdown).toContain('mkdir -p .agents/skills/docs-ssh')
     expect(markdown).toContain('ssh docs-ssh -p 2222 skill > .agents/skills/docs-ssh/SKILL.md')

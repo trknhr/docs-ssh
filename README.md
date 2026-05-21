@@ -26,19 +26,35 @@ Deferred:
 
 ## Quick Start
 
-1. Install dependencies:
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/trknhr/docs-ssh.git
+   cd docs-ssh
+   ```
+
+2. Install dependencies:
 
    ```bash
    pnpm install
    ```
 
-2. Build the viewer assets once:
+3. Build the server CLI and viewer assets once:
 
    ```bash
-   pnpm run build:viewer
+   pnpm run build
    ```
 
-3. Generate a host key manually if you want to precreate one:
+4. Link the local CLI into your PATH:
+
+   ```bash
+   npm link
+   docs-ssh status --json
+   ```
+
+   `npm link` creates the global `docs-ssh` command for the cloned repo. The linked command uses `dist/src/cli.js`, so rerun `pnpm run build:server` after editing CLI or server TypeScript.
+
+5. Generate a host key manually if you want to precreate one:
 
    ```bash
    pnpm run generate:host-key:local
@@ -46,7 +62,7 @@ Deferred:
 
    If you skip this step, `docs-ssh` will generate `./ssh_host_key` automatically on first boot.
 
-4. Start the server:
+6. Start the server:
 
    ```bash
    pnpm run dev
@@ -63,7 +79,7 @@ Deferred:
 
    If you change files under `viewer/`, rerun `pnpm run build:viewer` before refreshing the browser.
 
-5. Connect from another terminal:
+7. Connect from another terminal:
 
    ```bash
    ssh localhost -p 2222
@@ -71,7 +87,7 @@ Deferred:
    ssh localhost -p 2222 grep -R "getting started" /projects/<slug>/docs
    ```
 
-6. Open the read-only viewer in a browser:
+8. Open the read-only viewer in a browser:
 
    ```bash
    # macOS
@@ -132,6 +148,8 @@ pnpm run helper:setup
 pnpm run agents:append
 pnpm run skill:write
 ```
+
+The checked-in skill expects the `docs-ssh` CLI to be available in `PATH`. For local development, run `pnpm run build` and `npm link` from the cloned repo before installing the skill.
 
 ## Container
 
@@ -287,9 +305,9 @@ v0.1.0 is tenant-aware but optimized for one default tenant in a single deployme
 For a v0.1.0 single-tenant VPS setup, bootstrap one default tenant plus one owner principal in the local auth database:
 
 ```bash
-pnpm run cli -- auth init
-pnpm run cli -- auth add-ssh-key ~/.ssh/id_ed25519.pub
-pnpm run cli -- auth add-web-identity \
+docs-ssh auth init
+docs-ssh auth add-ssh-key ~/.ssh/id_ed25519.pub
+docs-ssh auth add-web-identity \
   --provider oidc \
   --issuer https://accounts.google.com \
   --subject <oidc-subject>
@@ -312,10 +330,10 @@ If `auth.sqlite` is still empty, the first successful web OIDC sign-in auto-crea
 Projects are server-managed resources. Create them from the signed-in web viewer or with the operator CLI; agents and local config files only select an existing project.
 
 ```bash
-pnpm run cli -- auth create-project \
+docs-ssh auth create-project \
   --project slack-ai-assistant-agentcore-migration \
   --display-name "Slack AI assistant AgentCore migration"
-pnpm run cli -- auth list-projects
+docs-ssh auth list-projects
 ```
 
 To make a local work directory select a project by default, place `.docs-ssh.toml` in that directory or one of its parents:
@@ -350,7 +368,7 @@ Example: create a one-hour read-only project session for an agent key.
 
 ```bash
 ssh-keygen -t ed25519 -N '' -f /tmp/docs-ssh-session
-pnpm run cli -- auth create-ssh-session /tmp/docs-ssh-session.pub \
+docs-ssh auth create-ssh-session /tmp/docs-ssh-session.pub \
   --project default \
   --ttl-seconds 3600 \
   --scopes bootstrap:read,project:read,sources:read
@@ -361,8 +379,8 @@ Connect with the printed username and the matching private key. Inside the SSH s
 Use these commands to audit or revoke server-issued sessions:
 
 ```bash
-pnpm run cli -- auth list-ssh-sessions --all
-pnpm run cli -- auth revoke-ssh-session <session-id-or-username>
+docs-ssh auth list-ssh-sessions --all
+docs-ssh auth revoke-ssh-session <session-id-or-username>
 ```
 
 Long-lived keys in `ssh_keys` continue to authenticate the owner into the default project. Short-lived rows in `ssh_sessions` are intended for server-issued access that should expire or be revoked independently.
