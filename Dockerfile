@@ -10,9 +10,10 @@ RUN pnpm install --frozen-lockfile
 COPY scripts ./scripts
 COPY src ./src
 COPY viewer ./viewer
-COPY docs ./docs
 COPY README.md LICENSE NOTICE ./
 COPY vite.config.ts ./
+
+RUN mkdir -p docs
 
 RUN pnpm build \
   && pnpm prune --prod

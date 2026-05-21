@@ -200,15 +200,21 @@ docker run --rm -p 2222:2222 -p 3000:3000 docs-ssh
 
 ## Self-Hosting
 
-For a home server, use the dedicated self-hosting compose file so docs, state, and workspace live on separate host paths.
+For a home server, use the versioned container image and the dedicated self-hosting compose file so docs, state, and workspace live on separate host paths. A hosting server does not need to clone this repository.
 
 ```bash
+mkdir -p /srv/docs-ssh
+cd /srv/docs-ssh
+
+DOCS_SSH_VERSION=v0.1.0
+curl -fsSLO "https://raw.githubusercontent.com/trknhr/docs-ssh/${DOCS_SSH_VERSION}/docker-compose.selfhost.yml"
+curl -fsSLO "https://raw.githubusercontent.com/trknhr/docs-ssh/${DOCS_SSH_VERSION}/.env.selfhost.example"
 cp .env.selfhost.example .env.selfhost
-docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --build
 ```
 
 The self-hosting config uses:
 
+- `DOCS_SSH_IMAGE` for the published container image, default `ghcr.io/trknhr/docs-ssh:v0.1.0`
 - `DOCS_SSH_DOCS_DIR` for the read-only docs mount
 - `DOCS_SSH_STATE_DIR` for ingested source data and the SSH host key
 - `DOCS_SSH_WORKSPACE_DIR` for the persistent structured filesystem backing `/home` and `/projects`
@@ -224,12 +230,14 @@ DOCS_SSH_BIND_IP=0.0.0.0
 DOCS_SSH_PORT=2222
 DOCS_SSH_VIEWER_BIND_IP=0.0.0.0
 DOCS_SSH_VIEWER_PORT=3000
+DOCS_SSH_IMAGE=ghcr.io/trknhr/docs-ssh:v0.1.0
 DOCS_SSH_DOCS_DIR=/srv/docs-ssh/docs
 DOCS_SSH_STATE_DIR=/srv/docs-ssh/state
 DOCS_SSH_WORKSPACE_DIR=/srv/docs-ssh/workspace
 EOF
 
-docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --build
+mkdir -p /srv/docs-ssh/docs /srv/docs-ssh/state /srv/docs-ssh/workspace
+docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d
 ```
 
 After startup:
@@ -241,6 +249,8 @@ ssh <server-ip> -p 2222
 Then open `http://<server-ip>:3000` in a browser.
 
 Security note: SSH access is now gated by public keys stored in `auth.sqlite`. The HTTP viewer remains read-only by default, but if your docs are sensitive you should still keep both SSH and the viewer on localhost, your LAN, or behind a private network like Tailscale.
+
+Release images are published by the tag workflow to GitHub Container Registry. For v0.1.0 the hosting image is `ghcr.io/trknhr/docs-ssh:v0.1.0`.
 
 ## Ingest Sources
 
