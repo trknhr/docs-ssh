@@ -100,6 +100,22 @@ Deferred:
    The viewer exposes a VS Code-like file tree plus a preview pane for markdown, text/code, and images.
    If OIDC is configured, the top bar also exposes sign-in and sign-out controls for the web session.
 
+## Release Smoke
+
+Before tagging a v0.1.0 build, run the automated smoke script:
+
+```bash
+pnpm run smoke
+```
+
+This runs the Vitest suite, builds the server and viewer, then verifies the built CLI can execute `status --json`.
+
+Manual release checks still matter for the browser and SSH path:
+
+- sign in through the viewer, select a project, copy `.docs-ssh.toml`, open a raw file, sign out, and reload
+- run `docs-ssh login --json`, use the returned `sshCommand`, run `bootstrap --json`, list `/projects/<slug>/issues`, write a task note, and read it back
+- confirm the OIDC redirect URI matches the configured viewer origin
+
 ## SSH Config Alias
 
 If you plan to distribute a reusable skill file to users, configure a stable SSH alias on the client side instead of hardcoding a host name into the skill content.

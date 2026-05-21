@@ -22,6 +22,7 @@
     "agents:append": "pnpm run build:server && node dist/src/cli.js helper agents --output AGENTS.md --append",
     "start": "node dist/src/server.js",
     "skill:write": "pnpm run build:server && node dist/src/cli.js helper skill --output .agents/skills/docs-ssh/SKILL.md",
+    "smoke": "pnpm test && pnpm run build && node dist/src/cli.js status --json",
     "sources:list": "pnpm run build:server && node dist/src/cli.js sources list",
     "generate:host-key": "tsx scripts/generate-host-key.ts",
     "generate:host-key:local": "tsx scripts/generate-host-key.ts > ssh_host_key",
