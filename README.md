@@ -221,6 +221,7 @@ The self-hosting config uses:
 - `DOCS_SSH_BIND_IP` to control whether the SSH port binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_BIND_IP` to control whether the HTTP viewer binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_PORT` to control the HTTP viewer port
+- `VIEWER_PUBLIC_ORIGIN` for the public HTTPS viewer URL when the viewer is behind a proxy or tunnel
 
 Example: expose SSH on `2222` and the viewer on `3000` to your LAN.
 
@@ -234,6 +235,7 @@ DOCS_SSH_IMAGE=ghcr.io/trknhr/docs-ssh:v0.1.0
 DOCS_SSH_DOCS_DIR=/srv/docs-ssh/docs
 DOCS_SSH_STATE_DIR=/srv/docs-ssh/state
 DOCS_SSH_WORKSPACE_DIR=/srv/docs-ssh/workspace
+# VIEWER_PUBLIC_ORIGIN=https://docs.example.com
 EOF
 
 mkdir -p /srv/docs-ssh/docs /srv/docs-ssh/state /srv/docs-ssh/workspace
@@ -247,6 +249,47 @@ ssh <server-ip> -p 2222
 ```
 
 Then open `http://<server-ip>:3000` in a browser.
+
+### Self-Hosted Client SSH Config
+
+Pick one stable SSH host name and publish it with your hosting notes. It is usually the same DNS name or Tailscale name users use for the viewer, but it can be a separate SSH-only host name.
+
+If SSH port `2222` is reachable directly from the client, for example because `DOCS_SSH_BIND_IP=0.0.0.0` and your firewall allows TCP `2222`, users can add:
+
+```sshconfig
+Host docs-ssh
+  HostName docs.example.com
+  Port 2222
+  StrictHostKeyChecking accept-new
+```
+
+If the viewer is public but SSH stays private on the server, keep `DOCS_SSH_BIND_IP=127.0.0.1` and have users connect through their normal server SSH account:
+
+```sshconfig
+Host docs-ssh
+  HostName 127.0.0.1
+  Port 2222
+  ProxyJump user@docs.example.com
+  HostKeyAlias docs-ssh-docs-example
+  StrictHostKeyChecking accept-new
+```
+
+For Tailscale, use the server's tailnet name as the SSH host. Tailscale Funnel can publish the HTTPS viewer, but it does not publish the docs-ssh SSH port; users still need direct tailnet access, a firewall-opened TCP `2222`, or a `ProxyJump` tunnel for SSH.
+
+After adding the alias, users can verify the SSH path:
+
+```bash
+ssh docs-ssh bootstrap --json
+```
+
+Repo-local client config can point the CLI at both the SSH alias and the public viewer URL:
+
+```toml
+# .docs-ssh.toml
+server = "docs-ssh"
+project = "default"
+viewer_origin = "https://docs.example.com"
+```
 
 Security note: SSH access is now gated by public keys stored in `auth.sqlite`. The HTTP viewer remains read-only by default, but if your docs are sensitive you should still keep both SSH and the viewer on localhost, your LAN, or behind a private network like Tailscale.
 
