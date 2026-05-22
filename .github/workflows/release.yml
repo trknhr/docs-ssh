@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -33,9 +33,9 @@ jobs:
           run_install: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -65,7 +65,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.title=docs-ssh
-            org.opencontainers.image.description=Browse local documentation over SSH
+            org.opencontainers.image.description=Document hosting server with SSH access
 
       - name: Build and publish Docker image
         uses: docker/build-push-action@v7

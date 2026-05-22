@@ -7,6 +7,9 @@
     "docs-ssh": "./dist/src/cli.js"
   },
   "packageManager": "pnpm@10.24.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "build": "pnpm run build:server && pnpm run build:viewer",
     "build:server": "tsc",
@@ -37,7 +40,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.18.0",
+    "@types/node": "^24.12.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/ssh2": "^1.15.5",
