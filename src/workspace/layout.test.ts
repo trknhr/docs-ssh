@@ -38,8 +38,6 @@ describe('workspace layout', () => {
       '/README.md',
       '/home/README.md',
       '/projects/default/README.md',
-      '/projects/default/docs',
-      '/projects/default/sources',
       '/projects/default/issues/README.md',
       '/projects/default/tasks/README.md',
     ])
@@ -54,6 +52,7 @@ describe('workspace layout', () => {
     expect(workspaceReadme).toContain('/projects/<slug>/tasks/<task-slug>/')
     expect(workspaceReadme).toContain('/projects/<slug>/issues/<issue-slug>.md')
     expect(workspaceReadme).toContain('separates private notes')
+    expect(workspaceReadme).not.toContain('/sources')
 
     const homeReadme = await readFile(resolve(rootPath, 'home', 'README.md'), 'utf8')
     expect(homeReadme).toContain('private durable storage')

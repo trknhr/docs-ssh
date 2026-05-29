@@ -6,16 +6,16 @@ describe('ExtendedMountableFs', () => {
     const fs = new ExtendedMountableFs({
       initialFiles: {
         '/notes.txt': 'hello',
-        '/projects/default/docs/readme.md': '# Docs\n',
+        '/projects/default/tasks/example/notes.md': '# Notes\n',
       },
     })
 
     fs.startObservingReads()
     await expect(fs.readFile('/notes.txt', 'utf8')).resolves.toBe('hello')
-    await expect(fs.readdir('/projects/default/docs')).resolves.toEqual(['readme.md'])
+    await expect(fs.readdir('/projects/default/tasks/example')).resolves.toEqual(['notes.md'])
     expect(fs.stopObservingReads()).toEqual({
       files: ['/notes.txt'],
-      dirs: ['/projects/default/docs'],
+      dirs: ['/projects/default/tasks/example'],
     })
     expect(fs.stopObservingReads()).toEqual({
       files: [],
@@ -26,7 +26,7 @@ describe('ExtendedMountableFs', () => {
   it('allows writes only inside configured writable paths', async () => {
     const fs = new ExtendedMountableFs({
       writablePaths: ['/tmp', '/projects/default/tasks'],
-      readOnlyPaths: ['/projects/default/README.md', '/projects/default/docs'],
+      readOnlyPaths: ['/projects/default/README.md', '/projects/default/reference'],
     })
 
     await fs.mkdir('/tmp', { recursive: true })
@@ -40,8 +40,8 @@ describe('ExtendedMountableFs', () => {
     await expect(fs.writeFile('/projects/default/README.md', 'blocked')).rejects.toThrow(
       "EROFS: read-only file system, write '/projects/default/README.md'",
     )
-    await expect(fs.writeFile('/projects/default/docs/guide.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/projects/default/docs/guide.md'",
+    await expect(fs.writeFile('/projects/default/reference/guide.md', 'blocked')).rejects.toThrow(
+      "EROFS: read-only file system, write '/projects/default/reference/guide.md'",
     )
   })
 

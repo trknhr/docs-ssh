@@ -17,18 +17,10 @@ export interface SourceRegistry {
   sources: SourceSpec[]
 }
 
-export interface SourceMount {
-  sourceName: string
-  mountPoint: string
-  rootPath: string
-}
-
 export interface SourceStore {
   registry: SourceRegistry
-  mounts: SourceMount[]
   defaultSource?: SourceSpec
   homeMountPath: '/home'
-  projectDocsMountPath: string
   projectMountPath: string
   projectSlug: string
   projectsMountPath: '/projects'

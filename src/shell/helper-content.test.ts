@@ -13,35 +13,17 @@ function createSource(name: string, rootPath: string): SourceSpec {
 }
 
 function createSourceStoreFixture(): SourceStore {
-  const projectDocs = createSource('project-docs', '/data/project-docs')
+  const primary = createSource('primary', '/data/primary')
   const reference = createSource('reference', '/data/reference')
 
   return {
     registry: {
       version: 1,
-      defaultSourceName: projectDocs.name,
-      sources: [projectDocs, reference],
+      defaultSourceName: primary.name,
+      sources: [primary, reference],
     },
-    mounts: [
-      {
-        sourceName: projectDocs.name,
-        mountPoint: '/projects/default/sources/project-docs',
-        rootPath: projectDocs.rootPath,
-      },
-      {
-        sourceName: projectDocs.name,
-        mountPoint: '/projects/default/docs',
-        rootPath: projectDocs.rootPath,
-      },
-      {
-        sourceName: reference.name,
-        mountPoint: '/projects/default/sources/reference',
-        rootPath: reference.rootPath,
-      },
-    ],
-    defaultSource: projectDocs,
+    defaultSource: primary,
     homeMountPath: '/home',
-    projectDocsMountPath: '/projects/default/docs',
     projectMountPath: '/projects/default',
     projectSlug: 'default',
     projectsMountPath: '/projects',
@@ -56,7 +38,7 @@ function createSourceStoreFixture(): SourceStore {
 }
 
 describe('helper content', () => {
-  it('renders agents markdown with docs, issues, tasks, and named source guidance', () => {
+  it('renders agents markdown with docs, issues, and tasks guidance', () => {
     const markdown = createAgentsMarkdown({
       docsName: 'Project Docs',
       sourceStore: createSourceStoreFixture(),
@@ -65,8 +47,6 @@ describe('helper content', () => {
     })
 
     expect(markdown).toContain('Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.')
-    expect(markdown).toContain('- `/projects/default/docs` -> default source (`project-docs`)')
-    expect(markdown).toContain('- `/projects/default/sources/reference`')
     expect(markdown).toContain('- `/projects/default/issues` -> issue tracking')
     expect(markdown).toContain('- `/projects/default/tasks` -> research and work results')
     expect(markdown).toContain('- `/home` -> private personal notes')
@@ -74,13 +54,12 @@ describe('helper content', () => {
     expect(markdown).toContain('Do not create new directories directly under `/projects`')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
     expect(markdown).toContain('ssh docs-ssh -p 2222 bootstrap --json')
-    expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /projects/default/docs')
     expect(markdown).toContain(
       `ssh docs-ssh -p 2222 "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /projects/default/issues/example-issue.md"`,
     )
     expect(markdown).toContain(`ssh docs-ssh -p 2222 "printf '%s\\n' '# Notes' '- item' > /projects/default/tasks/example-task/notes.md"`)
     expect(markdown).toContain('ssh docs-ssh -p 2222 cat /projects/default/tasks/example-task/notes.md')
-    expect(markdown).toContain('ssh docs-ssh -p 2222 grep -R "keyword" /projects/default/sources/reference')
+    expect(markdown).not.toContain('/sources')
   })
 
   it('renders skill markdown and omits -p for the standard ssh port', () => {
@@ -91,12 +70,12 @@ describe('helper content', () => {
       sshPort: 22,
     })
 
-    expect(markdown).toContain('description: Search and update the Project Docs SSH filesystem using shell tools like grep, find, and cat.')
+    expect(markdown).toContain('description: Inspect and update the Project Docs SSH project workspace using shell tools like ls, find, and cat.')
     expect(markdown).toContain('Use ssh docs.example.com to inspect the mounted project filesystem before making changes.')
     expect(markdown).not.toContain('-p 22')
     expect(markdown).toContain('ssh docs.example.com bootstrap --json')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
-    expect(markdown).toContain('ssh docs.example.com grep -R "keyword" /projects/default/docs')
+    expect(markdown).not.toContain('/sources')
   })
 
   it('renders setup markdown with installation flows and tool paths', () => {

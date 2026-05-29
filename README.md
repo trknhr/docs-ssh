@@ -1,26 +1,22 @@
 # docs-ssh
 
-Browse local documentation over SSH.
+Use a project workspace over SSH and a read-only browser viewer.
 
 `docs-ssh` is a local-first derivative of `supabase-community/supabase-ssh`. It keeps
-the SSH plus `just-bash` sandbox core, but generalizes the mounted docs to any local
-folder and prepares the codebase for future ingest adapters.
+the SSH plus `just-bash` sandbox core, but turns the server into a project workspace
+with private notes, issue records, task results, and a read-only web viewer.
 
 ## Status
 
 Current scope:
 
-- serve a local docs folder over SSH
-- ingest additional sources into a local registry
-- mount sources at `/projects/<slug>/sources/<name>`
-- expose `/projects/<slug>/docs` as the default source alias
-- keep source mounts read-only
 - provide `/home` for private notes and `/projects/<slug>/issues` plus `/projects/<slug>/tasks` for project work
 - provide `/tmp` for temporary session-local files
+- provide a read-only browser viewer for authenticated project files
 
 Deferred:
 
-- default-source switching and source removal commands
+- external documentation/source ingestion UX
 - HTML/help-center crawling
 - hosted-service telemetry and rate limiting
 
@@ -83,8 +79,8 @@ Deferred:
 
    ```bash
    ssh localhost -p 2222
-   ssh localhost -p 2222 ls /projects/<slug>/docs
-   ssh localhost -p 2222 grep -R "getting started" /projects/<slug>/docs
+   ssh localhost -p 2222 bootstrap --json
+   ssh localhost -p 2222 ls /projects/<slug>/issues
    ```
 
 8. Open the read-only viewer in a browser:
@@ -140,8 +136,8 @@ After that, users can connect and run helper commands through the same alias:
 
 ```bash
 ssh docs-ssh
-ssh docs-ssh ls /projects/<slug>/docs
-ssh docs-ssh grep -R "getting started" /projects/<slug>/docs
+ssh docs-ssh bootstrap --json
+ssh docs-ssh ls /projects/<slug>/tasks
 ```
 
 The distributable skill file at `skills/SKILL.md` assumes this alias-based setup. If you prefer a different alias, update both the SSH config entry and the commands in the copied skill.
@@ -169,25 +165,25 @@ The checked-in skill expects the `docs-ssh` CLI to be available in `PATH`. For l
 
 ## Container
 
-You can run `docs-ssh` in Docker and keep the source registry plus host key on disk.
+You can run `docs-ssh` in Docker and keep the auth database, workspace, and host key on disk.
 
 ```bash
 docker compose up --build -d
-ssh localhost -p 2222 ls /projects/<slug>/docs
+ssh localhost -p 2222 bootstrap --json
 ```
 
 Then open `http://localhost:3000` in a browser.
 
 The included `docker-compose.yml` mounts:
 
-- `./docs` -> `/data/docs` as the read-only default docs source
-- `./.docs-ssh` -> `/data/state` for ingested sources, registry state, the generated host key, and the default workspace
+- `./docs` -> `/data/docs` as the optional local docs seed directory
+- `./.docs-ssh` -> `/data/state` for auth state, registry state, the generated host key, and the default workspace
 
 Useful container commands:
 
 ```bash
-docker compose exec docs-ssh node dist/src/cli.js sources list
-docker compose exec docs-ssh node dist/src/cli.js ingest github --default
+docker compose exec docs-ssh node dist/src/cli.js status --json
+docker compose exec docs-ssh node dist/src/cli.js auth list-projects
 docker compose restart docs-ssh
 ```
 
@@ -215,8 +211,8 @@ cp .env.selfhost.example .env.selfhost
 The self-hosting config uses:
 
 - `DOCS_SSH_IMAGE` for the published container image, default `ghcr.io/trknhr/docs-ssh:v0.1.0`
-- `DOCS_SSH_DOCS_DIR` for the read-only docs mount
-- `DOCS_SSH_STATE_DIR` for ingested source data and the SSH host key
+- `DOCS_SSH_DOCS_DIR` for the optional local docs seed directory
+- `DOCS_SSH_STATE_DIR` for auth state, registry state, and the SSH host key
 - `DOCS_SSH_WORKSPACE_DIR` for the persistent structured filesystem backing `/home` and `/projects`
 - `DOCS_SSH_BIND_IP` to control whether the SSH port binds only to localhost or to your LAN interface
 - `DOCS_SSH_VIEWER_BIND_IP` to control whether the HTTP viewer binds only to localhost or to your LAN interface
@@ -295,28 +291,6 @@ Security note: SSH access is now gated by public keys stored in `auth.sqlite`. T
 
 Release images are published by the tag workflow to GitHub Container Registry. For v0.1.0 the hosting image is `ghcr.io/trknhr/docs-ssh:v0.1.0`.
 
-## Ingest Sources
-
-You can ingest more sources into a local registry under `.docs-ssh/`.
-
-```bash
-pnpm run ingest -- local-folder ./docs --name project-docs
-pnpm run ingest -- git-repo https://github.com/github/docs.git --name github --subdir content --default
-pnpm run ingest -- github --default
-pnpm run sources:list
-```
-
-Mounted paths:
-
-- every source is available at `/projects/<slug>/sources/<name>`
-- the default source is also available at `/projects/<slug>/docs`
-- `/home` persists private principal-scoped notes under `tenants/<tenant>/principals/<principal>/home`
-- `/projects/<slug>/issues` tracks what to do, why, status, next action, and result links
-- `/projects/<slug>/tasks` stores research and work results under `tenants/<tenant>/projects/<project>`
-- `/tmp` is writable and resets between SSH sessions
-
-The viewer picks up registry changes on refresh. Existing interactive shell sessions will not see new mounts until you reconnect.
-
 ## Filesystem Layout
 
 `docs-ssh` seeds a v2 SSH filesystem with private notes, project work, and temporary areas:
@@ -329,22 +303,20 @@ The viewer picks up registry changes on refresh. Existing interactive shell sess
   projects/
     <project>/
       README.md
-      docs/
-      sources/<name>/
       issues/
       tasks/
   tmp/
 ```
 
-From the SSH session, source mounts under `/projects/<slug>/docs` and `/projects/<slug>/sources/<name>` are read-only. Use `/home` for private personal notes, `/projects/<slug>/issues` for issue records, `/projects/<slug>/tasks/<task-slug>/` for research and work results, and `/projects/<slug>/docs` only for polished long-term references. Use `/tmp` for temporary files.
+From the SSH session, use `/home` for private personal notes, `/projects/<slug>/issues` for issue records, `/projects/<slug>/tasks/<task-slug>/` for research and work results, and `/tmp` for temporary files.
 
 ## Configuration
 
 If a repo-local `.env` file exists, both the server entrypoint and the CLI load it automatically before reading these variables.
 
-- `DOCS_DIR`: local directory to mount, default `./docs`
+- `DOCS_DIR`: optional local docs seed directory, default `./docs`
 - `DOCS_NAME`: label shown in banners and helper files, default `Documentation`
-- `DOCS_SSH_STATE_DIR`: registry and managed source storage dir, default `./.docs-ssh`
+- `DOCS_SSH_STATE_DIR`: auth, registry, and host-key state dir, default `./.docs-ssh`
 - `DOCS_SSH_REGISTRY_PATH`: optional explicit registry file path
 - `DOCS_SSH_AUTH_DB_PATH`: auth metadata database path, default `<DOCS_SSH_STATE_DIR>/auth.sqlite`
 - `DOCS_SSH_OIDC_ISSUER`: optional OIDC issuer URL for web sign-in
@@ -394,6 +366,20 @@ You can override these with CLI flags such as `--db-path`, `--tenant-slug`, `--o
 
 If `auth.sqlite` is still empty, the first successful web OIDC sign-in auto-creates a single-tenant owner user and links that identity immediately. Use `auth init` when you want to choose the owner login or bootstrap the auth DB ahead of time.
 
+## Users
+
+One running docs-ssh instance represents one tenant. After the first owner exists, new web users cannot self-register automatically.
+
+Owners can add users from the signed-in viewer Account panel. Use the provider, issuer, and subject shown on the new user's access-request page, choose a login and role, then add the user. The same operation is available from the operator CLI:
+
+```bash
+docs-ssh auth add-web-identity \
+  --provider google \
+  --issuer https://accounts.google.com \
+  --subject <oidc-subject> \
+  --user <login>
+```
+
 ## Projects
 
 Projects are server-managed resources. Create them from the signed-in web viewer or with the operator CLI; agents and local config files only select an existing project.
@@ -440,7 +426,7 @@ ssh-keygen -t ed25519 -N '' -f /tmp/docs-ssh-session
 docs-ssh auth create-ssh-session /tmp/docs-ssh-session.pub \
   --project default \
   --ttl-seconds 3600 \
-  --scopes bootstrap:read,project:read,sources:read
+  --scopes bootstrap:read,project:read
 ```
 
 Connect with the printed username and the matching private key. Inside the SSH session, run `bootstrap --json` first so the client can read its tenant, principal, project, mounted paths, and scopes.

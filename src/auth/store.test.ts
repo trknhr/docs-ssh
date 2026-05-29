@@ -242,6 +242,64 @@ describe('createAuthStore', () => {
     authStore.close()
   })
 
+  it('adds tenant users with web identities and project access', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({
+      dbPath: resolve(tempDir, 'auth.sqlite'),
+    })
+    authStore.ensureSingleTenantOwner({
+      ownerLogin: 'alice',
+      ownerName: 'Alice',
+    })
+    authStore.createProject({
+      displayName: 'Product Docs',
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
+
+    const user = authStore.addUser({
+      displayName: 'Bob Member',
+      identity: {
+        email: 'bob@example.com',
+        issuer: 'https://accounts.example.com',
+        provider: 'google',
+        subject: 'bob-google-sub',
+      },
+      login: 'bob',
+    })
+
+    expect(user).toMatchObject({
+      displayName: 'Bob Member',
+      login: 'bob',
+      role: 'member',
+    })
+    expect(user.identities).toEqual([
+      expect.objectContaining({
+        email: 'bob@example.com',
+        issuer: 'https://accounts.example.com',
+        provider: 'google',
+        subject: 'bob-google-sub',
+      }),
+    ])
+    expect(authStore.listUsers().map((entry) => [entry.login, entry.role])).toEqual([
+      ['alice', 'owner'],
+      ['bob', 'member'],
+    ])
+    expect(
+      authStore.findUserByAuthIdentity({
+        issuer: 'https://accounts.example.com',
+        provider: 'google',
+        subject: 'bob-google-sub',
+      })?.login,
+    ).toBe('bob')
+    expect(authStore.listProjects({ userLogin: 'bob' }).map((entry) => entry.slug)).toEqual([
+      'default',
+      'product-docs',
+    ])
+
+    authStore.close()
+  })
+
   it('creates scoped SSH sessions with project context', async () => {
     const tempDir = await createTempDir()
     const authStore = createAuthStore({
@@ -261,7 +319,7 @@ describe('createAuthStore', () => {
     const session = authStore.createSshSession({
       projectSlug: 'product-docs',
       publicKey: keys.public,
-      scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+      scopes: ['bootstrap:read', 'project:read'],
       ttlSeconds: 60,
       userLogin: 'alice',
       username: 'sess_test',
@@ -275,7 +333,7 @@ describe('createAuthStore', () => {
       login: 'alice',
       principal: { id: owner.principal.id },
       project: { slug: 'product-docs' },
-      scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+      scopes: ['bootstrap:read', 'project:read'],
       sshSession: { id: session.id },
       tenant: { slug: 'default' },
     })

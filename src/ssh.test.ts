@@ -46,7 +46,7 @@ async function createTestServer() {
   const sshSession = authStore.createSshSession({
     projectSlug: 'product-docs',
     publicKey: sessionKey.public,
-    scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+    scopes: ['bootstrap:read', 'project:read'],
     userLogin: owner.user.login,
     username: 'sess_product',
   })
@@ -242,10 +242,10 @@ describe('createSSHServer', () => {
     const newlineIndex = result.stdout.indexOf('\n')
     const envLine = result.stdout.slice(0, newlineIndex)
     const bootstrapJson = result.stdout.slice(newlineIndex + 1)
-    expect(envLine).toBe(`${sshSession.id}|product-docs|bootstrap:read,project:read,sources:read`)
+    expect(envLine).toBe(`${sshSession.id}|product-docs|bootstrap:read,project:read`)
     expect(JSON.parse(bootstrapJson)).toMatchObject({
       project: { slug: 'product-docs' },
-      scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+      scopes: ['bootstrap:read', 'project:read'],
     })
 
     await expect(

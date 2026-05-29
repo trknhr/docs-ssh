@@ -4,13 +4,14 @@ export interface RootSummary {
   aliases: string[]
   label: string
   mountPath: string
-  type: 'home' | 'project' | 'project-docs' | 'source'
+  type: 'home' | 'project'
 }
 
 export interface ViewerOidcState {
   enabled: boolean
   issuer?: string
   provider?: string
+  signupAvailable?: boolean
 }
 
 export interface ViewerSessionUser {
@@ -19,7 +20,9 @@ export interface ViewerSessionUser {
   issuer: string
   login: string
   provider: string
+  role?: 'owner' | 'admin' | 'member'
   subject: string
+  tenant?: string
   userDisplayName: string
   userId: string
 }
@@ -41,6 +44,30 @@ export interface ViewerProjectListResponse {
 
 export interface ViewerProjectMutationResponse {
   project: ViewerProject
+}
+
+export interface ViewerUserIdentity {
+  email?: string | null
+  issuer: string
+  provider: string
+  subject: string
+}
+
+export interface ViewerUser {
+  createdAt: string
+  displayName: string
+  identities: ViewerUserIdentity[]
+  login: string
+  role: 'owner' | 'admin' | 'member'
+}
+
+export interface ViewerUserListResponse {
+  users: ViewerUser[]
+}
+
+export interface ViewerUserMutationResponse {
+  user: ViewerUser
+  users: ViewerUser[]
 }
 
 export interface TreeNodeData {

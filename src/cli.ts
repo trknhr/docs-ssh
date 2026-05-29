@@ -18,7 +18,6 @@ import {
   createFallbackRegistry,
   createSourceSpec,
   makeRootPathPortable,
-  getSourceMountPath,
   getStatePaths,
   normalizeSourceName,
   readSourceRegistry,
@@ -367,12 +366,11 @@ function printIngestSummary(source: SourceSpec, makeDefault: boolean): void {
   console.log(`Ingested source "${source.name}"`)
   console.log(`- type: ${source.type}`)
   console.log(`- root: ${source.rootPath}`)
-  console.log(`- mount: ${getSourceMountPath(source.name)}`)
-  if (makeDefault) console.log('- default docs path: /projects/<slug>/docs')
+  if (makeDefault) console.log('- default registry entry: yes')
   if (source.repoUrl) console.log(`- repo: ${source.repoUrl}`)
   if (source.subdir) console.log(`- subdir: ${source.subdir}`)
   console.log('')
-  console.log('New exec commands and new SSH sessions will see the updated registry immediately.')
+  console.log('The source registry was updated for future ingestion workflows.')
 }
 
 async function ingestLocalFolder(args: ParsedArgs): Promise<void> {
@@ -495,11 +493,10 @@ async function listSources(args: ParsedArgs): Promise<void> {
   console.log('')
 
   for (const source of registry.sources) {
-    const defaultMark = source.name === registry.defaultSourceName ? ' (default -> /projects/<slug>/docs)' : ''
+    const defaultMark = source.name === registry.defaultSourceName ? ' (default)' : ''
     console.log(`- ${source.name}${defaultMark}`)
     console.log(`  type: ${source.type}`)
     console.log(`  root: ${source.rootPath}`)
-    console.log(`  mount: ${getSourceMountPath(source.name)}`)
   }
 }
 

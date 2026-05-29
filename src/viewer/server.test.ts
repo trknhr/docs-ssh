@@ -213,6 +213,16 @@ async function createFakeOidcProvider(config: {
 async function createViewerFixture(config: {
   bootstrapOwner?: boolean
   clientId: string
+  extraUsers?: Array<{
+    displayName: string
+    identity: {
+      issuer: string
+      provider: string
+      subject: string
+    }
+    login: string
+    role: 'owner' | 'admin' | 'member'
+  }>
   issuer: string
   linkedIdentity?: {
     issuer: string
@@ -241,6 +251,14 @@ async function createViewerFixture(config: {
       provider: config.linkedIdentity.provider,
       subject: config.linkedIdentity.subject,
       userLogin: owner.user.login,
+    })
+  }
+  for (const user of config.extraUsers ?? []) {
+    authStore.addUser({
+      displayName: user.displayName,
+      identity: user.identity,
+      login: user.login,
+      role: user.role,
     })
   }
   authStore.close()
@@ -310,6 +328,7 @@ describe('createViewerServer OIDC session flow', () => {
       enabled: true,
       issuer: provider.issuer,
       provider: 'oidc',
+      signupAvailable: false,
     })
     expect(payload.session).toBeNull()
   })
@@ -333,7 +352,7 @@ describe('createViewerServer OIDC session flow', () => {
     const jar = new CookieJar()
 
     const loginResponse = await fetchWithCookies(
-      `${viewer.baseUrl}/auth/login?returnTo=${encodeURIComponent('/?path=/projects/default/docs/README.md')}`,
+      `${viewer.baseUrl}/auth/login?returnTo=${encodeURIComponent('/?path=/projects/default/README.md')}`,
       jar,
     )
     expect(loginResponse.status).toBe(302)
@@ -344,7 +363,7 @@ describe('createViewerServer OIDC session flow', () => {
 
     const callbackResponse = await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
     expect(callbackResponse.status).toBe(302)
-    expect(callbackResponse.headers.get('location')).toBe('/?path=/projects/default/docs/README.md')
+    expect(callbackResponse.headers.get('location')).toBe('/?path=/projects/default/README.md')
 
     const sessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
     const sessionPayload = await sessionResponse.json() as {
@@ -384,7 +403,7 @@ describe('createViewerServer OIDC session flow', () => {
         subject: 'user-123',
       },
     })
-    const rawPath = '/projects/default/docs/README.md'
+    const rawPath = '/projects/default/README.md'
     const encodedRawPath = encodeURIComponent(rawPath)
 
     const treeResponse = await fetch(`${viewer.baseUrl}/api/tree`)
@@ -414,7 +433,7 @@ describe('createViewerServer OIDC session flow', () => {
 
     const signedRawResponse = await fetchWithCookies(`${viewer.baseUrl}/api/raw?path=${encodedRawPath}`, jar)
     expect(signedRawResponse.status).toBe(200)
-    expect(await signedRawResponse.text()).toBe('# Viewer Docs\n')
+    expect(await signedRawResponse.text()).toContain('# Project')
   })
 
   it('signs up the first web user automatically when auth.db is empty', async () => {
@@ -430,6 +449,14 @@ describe('createViewerServer OIDC session flow', () => {
       issuer: provider.issuer,
     })
     const jar = new CookieJar()
+
+    const initialSessionResponse = await fetch(`${viewer.baseUrl}/api/auth/session`)
+    const initialSessionPayload = await initialSessionResponse.json() as {
+      oidc: { signupAvailable?: boolean }
+      session: null
+    }
+    expect(initialSessionPayload.oidc.signupAvailable).toBe(true)
+    expect(initialSessionPayload.session).toBeNull()
 
     const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
     const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
@@ -478,11 +505,14 @@ describe('createViewerServer OIDC session flow', () => {
 
     expect(callbackResponse.status).toBe(403)
     const callbackHtml = await callbackResponse.text()
-    expect(callbackHtml).toContain('This web identity is not linked to a docs-ssh user yet.')
+    expect(callbackHtml).toContain('Access request needed')
+    expect(callbackHtml).toContain('new accounts must be added by an owner')
+    expect(callbackHtml).toContain('If you already have access')
+    expect(callbackHtml).toContain('If you are a new user')
+    expect(callbackHtml).toContain('Try another Google account')
     expect(callbackHtml).toContain('unknown-user')
-    expect(callbackHtml).toContain(`--provider 'oidc'`)
-    expect(callbackHtml).toContain(`--issuer '${provider.issuer}'`)
-    expect(callbackHtml).toContain(`--subject 'unknown-user'`)
+    expect(callbackHtml).not.toContain('Owner CLI command')
+    expect(callbackHtml).not.toContain('auth add-web-identity')
     expect(callbackHtml).not.toContain('auth init')
 
     const sessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
@@ -723,6 +753,140 @@ describe('createViewerServer OIDC session flow', () => {
     expect(cliExchangePayload.session.project).toBe('product-docs')
     expect(cliExchangePayload.session.username).toMatch(/^sess_[a-f0-9]{16}$/)
     expect(cliExchangePayload.session.fingerprint.startsWith('SHA256:')).toBe(true)
+  })
+
+  it('lets owners list and add web users', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'owner@example.com',
+      subject: 'user-123',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      linkedIdentity: {
+        issuer: provider.issuer,
+        provider: 'oidc',
+        subject: 'user-123',
+      },
+    })
+    const jar = new CookieJar()
+
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    const initialUsersResponse = await fetchWithCookies(`${viewer.baseUrl}/api/users`, jar)
+    const initialUsers = await initialUsersResponse.json() as {
+      users: Array<{ login: string; role: string }>
+    }
+    expect(initialUsersResponse.status).toBe(200)
+    expect(initialUsers.users).toEqual([
+      expect.objectContaining({
+        login: 'owner',
+        role: 'owner',
+      }),
+    ])
+
+    const createUserResponse = await fetchWithCookies(`${viewer.baseUrl}/api/users`, jar, {
+      body: JSON.stringify({
+        displayName: 'Bob Member',
+        email: 'bob@example.com',
+        issuer: provider.issuer,
+        login: 'bob',
+        provider: 'oidc',
+        role: 'member',
+        subject: 'bob-subject',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const createUserPayload = await createUserResponse.json() as {
+      user: {
+        identities: Array<{ email?: string; issuer: string; provider: string; subject: string }>
+        login: string
+        role: string
+      }
+      users: Array<{ login: string; role: string }>
+    }
+    expect(createUserResponse.status).toBe(200)
+    expect(createUserPayload.user).toMatchObject({
+      identities: [
+        {
+          email: 'bob@example.com',
+          issuer: provider.issuer,
+          provider: 'oidc',
+          subject: 'bob-subject',
+        },
+      ],
+      login: 'bob',
+      role: 'member',
+    })
+    expect(createUserPayload.users.map((user) => [user.login, user.role])).toEqual([
+      ['owner', 'owner'],
+      ['bob', 'member'],
+    ])
+  })
+
+  it('rejects owner role assignment from admin users', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'admin@example.com',
+      subject: 'admin-123',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      extraUsers: [
+        {
+          displayName: 'Admin User',
+          identity: {
+            issuer: provider.issuer,
+            provider: 'oidc',
+            subject: 'admin-123',
+          },
+          login: 'admin',
+          role: 'admin',
+        },
+      ],
+      issuer: provider.issuer,
+    })
+    const jar = new CookieJar()
+
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    const createOwnerResponse = await fetchWithCookies(`${viewer.baseUrl}/api/users`, jar, {
+      body: JSON.stringify({
+        displayName: 'Mallory Owner',
+        email: 'mallory@example.com',
+        issuer: provider.issuer,
+        login: 'mallory',
+        provider: 'oidc',
+        role: 'owner',
+        subject: 'mallory-subject',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const createOwnerPayload = await createOwnerResponse.json() as { error: string }
+    expect(createOwnerResponse.status).toBe(403)
+    expect(createOwnerPayload.error).toContain('Only owners can assign the owner role.')
+
+    const usersResponse = await fetchWithCookies(`${viewer.baseUrl}/api/users`, jar)
+    const usersPayload = await usersResponse.json() as {
+      users: Array<{ login: string; role: string }>
+    }
+    expect(usersPayload.users.map((user) => [user.login, user.role])).toEqual([
+      ['owner', 'owner'],
+      ['admin', 'admin'],
+    ])
   })
 
   it('rejects SSH key management without a signed-in session', async () => {

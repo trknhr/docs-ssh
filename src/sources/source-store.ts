@@ -22,14 +22,6 @@ export function normalizeSourceName(name: string): string {
     .replace(/^-+|-+$/g, '') || 'source'
 }
 
-export function getSourceMountPath(name: string): string {
-  return getProjectSourceMountPath(name)
-}
-
-export function getProjectSourceMountPath(name: string, projectMountPath = '/projects/default'): string {
-  return posix.join(projectMountPath, 'sources', normalizeSourceName(name))
-}
-
 export function resolveStatePaths(opts: {
   registryPath?: string
   stateDir: string
@@ -177,36 +169,14 @@ export function buildSourceStore(
   const projectSlug = normalizeSourceName(opts.projectSlug ?? DEFAULT_PROJECT_SLUG)
   const concreteProjectPath = posix.join('/projects', projectSlug)
 
-  const mounts = registry.sources.flatMap((source) => {
-    const sourceMounts = [
-      {
-        sourceName: source.name,
-        mountPoint: getProjectSourceMountPath(source.name, concreteProjectPath),
-        rootPath: source.rootPath,
-      },
-    ]
-
-    if (source.name === defaultSourceName) {
-      sourceMounts.push({
-        sourceName: source.name,
-        mountPoint: posix.join(concreteProjectPath, 'docs'),
-        rootPath: source.rootPath,
-      })
-    }
-
-    return sourceMounts
-  })
-
   return {
     registry: {
       version: SOURCE_REGISTRY_VERSION,
       defaultSourceName,
       sources: registry.sources,
     },
-    mounts,
     defaultSource,
     homeMountPath: '/home',
-    projectDocsMountPath: posix.join(concreteProjectPath, 'docs'),
     projectMountPath: concreteProjectPath,
     projectSlug,
     projectsMountPath: '/projects',

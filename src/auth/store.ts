@@ -20,7 +20,6 @@ const DEFAULT_SSH_SESSION_SCOPES = [
   'project:read',
   'project:write',
   'projects:read',
-  'sources:read',
 ] as const
 
 export type AuthMembershipRole = 'owner' | 'admin' | 'member'
@@ -154,6 +153,19 @@ export interface AddAuthIdentityInput {
   userLogin?: string
 }
 
+export interface AddUserInput {
+  displayName?: string
+  identity?: Omit<AddAuthIdentityInput, 'userLogin'>
+  login: string
+  role?: AuthMembershipRole
+  tenantSlug?: string
+}
+
+export interface AuthTenantUser extends AuthUser {
+  identities: AuthIdentity[]
+  role: AuthMembershipRole
+}
+
 export interface SignUpFirstUserWithAuthIdentityInput {
   email?: string
   issuer: string
@@ -190,6 +202,10 @@ export interface ListSshSessionsOptions {
 export interface ListProjectsOptions {
   tenantSlug?: string
   userLogin?: string
+}
+
+export interface ListUsersOptions {
+  tenantSlug?: string
 }
 
 export interface RevokeSshSessionInput {
@@ -297,6 +313,12 @@ function createTimestamp(): string {
 
 function normalizeProvider(value: string | undefined): string {
   return value?.trim().toLowerCase() || 'oidc'
+}
+
+function normalizeMembershipRole(role: AuthMembershipRole | undefined): AuthMembershipRole {
+  if (!role) return 'member'
+  if (role === 'owner' || role === 'admin' || role === 'member') return role
+  throw new Error(`Unsupported membership role: ${role}`)
 }
 
 function openDatabase(dbPath: string): Database.Database {
@@ -1019,6 +1041,39 @@ function getIdentityByKey(
   return row ? parseAuthIdentity(row) : null
 }
 
+function listAuthIdentitiesForPrincipal(database: Database.Database, principalId: string): AuthIdentity[] {
+  return database
+    .prepare(
+      `SELECT ai.id, ai.principal_id AS principalId, u.id AS userId, ai.provider, ai.issuer, ai.subject, ai.email, ai.created_at AS createdAt
+       FROM auth_identities ai
+       LEFT JOIN users u ON u.principal_id = ai.principal_id
+       WHERE ai.principal_id = ?
+       ORDER BY ai.provider ASC, ai.created_at ASC`,
+    )
+    .all(principalId)
+    .map((row) => parseAuthIdentity(row as AuthIdentityRow))
+}
+
+function listUsersForTenant(database: Database.Database, tenantId: string): AuthTenantUser[] {
+  const rows = database
+    .prepare(
+      `SELECT u.id, u.login, u.display_name AS displayName, u.principal_id AS principalId, u.created_at AS createdAt, m.role
+       FROM users u
+       INNER JOIN memberships m ON m.principal_id = u.principal_id
+       WHERE m.tenant_id = ?
+       ORDER BY
+         CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+         u.login ASC`,
+    )
+    .all(tenantId) as Array<UserRow & { role: AuthMembershipRole }>
+
+  return rows.map((row) => ({
+    ...parseUser(row),
+    identities: listAuthIdentitiesForPrincipal(database, row.principalId),
+    role: row.role,
+  }))
+}
+
 function getSshKeyByFingerprint(database: Database.Database, fingerprint: string): AuthSshKey | null {
   const row = database
     .prepare(
@@ -1179,6 +1234,27 @@ function ensureProjectMembership(
   return membership
 }
 
+function upsertProjectMembership(
+  database: Database.Database,
+  projectId: string,
+  principalId: string,
+  role: AuthMembershipRole,
+): AuthProjectMembership {
+  database
+    .prepare(
+      `INSERT INTO project_memberships (project_id, principal_id, role, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(project_id, principal_id) DO UPDATE SET role = excluded.role`,
+    )
+    .run(projectId, principalId, role, createTimestamp())
+
+  const membership = getProjectMembership(database, projectId, principalId)
+  if (!membership) {
+    throw new Error('Failed to create project membership.')
+  }
+  return membership
+}
+
 function requireProjectMembership(
   database: Database.Database,
   project: AuthProject,
@@ -1276,6 +1352,7 @@ function buildPrincipalSession(
 export interface AuthStore {
   addAuthIdentity(input: AddAuthIdentityInput): AuthIdentity
   addSshKey(input: AddSshKeyInput): AuthSshKey
+  addUser(input: AddUserInput): AuthTenantUser
   close(): void
   createProject(input: CreateProjectInput): AuthProject
   createSshSession(input: CreateSshSessionInput): AuthSshSession
@@ -1286,10 +1363,12 @@ export interface AuthStore {
   findUserByAuthIdentity(params: Pick<AuthIdentity, 'issuer' | 'provider' | 'subject'>): AuthUser | null
   findUserByLogin(login: string): AuthUser | null
   findUserBySshFingerprint(fingerprint: string): AuthUser | null
+  hasUsers(): boolean
   listAuthIdentities(userLogin?: string): AuthIdentity[]
   listProjects(opts?: ListProjectsOptions): AuthProject[]
   listSshSessions(opts?: ListSshSessionsOptions): AuthSshSession[]
   listSshKeys(userLogin?: string): AuthSshKey[]
+  listUsers(opts?: ListUsersOptions): AuthTenantUser[]
   revokeSshSession(input: RevokeSshSessionInput): AuthSshSession
   signUpFirstUserWithAuthIdentity(input: SignUpFirstUserWithAuthIdentityInput): {
     identity: AuthIdentity
@@ -1448,10 +1527,138 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     },
   )
 
+  const addUserTx = database.transaction((input: AddUserInput): AuthTenantUser => {
+    const tenant = input.tenantSlug
+      ? getTenantBySlug(database, normalizeIdentifier(input.tenantSlug, DEFAULT_TENANT_SLUG))
+      : getTenantBySlug(database, DEFAULT_TENANT_SLUG)
+    if (!tenant) {
+      throw new Error(`Tenant "${input.tenantSlug ?? DEFAULT_TENANT_SLUG}" was not found.`)
+    }
+
+    const login = normalizeIdentifier(input.login, '')
+    if (!login) throw new Error('Missing required user login.')
+    const role = normalizeMembershipRole(input.role)
+    const now = createTimestamp()
+
+    let user = getUserByLogin(database, login)
+    let principal: AuthPrincipal
+    if (user) {
+      const existingPrincipal = getPrincipalById(database, user.principalId)
+      if (!existingPrincipal) {
+        throw new Error(`Principal "${user.principalId}" for user "${user.login}" was not found.`)
+      }
+      principal = existingPrincipal
+    } else {
+      const displayName = normalizeLabel(input.displayName, login)
+      const principalRow: PrincipalRow = {
+        createdAt: now,
+        displayName,
+        id: randomUUID(),
+        kind: 'user',
+      }
+      database
+        .prepare(
+          `INSERT INTO principals (id, kind, display_name, created_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(principalRow.id, principalRow.kind, principalRow.displayName, principalRow.createdAt)
+      principal = parsePrincipal(principalRow)
+
+      const userRow: UserRow = {
+        createdAt: now,
+        displayName,
+        id: randomUUID(),
+        login,
+        principalId: principal.id,
+      }
+      database
+        .prepare(
+          `INSERT INTO users (id, login, display_name, principal_id, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(userRow.id, userRow.login, userRow.displayName, userRow.principalId, userRow.createdAt)
+      user = parseUser(userRow)
+    }
+
+    database
+      .prepare(
+        `INSERT INTO memberships (tenant_id, principal_id, role, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(tenant_id, principal_id) DO UPDATE SET role = excluded.role`,
+      )
+      .run(tenant.id, principal.id, role, now)
+
+    ensureProjectForTenant(database, tenant.id, DEFAULT_PROJECT_SLUG, DEFAULT_PROJECT_NAME)
+    const projects = database
+      .prepare(
+        `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt
+         FROM projects
+         WHERE tenant_id = ?`,
+      )
+      .all(tenant.id) as AuthProjectRow[]
+    for (const project of projects) {
+      upsertProjectMembership(database, project.id, principal.id, role)
+    }
+
+    if (input.identity) {
+      const provider = normalizeProvider(input.identity.provider)
+      const issuer = input.identity.issuer.trim()
+      const subject = input.identity.subject.trim()
+      if (!issuer) throw new Error('Missing required issuer for auth identity.')
+      if (!subject) throw new Error('Missing required subject for auth identity.')
+
+      const existing = getIdentityByKey(database, {
+        issuer,
+        provider,
+        subject,
+      })
+      if (existing && existing.principalId !== user.principalId) {
+        throw new Error(
+          `Auth identity "${provider}:${issuer}:${subject}" is already linked to another user or principal.`,
+        )
+      }
+
+      if (existing) {
+        database
+          .prepare(
+            `UPDATE auth_identities
+             SET email = ?
+             WHERE id = ?`,
+          )
+          .run(input.identity.email?.trim() || null, existing.id)
+      } else {
+        database
+          .prepare(
+            `INSERT INTO auth_identities (id, principal_id, provider, issuer, subject, email, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            randomUUID(),
+            user.principalId,
+            provider,
+            issuer,
+            subject,
+            input.identity.email?.trim() || null,
+            createTimestamp(),
+          )
+      }
+    }
+
+    return listUsersForTenant(database, tenant.id).find((entry) => entry.id === user.id)
+      ?? {
+        ...user,
+        identities: listAuthIdentitiesForPrincipal(database, user.principalId),
+        role,
+      }
+  })
+
   return {
     dbPath,
     close(): void {
       database.close()
+    },
+    addUser(input: AddUserInput): AuthTenantUser {
+      return addUserTx(input)
     },
     createProject(input: CreateProjectInput): AuthProject {
       const user = resolveTargetUser(database, input.userLogin)
@@ -1747,6 +1954,16 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     },
     findUserBySshFingerprint(fingerprint: string): AuthUser | null {
       return this.findPrincipalBySshFingerprint(fingerprint)?.user ?? null
+    },
+    hasUsers(): boolean {
+      return countUsers(database) > 0
+    },
+    listUsers(opts: ListUsersOptions = {}): AuthTenantUser[] {
+      const tenant = opts.tenantSlug
+        ? getTenantBySlug(database, normalizeIdentifier(opts.tenantSlug, DEFAULT_TENANT_SLUG))
+        : getTenantBySlug(database, DEFAULT_TENANT_SLUG)
+      if (!tenant) return []
+      return listUsersForTenant(database, tenant.id)
     },
     listProjects(opts: ListProjectsOptions = {}): AuthProject[] {
       const user = opts.userLogin

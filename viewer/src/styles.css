@@ -107,9 +107,17 @@ textarea {
 .logged-out-shell {
   align-content: center;
   display: grid;
+  gap: 0.9rem;
   justify-items: center;
   min-height: 100%;
   padding: 1.2rem;
+}
+
+.logged-out-copy {
+  color: var(--text-muted);
+  margin: 0;
+  max-width: 32rem;
+  text-align: center;
 }
 
 .hero-button {
@@ -230,7 +238,7 @@ textarea {
 }
 
 .preview-meta,
-.source-meta {
+.mount-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
@@ -282,6 +290,7 @@ textarea {
 }
 
 .field--stacked input,
+.field--stacked select,
 .field--stacked textarea {
   min-width: auto;
   width: 100%;
@@ -478,6 +487,12 @@ textarea {
   gap: 0.9rem;
 }
 
+.form-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .account-form__footer {
   display: grid;
   gap: 0.65rem;
@@ -528,6 +543,37 @@ textarea {
 
 .project-item strong {
   color: var(--text);
+}
+
+.user-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.user-item {
+  align-items: center;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  justify-content: space-between;
+  padding: 0.8rem 0.85rem;
+}
+
+.user-item > div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(100%, 12rem);
+}
+
+.user-item strong {
+  color: var(--text);
+}
+
+.user-item code {
+  color: var(--text-muted);
 }
 
 .project-item code,
@@ -717,6 +763,10 @@ textarea {
 
   .account-grid,
   .account-banner {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid {
     grid-template-columns: 1fr;
   }
 

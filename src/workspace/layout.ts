@@ -55,7 +55,7 @@ const PROJECT_DIRECTORIES: WorkspaceDirectoryTemplate[] = [
       '  artifacts/',
       '```',
       '',
-      'Use `/projects/<project-slug>/docs` only for polished references that should stay useful after the task is done.',
+      'Keep polished project-facing references in task results until a dedicated docs feature exists.',
       '',
     ].join('\n'),
   },
@@ -93,7 +93,6 @@ function createWorkspaceReadme(): string {
     '- Use `/home` for private personal notes.',
     '- Use `/projects/<slug>/issues` for issue tracking: what to do, why, status, next action, and result links.',
     '- Use `/projects/<slug>/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.',
-    '- Use `/projects/<slug>/docs` only for polished references that should stay useful long-term.',
     '- Do not create new directories directly under `/projects`; projects are server-managed resources.',
     `- Use \`${TMP_MOUNT_PATH}/\` for temporary files that do not need to persist.`,
     '- Prefer lowercase kebab-case names for issue files, task directories, and note files.',
@@ -119,7 +118,7 @@ function createHomeReadme(): string {
     '',
     'Use it for personal notes, drafts, and private working context that should not be shared through the project.',
     '',
-    'You may create files and directories here freely. Move project-facing issue records to `/projects/<slug>/issues`, task results to `/projects/<slug>/tasks`, and polished references to `/projects/<slug>/docs`.',
+    'You may create files and directories here freely. Move project-facing issue records to `/projects/<slug>/issues` and task results to `/projects/<slug>/tasks`.',
     '',
   ].join('\n')
 }
@@ -130,8 +129,6 @@ function createProjectReadme(projectSlug = DEFAULT_PROJECT_SLUG): string {
     '',
     `This directory is the project workspace for \`${projectSlug}\`.`,
     '',
-    '- `docs/`: read-only default project docs source.',
-    '- `sources/<name>/`: read-only named project sources.',
     ...PROJECT_DIRECTORIES.map((directory) => `- \`${directory.name}/\`: ${directory.purpose}`),
     '',
   ].join('\n')
@@ -172,8 +169,6 @@ export function getWorkspaceReadOnlyPaths(opts: {
     ROOT_README_PATH,
     posix.join(homeMountPath, 'README.md'),
     posix.join(projectMountPath, 'README.md'),
-    posix.join(projectMountPath, 'docs'),
-    posix.join(projectMountPath, 'sources'),
     ...PROJECT_DIRECTORIES.map((directory) => posix.join(projectMountPath, directory.name, 'README.md')),
   ])]
 }

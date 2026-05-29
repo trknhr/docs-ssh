@@ -3,7 +3,7 @@ import { Allotment } from 'allotment'
 import DOMPurify from 'dompurify'
 import { Renderer, marked } from 'marked'
 import { Tree, type NodeApi, type NodeRendererProps, type TreeApi } from 'react-arborist'
-import { createProject, getFile, getProjects, getSession, getTree } from './api'
+import { createProject, createUser, getFile, getProjects, getSession, getTree, getUsers } from './api'
 import type {
   FilePayload,
   RootSummary,
@@ -11,6 +11,7 @@ import type {
   ViewerOidcState,
   ViewerProject,
   ViewerSessionUser,
+  ViewerUser,
 } from './types'
 
 function escapeHtml(value: string) {
@@ -314,10 +315,19 @@ function PreviewHeader(props: {
 }
 
 function AccountPanel(props: {
+  canManageUsers: boolean
   onCreateProject: () => void
+  onCreateUser: () => void
   onProjectDisplayNameChange: (value: string) => void
   onProjectSlugChange: (value: string) => void
   onSelectProject: (slug: string) => void
+  onUserDisplayNameChange: (value: string) => void
+  onUserEmailChange: (value: string) => void
+  onUserIssuerChange: (value: string) => void
+  onUserLoginChange: (value: string) => void
+  onUserProviderChange: (value: string) => void
+  onUserRoleChange: (value: 'owner' | 'admin' | 'member') => void
+  onUserSubjectChange: (value: string) => void
   projectCreateError: string | null
   projectCreateStatus: string | null
   projectDisplayName: string
@@ -327,6 +337,18 @@ function AccountPanel(props: {
   projectsLoading: boolean
   selectedProject: string | null
   session: ViewerSessionUser
+  userCreateError: string | null
+  userCreateStatus: string | null
+  userDisplayName: string
+  userEmail: string
+  userIssuer: string
+  userLogin: string
+  userProvider: string
+  userRole: 'owner' | 'admin' | 'member'
+  userSubject: string
+  userSubmitting: boolean
+  users: ViewerUser[]
+  usersLoading: boolean
 }) {
   const selectedProject = props.projects.find((project) => project.slug === props.selectedProject) ?? props.projects[0]
   const [configCopied, setConfigCopied] = useState(false)
@@ -422,6 +444,128 @@ function AccountPanel(props: {
             </div>
           )}
         </article>
+
+        {props.canManageUsers ? (
+          <article className="account-card">
+            <p className="eyebrow">Users</p>
+            <h3>Add a web user</h3>
+            <div className="account-form">
+              <div className="form-grid">
+                <label className="field field--stacked">
+                  <span>Login</span>
+                  <input
+                    maxLength={120}
+                    onChange={(event) => props.onUserLoginChange(event.target.value)}
+                    placeholder="bob"
+                    type="text"
+                    value={props.userLogin}
+                  />
+                </label>
+                <label className="field field--stacked">
+                  <span>Display name</span>
+                  <input
+                    maxLength={160}
+                    onChange={(event) => props.onUserDisplayNameChange(event.target.value)}
+                    placeholder="Bob Member"
+                    type="text"
+                    value={props.userDisplayName}
+                  />
+                </label>
+              </div>
+              <div className="form-grid">
+                <label className="field field--stacked">
+                  <span>Provider</span>
+                  <input
+                    maxLength={80}
+                    onChange={(event) => props.onUserProviderChange(event.target.value)}
+                    placeholder="google"
+                    type="text"
+                    value={props.userProvider}
+                  />
+                </label>
+                <label className="field field--stacked">
+                  <span>Role</span>
+                  <select
+                    onChange={(event) => props.onUserRoleChange(event.target.value as 'owner' | 'admin' | 'member')}
+                    value={props.userRole}
+                  >
+                    <option value="member">member</option>
+                    <option value="admin">admin</option>
+                    {props.session.role === 'owner' ? <option value="owner">owner</option> : null}
+                  </select>
+                </label>
+              </div>
+              <label className="field field--stacked">
+                <span>Issuer</span>
+                <input
+                  maxLength={240}
+                  onChange={(event) => props.onUserIssuerChange(event.target.value)}
+                  placeholder="https://accounts.google.com"
+                  type="text"
+                  value={props.userIssuer}
+                />
+              </label>
+              <label className="field field--stacked">
+                <span>Subject</span>
+                <input
+                  maxLength={240}
+                  onChange={(event) => props.onUserSubjectChange(event.target.value)}
+                  placeholder="Google subject"
+                  type="text"
+                  value={props.userSubject}
+                />
+              </label>
+              <label className="field field--stacked">
+                <span>Email</span>
+                <input
+                  maxLength={240}
+                  onChange={(event) => props.onUserEmailChange(event.target.value)}
+                  placeholder="bob@example.com"
+                  type="email"
+                  value={props.userEmail}
+                />
+              </label>
+              <div className="account-form__footer">
+                <button
+                  className="action-button"
+                  disabled={props.userSubmitting}
+                  onClick={props.onCreateUser}
+                  type="button"
+                >
+                  {props.userSubmitting ? 'Adding user...' : 'Add user'}
+                </button>
+                {props.userCreateStatus ? (
+                  <p className="status-message status-message--success">{props.userCreateStatus}</p>
+                ) : null}
+                {props.userCreateError ? (
+                  <p className="status-message status-message--error">{props.userCreateError}</p>
+                ) : null}
+              </div>
+            </div>
+            {props.usersLoading ? (
+              <div className="preview-state preview-state--compact">
+                <p>Loading users...</p>
+              </div>
+            ) : (
+              <div className="user-list">
+                {props.users.map((user) => (
+                  <div className="user-item" key={user.login}>
+                    <div>
+                      <strong>{user.displayName}</strong>
+                      <code>{user.login}</code>
+                    </div>
+                    <span className="meta-pill">{user.role}</span>
+                    {user.identities.map((identity) => (
+                      <span className="meta-pill meta-pill--muted" key={`${identity.provider}:${identity.issuer}:${identity.subject}`}>
+                        {identity.provider}
+                      </span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+        ) : null}
 
         <article className="account-card">
           <p className="eyebrow">Agent Config</p>
@@ -543,7 +687,7 @@ function PreviewPane(props: {
     return (
       <div className="preview-state">
         <h3>Select a file from the explorer</h3>
-        <p>The preview follows the mounted tree at /docs and /workspace.</p>
+        <p>The preview follows the mounted project tree.</p>
       </div>
     )
   }
@@ -604,16 +748,24 @@ function LoggedOutLanding(props: {
   oidc: ViewerOidcState
 }) {
   const authReady = props.oidc.enabled
+  const signupAvailable = Boolean(props.oidc.signupAvailable)
 
   return (
     <section className="logged-out-shell">
       {authReady ? (
-        <a
-          className="hero-button"
-          href={`/auth/login?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}
-        >
-          Sign in with Google
-        </a>
+        <>
+          <p className="logged-out-copy">
+            {signupAvailable
+              ? 'This docs-ssh server has no owner yet. Continue with Google to create the first owner account.'
+              : 'Sign in with a linked Google account.'}
+          </p>
+          <a
+            className="hero-button"
+            href={`/auth/login?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}
+          >
+            Continue with Google
+          </a>
+        </>
       ) : (
         <span className="meta-pill meta-pill--muted">OIDC not configured</span>
       )}
@@ -645,11 +797,24 @@ export function App() {
   const [projectCreateError, setProjectCreateError] = useState<string | null>(null)
   const [projectCreateStatus, setProjectCreateStatus] = useState<string | null>(null)
   const [projectSubmitting, setProjectSubmitting] = useState(false)
+  const [users, setUsers] = useState<ViewerUser[]>([])
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [userLogin, setUserLogin] = useState('')
+  const [userDisplayName, setUserDisplayName] = useState('')
+  const [userProvider, setUserProvider] = useState('')
+  const [userIssuer, setUserIssuer] = useState('')
+  const [userSubject, setUserSubject] = useState('')
+  const [userEmail, setUserEmail] = useState('')
+  const [userRole, setUserRole] = useState<'owner' | 'admin' | 'member'>('member')
+  const [userCreateError, setUserCreateError] = useState<string | null>(null)
+  const [userCreateStatus, setUserCreateStatus] = useState<string | null>(null)
+  const [userSubmitting, setUserSubmitting] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const deferredSearchTerm = useDeferredValue(searchTerm)
   const explorerViewport = useElementSize<HTMLDivElement>()
   const activeMount = findMountForPath(mounts, activePath)
   const treeHeight = Math.max(1, explorerViewport.size.height)
+  const canManageUsers = session?.role === 'owner' || session?.role === 'admin'
   const showSessionGate = sessionLoading && !session
   const showLoggedOutLanding = !session && !sessionLoading
   const showAccountPanel = Boolean(session) && !activePath
@@ -673,6 +838,11 @@ export function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (oidc.provider && !userProvider) setUserProvider(oidc.provider)
+    if (oidc.issuer && !userIssuer) setUserIssuer(oidc.issuer)
+  }, [oidc.issuer, oidc.provider, userIssuer, userProvider])
 
   useEffect(() => {
     let cancelled = false
@@ -731,6 +901,32 @@ export function App() {
       cancelled = true
     }
   }, [session, selectedProject])
+
+  useEffect(() => {
+    if (!session || !canManageUsers) {
+      setUsers([])
+      setUsersLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setUsersLoading(true)
+
+    getUsers()
+      .then((payload) => {
+        if (cancelled) return
+        setUsers(payload.users)
+        setUsersLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setUsersLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [canManageUsers, session])
 
   useEffect(() => {
     const handlePopState = () => {
@@ -838,6 +1034,53 @@ export function App() {
     }
   }
 
+  const submitUser = async () => {
+    const login = userLogin.trim()
+    const displayName = userDisplayName.trim()
+    const provider = userProvider.trim()
+    const issuer = userIssuer.trim()
+    const subject = userSubject.trim()
+    const email = userEmail.trim()
+    if (!login) {
+      setUserCreateError('Enter a user login first.')
+      setUserCreateStatus(null)
+      return
+    }
+    if (!issuer || !subject) {
+      setUserCreateError('Enter the identity issuer and subject from the access request.')
+      setUserCreateStatus(null)
+      return
+    }
+
+    setUserSubmitting(true)
+    setUserCreateError(null)
+    setUserCreateStatus(null)
+
+    try {
+      const payload = await createUser({
+        displayName: displayName || undefined,
+        email: email || undefined,
+        issuer,
+        login,
+        provider: provider || undefined,
+        role: userRole,
+        subject,
+      })
+
+      setUsers(payload.users)
+      setUserLogin('')
+      setUserDisplayName('')
+      setUserSubject('')
+      setUserEmail('')
+      setUserRole('member')
+      setUserCreateStatus(`Added ${payload.user.login}`)
+    } catch (error) {
+      setUserCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUserSubmitting(false)
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -897,7 +1140,7 @@ export function App() {
                     />
                   </label>
                   {activeMount ? (
-                    <div className="source-meta">
+                    <div className="mount-meta">
                       <span className="meta-pill">{activeMount.mountPath}</span>
                       {activeMount.aliases.map((alias) => (
                         <span className="meta-pill meta-pill--muted" key={alias}>
@@ -960,10 +1203,19 @@ export function App() {
                 <div className="preview-body">
                   {showAccountPanel ? (
                     <AccountPanel
+                      canManageUsers={canManageUsers}
                       onCreateProject={submitProject}
+                      onCreateUser={submitUser}
                       onProjectDisplayNameChange={setProjectDisplayName}
                       onProjectSlugChange={setProjectSlug}
                       onSelectProject={selectProject}
+                      onUserDisplayNameChange={setUserDisplayName}
+                      onUserEmailChange={setUserEmail}
+                      onUserIssuerChange={setUserIssuer}
+                      onUserLoginChange={setUserLogin}
+                      onUserProviderChange={setUserProvider}
+                      onUserRoleChange={setUserRole}
+                      onUserSubjectChange={setUserSubject}
                       projectCreateError={projectCreateError}
                       projectCreateStatus={projectCreateStatus}
                       projectDisplayName={projectDisplayName}
@@ -973,6 +1225,18 @@ export function App() {
                       projectsLoading={projectsLoading}
                       selectedProject={selectedProject}
                       session={session}
+                      userCreateError={userCreateError}
+                      userCreateStatus={userCreateStatus}
+                      userDisplayName={userDisplayName}
+                      userEmail={userEmail}
+                      userIssuer={userIssuer}
+                      userLogin={userLogin}
+                      userProvider={userProvider}
+                      userRole={userRole}
+                      userSubject={userSubject}
+                      userSubmitting={userSubmitting}
+                      users={users}
+                      usersLoading={usersLoading}
                     />
                   ) : (
                     <PreviewPane

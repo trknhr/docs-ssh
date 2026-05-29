@@ -18,7 +18,7 @@ afterEach(async () => {
 })
 
 describe('createBash', () => {
-  it('mounts helper commands, project docs, and v2 project paths', async () => {
+  it('mounts helper commands and v2 project paths', async () => {
     const tempDir = await createTempDir()
     const docsDir = resolve(tempDir, 'docs')
     const stateDir = resolve(tempDir, 'state')
@@ -40,7 +40,7 @@ describe('createBash', () => {
     expect(sourceStore.homeRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'principals', 'anonymous', 'home'))
     expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default'))
     expect(bash.getEnv().HOME).toBe('/home')
-    await expect(fs.readFile('/README.md', 'utf8')).resolves.toContain('/projects/default/docs')
+    await expect(fs.readFile('/README.md', 'utf8')).resolves.toContain('/projects/default/issues')
     const agents = await bash.exec('agents')
     expect(agents.stdout).toContain(
       'Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.',
@@ -48,19 +48,16 @@ describe('createBash', () => {
     expect(agents.stdout).toContain(
       'prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`',
     )
-    await expect(fs.readFile('/projects/default/docs/README.md', 'utf8')).resolves.toBe('# Project Docs\n')
     await expect(fs.readFile('/projects/default/README.md', 'utf8')).resolves.toContain('# Project')
     await expect(fs.readFile('/home/README.md', 'utf8')).resolves.toContain('# Home')
     await expect(fs.readdir('/projects/default')).resolves.toEqual([
       'README.md',
-      'docs',
       'issues',
-      'sources',
       'tasks',
     ])
   })
 
-  it('enforces v2 project and docs write rules', async () => {
+  it('enforces v2 project write rules', async () => {
     const tempDir = await createTempDir()
     const docsDir = resolve(tempDir, 'docs')
     const workspaceDir = resolve(tempDir, 'workspace')
@@ -96,9 +93,6 @@ describe('createBash', () => {
     await expect(fs.writeFile('/projects/default/README.md', 'blocked')).rejects.toThrow(
       "EROFS: read-only file system, write '/projects/default/README.md'",
     )
-    await expect(fs.writeFile('/projects/default/docs/new.md', 'blocked')).rejects.toThrow(
-      "EROFS: read-only file system, write '/projects/default/docs/new.md'",
-    )
     await expect(fs.mkdir('/projects/other/tasks/example', { recursive: true })).rejects.toThrow(
       "EROFS: read-only file system, mkdir '/projects/other/tasks/example'",
     )
@@ -121,7 +115,7 @@ describe('createBash', () => {
         principalId: 'principal-alice',
         principalKind: 'user',
         projectSlug: 'product-docs',
-        scopes: ['bootstrap:read', 'project:read', 'sources:read'],
+        scopes: ['bootstrap:read', 'project:read'],
         tenantSlug: 'acme',
       },
       workspaceDir,
@@ -131,7 +125,6 @@ describe('createBash', () => {
       resolve(workspaceDir, 'tenants', 'acme', 'principals', 'principal-alice', 'home'),
     )
     expect(sourceStore.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'acme', 'projects', 'product-docs'))
-    await expect(fs.readFile('/projects/product-docs/docs/README.md', 'utf8')).resolves.toBe('# Product Docs\n')
     await expect(fs.writeFile('/projects/product-docs/tasks/example/notes.md', 'blocked')).rejects.toThrow(
       "EROFS: read-only file system, write '/projects/product-docs/tasks/example/notes.md'",
     )
@@ -144,7 +137,7 @@ describe('createBash', () => {
     }
     expect(payload.principal.login).toBe('alice')
     expect(payload.project.slug).toBe('product-docs')
-    expect(payload.scopes).toEqual(['bootstrap:read', 'project:read', 'sources:read'])
+    expect(payload.scopes).toEqual(['bootstrap:read', 'project:read'])
 
     const restricted = await createBash({
       docsDir,
@@ -154,7 +147,7 @@ describe('createBash', () => {
         principalId: 'principal-alice',
         principalKind: 'user',
         projectSlug: 'product-docs',
-        scopes: ['project:read', 'sources:read'],
+        scopes: ['project:read'],
         tenantSlug: 'acme',
       },
       workspaceDir,

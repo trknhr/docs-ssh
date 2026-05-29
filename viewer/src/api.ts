@@ -4,6 +4,8 @@ import type {
   ViewerProjectListResponse,
   ViewerProjectMutationResponse,
   ViewerSessionResponse,
+  ViewerUserListResponse,
+  ViewerUserMutationResponse,
 } from './types'
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -46,6 +48,28 @@ export async function createProject(input: {
   slug: string
 }) {
   return fetchJson<ViewerProjectMutationResponse>('/api/projects', {
+    body: JSON.stringify(input),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    method: 'POST',
+  })
+}
+
+export async function getUsers() {
+  return fetchJson<ViewerUserListResponse>('/api/users')
+}
+
+export async function createUser(input: {
+  displayName?: string
+  email?: string
+  issuer: string
+  login: string
+  provider?: string
+  role: 'owner' | 'admin' | 'member'
+  subject: string
+}) {
+  return fetchJson<ViewerUserMutationResponse>('/api/users', {
     body: JSON.stringify(input),
     headers: {
       'Content-Type': 'application/json',

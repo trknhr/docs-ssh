@@ -8,7 +8,6 @@ import {
   createEmptyRegistry,
   createFallbackRegistry,
   createSourceSpec,
-  getSourceMountPath,
   loadSourceStore,
   makeRootPathPortable,
   normalizeSourceName,
@@ -30,10 +29,9 @@ afterEach(async () => {
 })
 
 describe('source-store', () => {
-  it('normalizes source names and mount paths', () => {
+  it('normalizes source names', () => {
     expect(normalizeSourceName('  GitHub Docs  ')).toBe('github-docs')
     expect(normalizeSourceName('***')).toBe('source')
-    expect(getSourceMountPath('GitHub Docs')).toBe('/projects/default/sources/github-docs')
   })
 
   it('makes root paths portable relative to the registry', () => {
@@ -108,7 +106,7 @@ describe('source-store', () => {
     expect(() => addSourceToRegistry(next, reference)).toThrow('Source "reference" already exists in the registry.')
   })
 
-  it('builds mounts for the default source and named sources', () => {
+  it('builds store metadata for the default source and named sources', () => {
     const registry: SourceRegistry = {
       version: 1,
       defaultSourceName: 'docs',
@@ -131,25 +129,8 @@ describe('source-store', () => {
     const store = buildSourceStore(registry)
 
     expect(store.defaultSource?.name).toBe('docs')
-    expect(store.mounts).toEqual(
-      expect.arrayContaining([
-        {
-          sourceName: 'docs',
-          mountPoint: '/projects/default/docs',
-          rootPath: '/data/docs',
-        },
-        {
-          sourceName: 'docs',
-          mountPoint: '/projects/default/sources/docs',
-          rootPath: '/data/docs',
-        },
-        {
-          sourceName: 'reference',
-          mountPoint: '/projects/default/sources/reference',
-          rootPath: '/data/reference',
-        },
-      ]),
-    )
+    expect(store.registry.sources.map((source) => source.name)).toEqual(['docs', 'reference'])
+    expect(store.projectMountPath).toBe('/projects/default')
   })
 
   it('falls back to the first source when the registry has no explicit default', () => {
@@ -174,7 +155,7 @@ describe('source-store', () => {
 
     expect(store.registry.defaultSourceName).toBe('primary')
     expect(store.defaultSource?.name).toBe('primary')
-    expect(store.mounts.find((mount) => mount.mountPoint === '/projects/default/docs')?.rootPath).toBe('/primary')
+    expect(store.registry.sources[0]?.rootPath).toBe('/primary')
   })
 
   it('reads and writes source registries', async () => {
@@ -213,20 +194,12 @@ describe('source-store', () => {
     })
 
     expect(store.defaultSource?.name).toBe('local')
-    expect(store.mounts).toEqual(
-      expect.arrayContaining([
-        {
-          sourceName: 'local',
-          mountPoint: '/projects/default/docs',
-          rootPath: docsDir,
-        },
-        {
-          sourceName: 'local',
-          mountPoint: '/projects/default/sources/local',
-          rootPath: docsDir,
-        },
-      ]),
-    )
+    expect(store.registry.sources).toEqual([
+      expect.objectContaining({
+        name: 'local',
+        rootPath: docsDir,
+      }),
+    ])
     expect(store.workspaceRootPath).toBe(workspaceDir)
     expect(store.tenantRootPath).toBe(resolve(workspaceDir, 'tenants', 'default'))
     expect(store.homeRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'principals', 'anonymous', 'home'))
@@ -234,7 +207,7 @@ describe('source-store', () => {
     expect(store.sharedRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'shared'))
   })
 
-  it('loads without source mounts when the fallback docs directory is missing', async () => {
+  it('loads without registry sources when the fallback docs directory is missing', async () => {
     const tempDir = await createTempDir()
     const workspaceDir = resolve(tempDir, 'workspace')
     await mkdir(workspaceDir, { recursive: true })
@@ -246,7 +219,7 @@ describe('source-store', () => {
     })
 
     expect(store.defaultSource).toBeUndefined()
-    expect(store.mounts).toEqual([])
+    expect(store.registry.sources).toEqual([])
     expect(store.projectMountPath).toBe('/projects/default')
     expect(store.projectRootPath).toBe(resolve(workspaceDir, 'tenants', 'default', 'projects', 'default'))
   })
@@ -285,21 +258,12 @@ describe('source-store', () => {
     })
 
     expect(store.defaultSource?.name).toBe('existing-docs')
-    expect(store.mounts).toEqual(
-      expect.arrayContaining([
-        {
-          sourceName: 'existing-docs',
-          mountPoint: '/projects/default/docs',
-          rootPath: existingDocsDir,
-        },
-        {
-          sourceName: 'existing-docs',
-          mountPoint: '/projects/default/sources/existing-docs',
-          rootPath: existingDocsDir,
-        },
-      ]),
-    )
-    expect(store.mounts.some((mount) => mount.sourceName === 'missing-docs')).toBe(false)
+    expect(store.registry.sources).toEqual([
+      expect.objectContaining({
+        name: 'existing-docs',
+        rootPath: existingDocsDir,
+      }),
+    ])
   })
 
   it('resolves source roots relative to the registry location', async () => {

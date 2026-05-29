@@ -1,11 +1,11 @@
 /**
  * Derived from supabase-community/supabase-ssh under Apache-2.0.
- * Modified to mount generic local docs and prepare for future source adapters.
+ * Modified to expose a project-oriented SSH workspace.
  */
 
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { Bash, defineCommand, InMemoryFs, OverlayFs, ReadWriteFs } from 'just-bash'
+import { Bash, defineCommand, InMemoryFs, ReadWriteFs } from 'just-bash'
 import { loadInstanceConfig, type InstanceConfig } from '../instance-config.js'
 import { loadSourceStore } from '../sources/source-store.js'
 import {
@@ -158,13 +158,11 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '',
     '- `/home` is private durable work for the authenticated principal.',
     `- \`${sourceStore.projectMountPath}\` is the current project workspace.`,
-    `- \`${sourceStore.projectDocsMountPath}\` is the read-only default docs source.`,
-    `- \`${sourceStore.projectMountPath}/sources/<name>\` contains additional read-only sources.`,
     `- \`${sourceStore.projectMountPath}/issues\` is project issue tracking: what to do, why, status, next action, and result links.`,
     `- \`${sourceStore.projectMountPath}/tasks\` stores research and work results.`,
     '- `/tmp` is temporary and resets between SSH sessions.',
     '',
-    `Use \`/home\` for personal notes, \`${sourceStore.projectMountPath}/issues\` for issue records, \`${sourceStore.projectMountPath}/tasks/<task-slug>/\` for task results, and \`${sourceStore.projectDocsMountPath}\` for polished long-term references.`,
+    `Use \`/home\` for personal notes, \`${sourceStore.projectMountPath}/issues\` for issue records, and \`${sourceStore.projectMountPath}/tasks/<task-slug>/\` for task results.`,
     '',
   ].join('\n')
   const projectReadme = [
@@ -172,8 +170,6 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '',
     `This is the project workspace for \`${sourceStore.projectSlug}\`.`,
     '',
-    '- `docs/`: read-only default docs source.',
-    '- `sources/<name>/`: read-only named sources.',
     '- `issues/`: project issue tracking.',
     '- `tasks/`: research and work results.',
     '',
@@ -185,13 +181,11 @@ export async function createBash(opts: CreateBashOptions = {}) {
     'project:read',
     'project:write',
     'projects:read',
-    'sources:read',
   ])
   const canReadHome = hasScope(scopes, 'home:read') || hasScope(scopes, 'home:write')
   const canWriteHome = hasScope(scopes, 'home:write')
   const canReadProject = hasScope(scopes, 'project:read') || hasScope(scopes, 'project:write')
   const canWriteProject = hasScope(scopes, 'project:write')
-  const canReadSources = hasScope(scopes, 'sources:read')
   const canReadBootstrap = hasScope(scopes, 'bootstrap:read')
   const bootstrapPayload = {
     tenant: opts.session?.tenantSlug ?? 'default',
@@ -209,10 +203,8 @@ export async function createBash(opts: CreateBashOptions = {}) {
       rootReadme: '/README.md',
       home: sourceStore.homeMountPath,
       project: sourceStore.projectMountPath,
-      projectDocs: sourceStore.projectDocsMountPath,
       projectIssues: `${sourceStore.projectMountPath}/issues`,
       projectTasks: `${sourceStore.projectMountPath}/tasks`,
-      projectSources: `${sourceStore.projectMountPath}/sources`,
       projects: sourceStore.projectsMountPath,
       tmp: sourceStore.tmpMountPath,
     },
@@ -272,11 +264,6 @@ export async function createBash(opts: CreateBashOptions = {}) {
         mountPoint: `${sourceStore.projectMountPath}/tasks`,
         filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
       }] : []),
-      ...(canReadProject && canReadSources ? sourceStore.mounts
-        .map((mount) => ({
-          mountPoint: mount.mountPoint,
-          filesystem: new OverlayFs({ root: mount.rootPath, mountPoint: '/', readOnly: true }),
-        })) : []),
       {
         mountPoint: sourceStore.tmpMountPath,
         filesystem: new InMemoryFs(),

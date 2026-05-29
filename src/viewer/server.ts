@@ -4,7 +4,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { basename, extname, posix, resolve, sep } from 'node:path'
-import { createAuthStore, type AuthPrincipalSession, type AuthProject, type AuthSshKey, type AuthSshSession, type AuthStore } from '../auth/store.js'
+import { createAuthStore, type AuthMembershipRole, type AuthPrincipalSession, type AuthProject, type AuthSshKey, type AuthSshSession, type AuthStore, type AuthTenantUser } from '../auth/store.js'
 import { OidcClient, createPendingOidcLogin, getViewerOrigin, type OidcAuthConfig } from '../auth/oidc.js'
 import {
   clearPendingOidcCookie,
@@ -17,7 +17,8 @@ import {
   writePendingOidcCookie,
   writeViewerSessionCookie,
 } from '../auth/web-session.js'
-import { getProjectSourceMountPath, getStatePaths, loadSourceStore } from '../sources/source-store.js'
+import { getStatePaths, loadSourceStore } from '../sources/source-store.js'
+import { ensureWorkspaceLayout } from '../workspace/layout.js'
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx'])
 const TEXT_EXTENSIONS = new Set([
@@ -75,10 +76,10 @@ const MAX_TREE_NODES = 10_000
 const MAX_VIEWER_JSON_BODY_BYTES = 64 * 1024
 const CLI_LOGIN_REQUEST_TTL_MS = 5 * 60 * 1000
 const VIEWER_SESSION_TTL_MS = 12 * 60 * 60 * 1000
-const PROTECTED_VIEWER_DATA_ROUTES = new Set(['/api/sources', '/api/tree', '/api/file', '/api/raw'])
+const PROTECTED_VIEWER_DATA_ROUTES = new Set(['/api/tree', '/api/file', '/api/raw'])
 
 type ViewerFileKind = 'binary' | 'image' | 'markdown' | 'text'
-type ViewerMountType = 'home' | 'project' | 'project-docs' | 'source'
+type ViewerMountType = 'home' | 'project'
 
 interface ViewerMount {
   aliases: string[]
@@ -204,7 +205,7 @@ function ensureInsideRoot(rootPath: string, relativePath: string): string {
   const normalizedRoot = resolve(rootPath)
   const absolutePath = resolve(normalizedRoot, relativePath)
   if (absolutePath !== normalizedRoot && !absolutePath.startsWith(`${normalizedRoot}${sep}`)) {
-    throw new Error('Path escapes source root.')
+    throw new Error('Path escapes mounted root.')
   }
   return absolutePath
 }
@@ -247,16 +248,37 @@ function toViewerProjectPayload(project: AuthProject) {
   }
 }
 
+function toViewerUserPayload(user: AuthTenantUser) {
+  return {
+    createdAt: user.createdAt,
+    displayName: user.displayName,
+    identities: user.identities.map((identity) => ({
+      email: identity.email,
+      issuer: identity.issuer,
+      provider: identity.provider,
+      subject: identity.subject,
+    })),
+    login: user.login,
+    role: user.role,
+  }
+}
+
+function canManageUsers(session: AuthPrincipalSession | null): boolean {
+  return session?.membership.role === 'owner' || session?.membership.role === 'admin'
+}
+
+function parseMembershipRole(value: unknown): AuthMembershipRole {
+  if (value === undefined || value === null || value === '') return 'member'
+  if (value === 'owner' || value === 'admin' || value === 'member') return value
+  throw new Error('Role must be owner, admin, or member.')
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\"'\"'`)}'`
 }
 
 function deriveFirstOwnerLogin(email?: string): string | undefined {
@@ -400,35 +422,14 @@ async function loadViewerContext(
     tenantSlug: principalSession?.tenant.slug,
     workspaceDir: resolve(opts.workspaceDir ?? `${statePaths.stateDir}/workspace`),
   })
+  await ensureWorkspaceLayout(sourceStore.tenantRootPath, {
+    homeRootPath: sourceStore.homeRootPath,
+    projectRootPath: sourceStore.projectRootPath,
+    projectSlug: sourceStore.projectSlug,
+  })
   const projectMountPath = sourceStore.projectMountPath
 
-  const defaultSourceName = sourceStore.registry.defaultSourceName
-  const defaultSource = sourceStore.registry.sources.find((source) => source.name === defaultSourceName)
-    ?? sourceStore.registry.sources[0]
   const mounts: ViewerMount[] = []
-
-  if (defaultSource) {
-    const aliases = sourceStore.mounts
-      .filter((mount) => mount.sourceName === defaultSource.name)
-      .map((mount) => mount.mountPoint)
-      .sort((left, right) =>
-        left === sourceStore.projectDocsMountPath
-          ? -1
-          : right === sourceStore.projectDocsMountPath
-            ? 1
-            : left.localeCompare(right),
-      )
-
-    const canonicalDocsMountPath = posix.join(projectMountPath, 'docs')
-
-    mounts.push({
-      aliases: aliases.filter((alias) => alias !== canonicalDocsMountPath),
-      label: 'project docs',
-      mountPath: canonicalDocsMountPath,
-      rootPath: defaultSource.rootPath,
-      type: 'project-docs',
-    })
-  }
 
   mounts.push({
     aliases: [],
@@ -450,6 +451,11 @@ async function loadViewerContext(
           tenantSlug: projectSession.tenant.slug,
           workspaceDir: resolve(opts.workspaceDir ?? `${statePaths.stateDir}/workspace`),
         })
+      await ensureWorkspaceLayout(projectSourceStore.tenantRootPath, {
+        homeRootPath: projectSourceStore.homeRootPath,
+        projectRootPath: projectSourceStore.projectRootPath,
+        projectSlug: projectSourceStore.projectSlug,
+      })
 
       mounts.push({
         aliases: [],
@@ -468,19 +474,6 @@ async function loadViewerContext(
       type: 'project',
     })
   }
-
-  const sourceMounts = sourceStore.registry.sources
-    .filter((source) => source.name !== defaultSourceName)
-    .sort((left, right) => left.name.localeCompare(right.name))
-    .map((source) => ({
-      aliases: [],
-      label: source.name,
-      mountPath: getProjectSourceMountPath(source.name, projectMountPath),
-      rootPath: source.rootPath,
-      type: 'source' as const,
-    }))
-
-  mounts.push(...sourceMounts)
 
   return {
     docsName: opts.docsName ?? 'Documentation',
@@ -706,8 +699,11 @@ function sendAuthError(
   opts: {
     clearCookies?: string[]
     command?: string
+    commandIntro?: string
     details?: Array<{ label: string; value: string }>
     headOnly?: boolean
+    nextSteps?: string[]
+    title?: string
   } = {},
 ) {
   response.writeHead(statusCode, {
@@ -718,7 +714,50 @@ function sendAuthError(
   response.end(
     opts.headOnly
       ? undefined
-      : `<!doctype html><html lang="en"><body><main><h1>Authentication failed</h1><p>${escapeHtml(message)}</p>${opts.details && opts.details.length > 0 ? `<dl>${opts.details.map((detail) => `<div><dt>${escapeHtml(detail.label)}</dt><dd><code>${escapeHtml(detail.value)}</code></dd></div>`).join('')}</dl>` : ''}${opts.command ? `<p>Link this identity in the local auth database, then retry sign-in.</p><pre>${escapeHtml(opts.command)}</pre>` : ''}</main></body></html>`,
+      : [
+          '<!doctype html>',
+          '<html lang="en">',
+          '<head>',
+          '<meta charset="utf-8">',
+          '<meta name="viewport" content="width=device-width,initial-scale=1">',
+          `<title>${escapeHtml(opts.title ?? 'Authentication failed')}</title>`,
+          '<style>',
+          ':root{color-scheme:dark;background:#101827;color:#e6edf7;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
+          '*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:32px;background:radial-gradient(circle at top left,#1d2b43 0,#101827 34rem)}',
+          'main{width:min(720px,100%);border:1px solid #26364d;background:#141f31;border-radius:8px;padding:32px;box-shadow:0 24px 80px rgba(0,0,0,.32)}',
+          '.eyebrow{margin:0 0 10px;color:#8ea0b8;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}',
+          'h1{margin:0;color:#f3f7ff;font-size:32px;line-height:1.12}p{color:#b8c4d6;font-size:16px;line-height:1.65;margin:16px 0 0}',
+          'ol{margin:16px 0 0;padding-left:22px;color:#cdd7e6;line-height:1.65}li+li{margin-top:6px}',
+          'dl{display:grid;gap:10px;margin:18px 0 0;padding:16px;border:1px solid #27384f;border-radius:8px;background:#0f1725}',
+          'dt{color:#8ea0b8;font-size:12px;font-weight:700;text-transform:uppercase}dd{margin:3px 0 0;overflow-wrap:anywhere}',
+          'code,pre{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}code{color:#dbe8ff}pre{overflow:auto;margin:12px 0 0;padding:14px;border-radius:8px;background:#0b1220;color:#dbe8ff;font-size:13px;line-height:1.5}',
+          'details{margin-top:18px}summary{cursor:pointer;color:#9fcef5;font-weight:700}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}',
+          'a{color:inherit}.button{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;border-radius:999px;background:#55b8ed;color:#06121d;font-weight:800;text-decoration:none}',
+          '.secondary{background:#223148;color:#dbe8ff}',
+          '</style>',
+          '</head>',
+          '<body>',
+          '<main>',
+          '<p class="eyebrow">docs-ssh sign-in</p>',
+          `<h1>${escapeHtml(opts.title ?? 'Authentication failed')}</h1>`,
+          `<p>${escapeHtml(message)}</p>`,
+          opts.nextSteps && opts.nextSteps.length > 0
+            ? `<ol>${opts.nextSteps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol>`
+            : '',
+          opts.details && opts.details.length > 0
+            ? `<dl>${opts.details.map((detail) => `<div><dt>${escapeHtml(detail.label)}</dt><dd><code>${escapeHtml(detail.value)}</code></dd></div>`).join('')}</dl>`
+            : '',
+          opts.command
+            ? `<details><summary>${escapeHtml(opts.commandIntro ?? 'Owner CLI command')}</summary><pre>${escapeHtml(opts.command)}</pre></details>`
+            : '',
+          '<div class="actions">',
+          '<a class="button" href="/auth/login">Try another Google account</a>',
+          '<a class="button secondary" href="/">Back to viewer</a>',
+          '</div>',
+          '</main>',
+          '</body>',
+          '</html>',
+        ].join(''),
   )
 }
 
@@ -779,6 +818,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
       const isSshKeyRoute = url.pathname === '/api/auth/ssh-keys'
       const isSshSessionRoute = url.pathname === '/api/ssh-sessions'
       const isProjectRoute = url.pathname === '/api/projects'
+      const isUserRoute = url.pathname === '/api/users'
       const isCliLoginRequestRoute = url.pathname === '/api/cli-login/requests'
       const isCliLoginExchangeRoute = url.pathname === '/api/cli-login/exchange'
       const cliLoginViewMatch = /^\/cli-login\/([^/]+)$/u.exec(url.pathname)
@@ -790,6 +830,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
         && !(isSshKeyRoute && method === 'POST')
         && !(isSshSessionRoute && method === 'POST')
         && !(isProjectRoute && method === 'POST')
+        && !(isUserRoute && method === 'POST')
         && !(isCliLoginRequestRoute && method === 'POST')
         && !(isCliLoginExchangeRoute && method === 'POST')
         && !(cliLoginApproveMatch && method === 'POST')
@@ -800,6 +841,9 @@ export function createViewerServer(opts: ViewerServerOptions) {
 
       if (url.pathname === '/api/auth/session') {
         const session = getActiveSession(request)
+        const principalSession = session && authStore
+          ? authStore.findUserProjectSession(session.login)
+          : null
         sendJson(
           response,
           200,
@@ -809,6 +853,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
                   enabled: true,
                   issuer: opts.oidc.issuer,
                   provider: opts.oidc.provider,
+                  signupAvailable: Boolean(authStore && !authStore.hasUsers()),
                 }
               : {
                   enabled: false,
@@ -820,7 +865,9 @@ export function createViewerServer(opts: ViewerServerOptions) {
                   issuer: session.issuer,
                   login: session.login,
                   provider: session.provider,
+                  role: principalSession?.membership.role,
                   subject: session.subject,
+                  tenant: principalSession?.tenant.slug,
                   userDisplayName: session.userDisplayName,
                   userId: session.userId,
                 }
@@ -1235,6 +1282,121 @@ export function createViewerServer(opts: ViewerServerOptions) {
         return
       }
 
+      if (isUserRoute) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in to manage users.' }, headOnly)
+          return
+        }
+
+        const principalSession = authStore.findUserProjectSession(session.login)
+        if (!principalSession || !canManageUsers(principalSession)) {
+          sendJson(response, 403, { error: 'Only owners and admins can manage users.' }, headOnly)
+          return
+        }
+
+        if (method === 'GET' || method === 'HEAD') {
+          sendJson(
+            response,
+            200,
+            {
+              users: authStore.listUsers({ tenantSlug: principalSession.tenant.slug }).map(toViewerUserPayload),
+            },
+            headOnly,
+          )
+          return
+        }
+
+        if (method === 'POST') {
+          let payload
+          try {
+            payload = await readJsonBody(request) as {
+              displayName?: unknown
+              email?: unknown
+              issuer?: unknown
+              login?: unknown
+              provider?: unknown
+              role?: unknown
+              subject?: unknown
+            }
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return
+          }
+
+          if (typeof payload.login !== 'string' || payload.login.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing user login.' })
+            return
+          }
+          if (payload.displayName !== undefined && payload.displayName !== null && typeof payload.displayName !== 'string') {
+            sendJson(response, 400, { error: 'Display name must be a string.' })
+            return
+          }
+          if (typeof payload.issuer !== 'string' || payload.issuer.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing identity issuer.' })
+            return
+          }
+          if (typeof payload.subject !== 'string' || payload.subject.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing identity subject.' })
+            return
+          }
+          if (payload.provider !== undefined && payload.provider !== null && typeof payload.provider !== 'string') {
+            sendJson(response, 400, { error: 'Identity provider must be a string.' })
+            return
+          }
+          if (payload.email !== undefined && payload.email !== null && typeof payload.email !== 'string') {
+            sendJson(response, 400, { error: 'Identity email must be a string.' })
+            return
+          }
+
+          let role: AuthMembershipRole
+          try {
+            role = parseMembershipRole(payload.role)
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+            return
+          }
+          if (role === 'owner' && principalSession.membership.role !== 'owner') {
+            sendJson(response, 403, { error: 'Only owners can assign the owner role.' })
+            return
+          }
+
+          try {
+            const user = authStore.addUser({
+              displayName: typeof payload.displayName === 'string' ? payload.displayName : undefined,
+              identity: {
+                email: typeof payload.email === 'string' ? payload.email : undefined,
+                issuer: payload.issuer,
+                provider: typeof payload.provider === 'string' ? payload.provider : undefined,
+                subject: payload.subject,
+              },
+              login: payload.login,
+              role,
+              tenantSlug: principalSession.tenant.slug,
+            })
+            sendJson(response, 200, {
+              user: toViewerUserPayload(user),
+              users: authStore.listUsers({ tenantSlug: principalSession.tenant.slug }).map(toViewerUserPayload),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        sendMethodNotAllowed(response)
+        return
+      }
+
       if (url.pathname === '/auth/login') {
         if (!oidcClient || !opts.oidc || !sessionSecret) {
           sendJson(response, 501, { error: 'OIDC login is not configured.' }, headOnly)
@@ -1317,20 +1479,24 @@ export function createViewerServer(opts: ViewerServerOptions) {
           const resolvedUser = user ?? signedUpUser
 
           if (!resolvedUser) {
-            const linkCommand = `pnpm run cli -- auth add-web-identity --provider ${shellQuote(opts.oidc.provider)} --issuer ${shellQuote(identity.issuer)} --subject ${shellQuote(identity.subject)}`
             sendAuthError(
               response,
               403,
-              'This web identity is not linked to a docs-ssh user yet.',
+              'This server already has an owner, so new accounts must be added by an owner before they can sign in.',
               {
                 clearCookies: [clearPendingOidcCookie(secure), clearViewerSessionCookie(secure)],
-                command: linkCommand,
                 details: [
                   { label: 'provider', value: opts.oidc.provider },
                   { label: 'issuer', value: identity.issuer },
                   { label: 'subject', value: identity.subject },
                 ],
                 headOnly,
+                nextSteps: [
+                  'If you already have access, try again with the Google account that the owner linked.',
+                  'If you are a new user, send the identity details below to the server owner and ask them to add you.',
+                  'After the owner adds this identity, return here and sign in again.',
+                ],
+                title: 'Access request needed',
               },
             )
             return
@@ -1414,19 +1580,6 @@ export function createViewerServer(opts: ViewerServerOptions) {
         mountPath: mount.mountPath,
         type: mount.type,
       }))
-
-      if (url.pathname === '/api/sources') {
-        sendJson(
-          response,
-          200,
-          {
-            docsName: context.docsName,
-            mounts: publicMounts,
-          },
-          headOnly,
-        )
-        return
-      }
 
       if (url.pathname === '/api/tree') {
         const { tree, truncated } = await buildTree(context.mounts)
