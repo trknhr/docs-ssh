@@ -172,7 +172,7 @@ describe('createAuthStore', () => {
     authStore.close()
 
     const migratedDatabase = new Database(dbPath)
-    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(4)
+    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(5)
     expect(
       migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get(),
     ).toBeTruthy()
@@ -463,6 +463,90 @@ describe('createAuthStore', () => {
         userLogin: 'alice',
       }),
     ).toThrow(/ttlSeconds must be positive/)
+
+    authStore.close()
+  })
+
+  it('creates and authenticates project-scoped API tokens', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({
+      dbPath: resolve(tempDir, 'auth.sqlite'),
+    })
+    authStore.ensureSingleTenantOwner({
+      ownerLogin: 'alice',
+      ownerName: 'Alice',
+    })
+    authStore.createProject({
+      displayName: 'Product Docs',
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
+
+    const created = authStore.createApiToken({
+      label: 'agent token',
+      projectSlug: 'product-docs',
+      scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+      userLogin: 'alice',
+    })
+
+    expect(created.token).toMatch(/^dssh_/)
+    expect(created).toMatchObject({
+      label: 'agent token',
+      lastUsedAt: null,
+      projectSlug: 'product-docs',
+      revokedAt: null,
+      scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+    })
+
+    const listed = authStore.listApiTokens({
+      projectSlug: 'product-docs',
+      userLogin: 'alice',
+    })
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({
+      id: created.id,
+      label: 'agent token',
+      lastUsedAt: null,
+      projectSlug: 'product-docs',
+      revokedAt: null,
+    })
+    expect('token' in listed[0]).toBe(false)
+
+    const authenticated = authStore.authenticateApiToken(created.token, {
+      projectSlug: 'product-docs',
+      requiredScopes: ['ssh-session:create'],
+    })
+    expect(authenticated?.token.id).toBe(created.id)
+    expect(authenticated?.principalSession).toMatchObject({
+      login: 'alice',
+      project: { slug: 'product-docs' },
+      tenant: { slug: 'default' },
+    })
+
+    const afterUse = authStore.listApiTokens({
+      projectSlug: 'product-docs',
+      userLogin: 'alice',
+    })[0]
+    expect(afterUse.lastUsedAt).toEqual(expect.any(String))
+
+    expect(() =>
+      authStore.authenticateApiToken(created.token, {
+        projectSlug: 'default',
+      }),
+    ).toThrow('API token is not valid for project "default".')
+    expect(() =>
+      authStore.authenticateApiToken(created.token, {
+        projectSlug: 'product-docs',
+        requiredScopes: ['project:write'],
+      }),
+    ).toThrow('API token is missing required scope "project:write".')
+
+    const revoked = authStore.revokeApiToken({
+      id: created.id,
+      userLogin: 'alice',
+    })
+    expect(revoked.revokedAt).toEqual(expect.any(String))
+    expect(authStore.authenticateApiToken(created.token, { projectSlug: 'product-docs' })).toBeNull()
 
     authStore.close()
   })
