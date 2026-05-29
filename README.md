@@ -415,6 +415,24 @@ docs-ssh logout
 
 `docs-ssh login --json` returns `sshCommand`, `identityFile`, `username`, `server`, `project`, and `expiresAt` so agent skills can reuse the session without handling browser cookies directly. This binds the web-authenticated user, selected project, generated public key, TTL, and scopes into a single SSH grant. Long-lived SSH keys remain available through operator/CLI workflows for recovery cases.
 
+## API Tokens
+
+Owners and admins can create project-scoped API tokens from the signed-in viewer Account panel. Select the project first, choose the token scopes, and copy the token immediately after creation; the plaintext secret is only shown once.
+
+Use a token to create a short-lived SSH session without opening a browser:
+
+```bash
+docs-ssh token login \
+  --token dssh_<secret> \
+  --project default \
+  --viewer-origin https://docs.example.com \
+  --json
+```
+
+The command generates a temporary SSH keypair, calls the viewer API with `Authorization: Bearer <token>`, writes the same `~/.docs-ssh/sessions/<server>/<project>/session.json` format as `docs-ssh login`, and prints `sshCommand` in JSON mode.
+
+API tokens are limited to one project. They cannot list, create, update, or archive projects; manage users; or mint other tokens. Creating SSH sessions through a token requires the `ssh-session:create` scope.
+
 ## Operator SSH Sessions
 
 Server operators can issue short-lived SSH sessions for agents, workers, or other temporary clients without giving them a long-lived user key. A session is bound to a tenant principal, current project, public key, expiration, and scope list.
