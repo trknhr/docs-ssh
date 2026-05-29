@@ -930,6 +930,119 @@ describe('createViewerServer OIDC session flow', () => {
     ])
   })
 
+  it('creates project-scoped API tokens and uses them for SSH sessions', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'owner@example.com',
+      subject: 'user-123',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      linkedIdentity: {
+        issuer: provider.issuer,
+        provider: 'oidc',
+        subject: 'user-123',
+      },
+    })
+    const jar = new CookieJar()
+
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    const createProjectResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar, {
+      body: JSON.stringify({
+        displayName: 'Product Docs',
+        slug: 'product-docs',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    expect(createProjectResponse.status).toBe(200)
+
+    const createTokenResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tokens`, jar, {
+      body: JSON.stringify({
+        label: 'agent token',
+        project: 'product-docs',
+        scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const createTokenPayload = await createTokenResponse.json() as {
+      token: {
+        id: string
+        label: string
+        project: string
+        scopes: string[]
+        token: string
+      }
+    }
+    expect(createTokenResponse.status).toBe(200)
+    expect(createTokenPayload.token).toMatchObject({
+      label: 'agent token',
+      project: 'product-docs',
+      scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+    })
+    expect(createTokenPayload.token.token).toMatch(/^dssh_/)
+
+    const listTokenResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tokens?project=product-docs`, jar)
+    const listTokenPayload = await listTokenResponse.json() as {
+      tokens: Array<{
+        id: string
+        project: string
+        token?: string
+      }>
+    }
+    expect(listTokenResponse.status).toBe(200)
+    expect(listTokenPayload.tokens).toEqual([
+      expect.objectContaining({
+        id: createTokenPayload.token.id,
+        project: 'product-docs',
+      }),
+    ])
+    expect(listTokenPayload.tokens[0].token).toBeUndefined()
+
+    const keyPair = sshUtils.generateKeyPairSync('ed25519')
+    const bearerSessionResponse = await fetch(`${viewer.baseUrl}/api/ssh-sessions`, {
+      body: JSON.stringify({
+        project: 'product-docs',
+        publicKey: keyPair.public,
+      }),
+      headers: {
+        Authorization: `Bearer ${createTokenPayload.token.token}`,
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const bearerSessionPayload = await bearerSessionResponse.json() as {
+      session: {
+        project: string
+        scopes: string[]
+        username: string
+      }
+    }
+    expect(bearerSessionResponse.status).toBe(200)
+    expect(bearerSessionPayload.session).toMatchObject({
+      project: 'product-docs',
+      scopes: expect.arrayContaining(['project:read', 'sources:read', 'ssh-session:create']),
+      username: expect.stringMatching(/^sess_/),
+    })
+
+    const bearerProjectsResponse = await fetch(`${viewer.baseUrl}/api/projects`, {
+      headers: {
+        Authorization: `Bearer ${createTokenPayload.token.token}`,
+      },
+    })
+    expect(bearerProjectsResponse.status).toBe(401)
+  })
+
   it('rejects owner role assignment from admin users', async () => {
     const clientId = 'docs-ssh-viewer'
     const provider = await createFakeOidcProvider({

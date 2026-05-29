@@ -4,7 +4,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { basename, extname, posix, resolve, sep } from 'node:path'
-import { createAuthStore, type AuthMembershipRole, type AuthPrincipalSession, type AuthProject, type AuthSshKey, type AuthSshSession, type AuthStore, type AuthTenantUser } from '../auth/store.js'
+import { createAuthStore, type AuthApiToken, type AuthApiTokenScope, type AuthApiTokenSession, type AuthMembershipRole, type AuthPrincipalSession, type AuthProject, type AuthSshKey, type AuthSshSession, type AuthStore, type AuthTenantUser } from '../auth/store.js'
 import { OidcClient, createPendingOidcLogin, getViewerOrigin, type OidcAuthConfig } from '../auth/oidc.js'
 import {
   clearPendingOidcCookie,
@@ -241,6 +241,20 @@ function toViewerSshSessionPayload(session: AuthSshSession) {
   }
 }
 
+function toViewerApiTokenPayload(token: AuthApiToken, secret?: string) {
+  return {
+    createdAt: token.createdAt,
+    expiresAt: token.expiresAt,
+    id: token.id,
+    label: token.label,
+    lastUsedAt: token.lastUsedAt,
+    project: token.projectSlug,
+    revokedAt: token.revokedAt,
+    scopes: token.scopes,
+    ...(secret ? { token: secret } : {}),
+  }
+}
+
 function toViewerProjectPayload(project: AuthProject) {
   return {
     archivedAt: project.archivedAt,
@@ -273,6 +287,19 @@ function parseMembershipRole(value: unknown): AuthMembershipRole {
   if (value === undefined || value === null || value === '') return 'member'
   if (value === 'owner' || value === 'admin' || value === 'member') return value
   throw new Error('Role must be owner, admin, or member.')
+}
+
+function parseApiTokenScopes(value: unknown): AuthApiTokenScope[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || !value.every((scope) => typeof scope === 'string')) {
+    throw new Error('scopes must be an array of strings.')
+  }
+  return value.map((scope) => {
+    if (scope === 'project:read' || scope === 'project:write' || scope === 'sources:read' || scope === 'ssh-session:create') {
+      return scope
+    }
+    throw new Error(`Unsupported API token scope: ${scope}`)
+  })
 }
 
 function normalizeViewerIdentifier(value: string): string {
@@ -332,6 +359,13 @@ function getViewerRequestOrigin(request: IncomingMessage, publicOrigin?: string)
 
   const host = request.headers.host
   return host ? `http://${host}` : 'http://localhost'
+}
+
+function getBearerToken(request: IncomingMessage): string | null {
+  const header = request.headers.authorization
+  if (typeof header !== 'string') return null
+  const match = /^Bearer\s+(.+)$/iu.exec(header.trim())
+  return match?.[1]?.trim() || null
 }
 
 function isLocalCallbackUrl(value: string): boolean {
@@ -402,19 +436,26 @@ async function loadViewerContext(
   opts: ViewerServerOptions,
   context: {
     authStore?: AuthStore | null
+    includeHome?: boolean
+    principalSession?: AuthPrincipalSession | null
     projectSlug?: string
     session?: ActiveViewerSession | null
+    scopedProjectOnly?: boolean
   } = {},
 ) {
   const statePaths = getStatePaths()
-  const principalSession = context.authStore && context.session
-    ? context.authStore.findUserProjectSession(context.session.login, context.projectSlug)
-    : null
+  const principalSession = context.principalSession ?? (
+    context.authStore && context.session
+      ? context.authStore.findUserProjectSession(context.session.login, context.projectSlug)
+      : null
+  )
   if (context.projectSlug && context.authStore && context.session && !principalSession) {
     throw new Error(`Project "${context.projectSlug}" was not found or is not accessible.`)
   }
 
-  const projectSessions = context.authStore && context.session
+  const projectSessions = context.scopedProjectOnly
+    ? (principalSession ? [principalSession] : [])
+    : context.authStore && context.session
     ? context.authStore
       .listProjects({ userLogin: context.session.login })
       .map((project) => context.authStore!.findUserProjectSession(context.session!.login, project.slug))
@@ -441,13 +482,15 @@ async function loadViewerContext(
 
   const mounts: ViewerMount[] = []
 
-  mounts.push({
-    aliases: [],
-    label: 'home',
-    mountPath: sourceStore.homeMountPath,
-    rootPath: sourceStore.homeRootPath,
-    type: 'home',
-  })
+  if (context.includeHome !== false) {
+    mounts.push({
+      aliases: [],
+      label: 'home',
+      mountPath: sourceStore.homeMountPath,
+      rootPath: sourceStore.homeRootPath,
+      type: 'home',
+    })
+  }
 
   if (visibleProjectSessions.length > 0) {
     for (const projectSession of visibleProjectSessions) {
@@ -854,6 +897,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
       const headOnly = method === 'HEAD'
       const isSshKeyRoute = url.pathname === '/api/auth/ssh-keys'
       const isSshSessionRoute = url.pathname === '/api/ssh-sessions'
+      const isApiTokenRoute = url.pathname === '/api/tokens'
       const isProjectRoute = url.pathname === '/api/projects'
       const isUserRoute = url.pathname === '/api/users'
       const isCliLoginRequestRoute = url.pathname === '/api/cli-login/requests'
@@ -866,6 +910,8 @@ export function createViewerServer(opts: ViewerServerOptions) {
         && method !== 'HEAD'
         && !(isSshKeyRoute && method === 'POST')
         && !(isSshSessionRoute && method === 'POST')
+        && !(isApiTokenRoute && method === 'POST')
+        && !(isApiTokenRoute && method === 'DELETE')
         && !(isProjectRoute && method === 'POST')
         && !(isProjectRoute && method === 'PATCH')
         && !(isProjectRoute && method === 'DELETE')
@@ -1181,7 +1227,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
         return
       }
 
-      if (isSshSessionRoute) {
+      if (isApiTokenRoute) {
         if (!authStore || !sessionSecret) {
           sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
           return
@@ -1189,7 +1235,135 @@ export function createViewerServer(opts: ViewerServerOptions) {
 
         const session = getActiveSession(request)
         if (!session) {
-          sendJson(response, 401, { error: 'Sign in to create SSH sessions.' }, headOnly)
+          sendJson(response, 401, { error: 'Sign in to manage API tokens.' }, headOnly)
+          return
+        }
+
+        const requestedProject = url.searchParams.get('project')?.trim() || undefined
+        const principalSession = authStore.findUserProjectSession(session.login, requestedProject)
+        if (!principalSession || !canManageUsers(principalSession)) {
+          sendJson(response, 403, { error: 'Only owners and admins can manage API tokens.' }, headOnly)
+          return
+        }
+
+        if (method === 'GET' || method === 'HEAD') {
+          sendJson(
+            response,
+            200,
+            {
+              tokens: authStore
+                .listApiTokens({
+                  projectSlug: requestedProject,
+                  tenantSlug: principalSession.tenant.slug,
+                  userLogin: session.login,
+                })
+                .map((token) => toViewerApiTokenPayload(token)),
+            },
+            headOnly,
+          )
+          return
+        }
+
+        if (method === 'POST') {
+          let payload
+          try {
+            payload = await readJsonBody(request) as {
+              expiresAt?: unknown
+              label?: unknown
+              project?: unknown
+              scopes?: unknown
+            }
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return
+          }
+
+          if (typeof payload.project !== 'string' || payload.project.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing project slug.' })
+            return
+          }
+          if (payload.label !== undefined && payload.label !== null && typeof payload.label !== 'string') {
+            sendJson(response, 400, { error: 'API token label must be a string.' })
+            return
+          }
+          if (payload.expiresAt !== undefined && payload.expiresAt !== null && typeof payload.expiresAt !== 'string') {
+            sendJson(response, 400, { error: 'API token expiration must be a string.' })
+            return
+          }
+
+          let scopes: AuthApiTokenScope[] | undefined
+          try {
+            scopes = parseApiTokenScopes(payload.scopes)
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+            return
+          }
+
+          const tokenProjectSession = authStore.findUserProjectSession(session.login, payload.project)
+          if (!tokenProjectSession || !canManageUsers(tokenProjectSession)) {
+            sendJson(response, 403, { error: 'Only owners and admins can manage API tokens.' })
+            return
+          }
+
+          try {
+            const token = authStore.createApiToken({
+              expiresAt: typeof payload.expiresAt === 'string' ? payload.expiresAt : undefined,
+              label: typeof payload.label === 'string' ? payload.label : undefined,
+              projectSlug: payload.project,
+              scopes,
+              tenantSlug: tokenProjectSession.tenant.slug,
+              userLogin: session.login,
+            })
+            sendJson(response, 200, {
+              token: toViewerApiTokenPayload(token, token.token),
+              tokens: authStore
+                .listApiTokens({
+                  projectSlug: token.projectSlug,
+                  tenantSlug: tokenProjectSession.tenant.slug,
+                  userLogin: session.login,
+                })
+                .map((entry) => toViewerApiTokenPayload(entry)),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        if (method === 'DELETE') {
+          const id = url.searchParams.get('id')?.trim()
+          if (!id) {
+            sendJson(response, 400, { error: 'Missing API token id.' })
+            return
+          }
+
+          try {
+            const token = authStore.revokeApiToken({
+              id,
+              userLogin: session.login,
+            })
+            sendJson(response, 200, {
+              token: toViewerApiTokenPayload(token),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        sendMethodNotAllowed(response)
+        return
+      }
+
+      if (isSshSessionRoute) {
+        if (!authStore) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
           return
         }
 
@@ -1230,13 +1404,37 @@ export function createViewerServer(opts: ViewerServerOptions) {
             return
           }
 
+          const session = getActiveSession(request)
+          let apiTokenSession: AuthApiTokenSession | null = null
+          if (!session) {
+            const bearerToken = getBearerToken(request)
+            if (!bearerToken) {
+              sendJson(response, 401, { error: 'Sign in to create SSH sessions.' }, headOnly)
+              return
+            }
+            try {
+              apiTokenSession = authStore.authenticateApiToken(bearerToken, {
+                projectSlug: typeof payload.project === 'string' ? payload.project : undefined,
+                requiredScopes: ['ssh-session:create'],
+              })
+            } catch (error) {
+              sendJson(response, 403, { error: error instanceof Error ? error.message : String(error) })
+              return
+            }
+            if (!apiTokenSession) {
+              sendJson(response, 401, { error: 'API token is invalid or expired.' })
+              return
+            }
+          }
+
           try {
             const sshSession = authStore.createSshSession({
-              projectSlug: typeof payload.project === 'string' ? payload.project : undefined,
+              projectSlug: apiTokenSession?.principalSession.project.slug
+                ?? (typeof payload.project === 'string' ? payload.project : undefined),
               publicKey: payload.publicKey,
-              scopes: Array.isArray(payload.scopes) ? payload.scopes : undefined,
+              scopes: apiTokenSession?.token.scopes ?? (Array.isArray(payload.scopes) ? payload.scopes : undefined),
               ttlSeconds: typeof ttlSeconds === 'number' ? ttlSeconds : undefined,
-              userLogin: session.login,
+              userLogin: session?.login ?? apiTokenSession?.principalSession.login,
             })
             sendJson(response, 200, {
               session: toViewerSshSessionPayload(sshSession),
@@ -1673,7 +1871,28 @@ export function createViewerServer(opts: ViewerServerOptions) {
       }
 
       const session = getActiveSession(request)
-      if (authStore && sessionSecret && isProtectedViewerDataRoute(url.pathname) && !session) {
+      const requestedProjectSlug = getRequestedProjectSlug(url)
+      let apiTokenSession: AuthApiTokenSession | null = null
+      if (authStore && isProtectedViewerDataRoute(url.pathname) && !session) {
+        const bearerToken = getBearerToken(request)
+        if (bearerToken) {
+          try {
+            apiTokenSession = authStore.authenticateApiToken(bearerToken, {
+              projectSlug: requestedProjectSlug,
+              requiredScopes: ['project:read'],
+            })
+          } catch (error) {
+            sendJson(response, 403, { error: error instanceof Error ? error.message : String(error) }, headOnly)
+            return
+          }
+          if (!apiTokenSession) {
+            sendJson(response, 401, { error: 'API token is invalid or expired.' }, headOnly)
+            return
+          }
+        }
+      }
+
+      if (authStore && sessionSecret && isProtectedViewerDataRoute(url.pathname) && !session && !apiTokenSession) {
         if (url.pathname === '/api/raw' && oidcClient) {
           response.writeHead(302, {
             'Cache-Control': 'no-store',
@@ -1691,8 +1910,11 @@ export function createViewerServer(opts: ViewerServerOptions) {
       try {
         context = await loadViewerContext(opts, {
           authStore,
-          projectSlug: getRequestedProjectSlug(url),
+          includeHome: !apiTokenSession,
+          principalSession: apiTokenSession?.principalSession,
+          projectSlug: apiTokenSession?.principalSession.project.slug ?? requestedProjectSlug,
           session,
+          scopedProjectOnly: Boolean(apiTokenSession),
         })
       } catch (error) {
         sendJson(response, 404, {
