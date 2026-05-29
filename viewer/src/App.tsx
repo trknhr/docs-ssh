@@ -3,7 +3,7 @@ import { Allotment } from 'allotment'
 import DOMPurify from 'dompurify'
 import { Renderer, marked } from 'marked'
 import { Tree, type NodeApi, type NodeRendererProps, type TreeApi } from 'react-arborist'
-import { createProject, createUser, getFile, getProjects, getSession, getTree, getUsers } from './api'
+import { archiveProject, createProject, createUser, getFile, getProjects, getSession, getTree, getUsers, updateProject } from './api'
 import type {
   FilePayload,
   RootSummary,
@@ -316,11 +316,14 @@ function PreviewHeader(props: {
 
 function AccountPanel(props: {
   canManageUsers: boolean
+  onArchiveProject: () => void
   onCreateProject: () => void
   onCreateUser: () => void
+  onProjectEditDisplayNameChange: (value: string) => void
   onProjectDisplayNameChange: (value: string) => void
   onProjectSlugChange: (value: string) => void
   onSelectProject: (slug: string) => void
+  onUpdateProject: () => void
   onUserDisplayNameChange: (value: string) => void
   onUserEmailChange: (value: string) => void
   onUserIssuerChange: (value: string) => void
@@ -331,8 +334,14 @@ function AccountPanel(props: {
   projectCreateError: string | null
   projectCreateStatus: string | null
   projectDisplayName: string
+  projectEditDisplayName: string
+  projectEditSlug: string
+  projectMutationError: string | null
+  projectMutationStatus: string | null
   projectSlug: string
+  projectArchiving: boolean
   projectSubmitting: boolean
+  projectUpdating: boolean
   projects: ViewerProject[]
   projectsLoading: boolean
   selectedProject: string | null
@@ -388,7 +397,7 @@ function AccountPanel(props: {
               <input
                 maxLength={120}
                 onChange={(event) => props.onProjectSlugChange(event.target.value)}
-                placeholder="slack-ai-assistant-agentcore-migration"
+                placeholder="EXAMPLE-project-slug"
                 type="text"
                 value={props.projectSlug}
               />
@@ -398,7 +407,7 @@ function AccountPanel(props: {
               <input
                 maxLength={160}
                 onChange={(event) => props.onProjectDisplayNameChange(event.target.value)}
-                placeholder="Slack AI assistant AgentCore migration"
+                placeholder="EXAMPLE Project Name"
                 type="text"
                 value={props.projectDisplayName}
               />
@@ -443,6 +452,59 @@ function AccountPanel(props: {
               ))}
             </div>
           )}
+          {selectedProject ? (
+            <div className="project-editor">
+              <div className="form-grid">
+                <label className="field field--stacked">
+                  <span>Selected slug</span>
+                  <input
+                    aria-readonly="true"
+                    maxLength={120}
+                    readOnly
+                    type="text"
+                    value={props.projectEditSlug}
+                  />
+                </label>
+                <label className="field field--stacked">
+                  <span>Selected display name</span>
+                  <input
+                    maxLength={160}
+                    onChange={(event) => props.onProjectEditDisplayNameChange(event.target.value)}
+                    type="text"
+                    value={props.projectEditDisplayName}
+                  />
+                </label>
+              </div>
+              <div className="account-form__footer account-form__footer--inline">
+                <button
+                  className="action-button"
+                  disabled={props.projectUpdating || props.projectArchiving}
+                  onClick={props.onUpdateProject}
+                  type="button"
+                >
+                  {props.projectUpdating ? 'Saving project...' : 'Save project'}
+                </button>
+                <button
+                  className="danger-button"
+                  disabled={
+                    props.projectUpdating
+                    || props.projectArchiving
+                    || selectedProject.slug === 'default'
+                  }
+                  onClick={props.onArchiveProject}
+                  type="button"
+                >
+                  {props.projectArchiving ? 'Archiving project...' : 'Archive project'}
+                </button>
+                {props.projectMutationStatus ? (
+                  <p className="status-message status-message--success">{props.projectMutationStatus}</p>
+                ) : null}
+                {props.projectMutationError ? (
+                  <p className="status-message status-message--error">{props.projectMutationError}</p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </article>
 
         {props.canManageUsers ? (
@@ -794,9 +856,15 @@ export function App() {
   )
   const [projectSlug, setProjectSlug] = useState('')
   const [projectDisplayName, setProjectDisplayName] = useState('')
+  const [projectEditSlug, setProjectEditSlug] = useState('')
+  const [projectEditDisplayName, setProjectEditDisplayName] = useState('')
   const [projectCreateError, setProjectCreateError] = useState<string | null>(null)
   const [projectCreateStatus, setProjectCreateStatus] = useState<string | null>(null)
+  const [projectMutationError, setProjectMutationError] = useState<string | null>(null)
+  const [projectMutationStatus, setProjectMutationStatus] = useState<string | null>(null)
+  const [projectArchiving, setProjectArchiving] = useState(false)
   const [projectSubmitting, setProjectSubmitting] = useState(false)
+  const [projectUpdating, setProjectUpdating] = useState(false)
   const [users, setUsers] = useState<ViewerUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
   const [userLogin, setUserLogin] = useState('')
@@ -903,6 +971,14 @@ export function App() {
   }, [session, selectedProject])
 
   useEffect(() => {
+    const project = selectedProject
+      ? projects.find((entry) => entry.slug === selectedProject)
+      : projects[0]
+    setProjectEditSlug(project?.slug ?? '')
+    setProjectEditDisplayName(project?.displayName ?? '')
+  }, [projects, selectedProject])
+
+  useEffect(() => {
     if (!session || !canManageUsers) {
       setUsers([])
       setUsersLoading(false)
@@ -994,10 +1070,18 @@ export function App() {
     treeRef.current.scrollTo(`file:${activePath}`)
   }, [activePath, tree])
 
-  const selectProject = (slug: string) => {
+  const setSelectedProjectValue = (slug: string | null) => {
     setSelectedProject(slug)
-    window.localStorage.setItem('docs-ssh:selected-project', slug)
+    if (slug) {
+      window.localStorage.setItem('docs-ssh:selected-project', slug)
+    } else {
+      window.localStorage.removeItem('docs-ssh:selected-project')
+    }
     startTransition(() => setActivePath(null))
+  }
+
+  const selectProject = (slug: string) => {
+    setSelectedProjectValue(slug)
   }
 
   const submitProject = async () => {
@@ -1031,6 +1115,83 @@ export function App() {
       setProjectCreateError(error instanceof Error ? error.message : String(error))
     } finally {
       setProjectSubmitting(false)
+    }
+  }
+
+  const getSelectedProject = () => (
+    selectedProject
+      ? projects.find((project) => project.slug === selectedProject)
+      : projects[0]
+  )
+
+  const submitProjectUpdate = async () => {
+    const project = getSelectedProject()
+    const displayName = projectEditDisplayName.trim()
+    if (!project) {
+      setProjectMutationError('Select a project first.')
+      setProjectMutationStatus(null)
+      return
+    }
+
+    setProjectUpdating(true)
+    setProjectMutationError(null)
+    setProjectMutationStatus(null)
+
+    try {
+      const payload = await updateProject({
+        displayName: displayName || undefined,
+        slug: project.slug,
+      })
+
+      setProjects((current) => {
+        const next = current.filter((entry) => entry.slug !== project.slug && entry.slug !== payload.project.slug)
+        return [...next, payload.project].sort((left, right) => left.slug.localeCompare(right.slug))
+      })
+      setProjectMutationStatus(`Updated ${payload.project.slug}`)
+      const oldMountPath = `/projects/${project.slug}`
+      if (activePath === oldMountPath || activePath?.startsWith(`${oldMountPath}/`)) {
+        startTransition(() => setActivePath(null))
+      }
+      selectProject(payload.project.slug)
+    } catch (error) {
+      setProjectMutationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setProjectUpdating(false)
+    }
+  }
+
+  const submitProjectArchive = async () => {
+    const project = getSelectedProject()
+    if (!project) {
+      setProjectMutationError('Select a project first.')
+      setProjectMutationStatus(null)
+      return
+    }
+    if (project.slug === 'default') {
+      setProjectMutationError('The default project cannot be archived.')
+      setProjectMutationStatus(null)
+      return
+    }
+    if (!window.confirm(`Archive project "${project.slug}"?`)) return
+
+    setProjectArchiving(true)
+    setProjectMutationError(null)
+    setProjectMutationStatus(null)
+
+    try {
+      const payload = await archiveProject(project.slug)
+      const nextProjects = projects.filter((entry) => entry.slug !== payload.project.slug)
+      setProjects(nextProjects)
+      setProjectMutationStatus(`Archived ${payload.project.slug}`)
+      const archivedMountPath = `/projects/${project.slug}`
+      if (activePath === archivedMountPath || activePath?.startsWith(`${archivedMountPath}/`)) {
+        startTransition(() => setActivePath(null))
+      }
+      setSelectedProjectValue(nextProjects[0]?.slug ?? null)
+    } catch (error) {
+      setProjectMutationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setProjectArchiving(false)
     }
   }
 
@@ -1204,11 +1365,14 @@ export function App() {
                   {showAccountPanel ? (
                     <AccountPanel
                       canManageUsers={canManageUsers}
+                      onArchiveProject={submitProjectArchive}
                       onCreateProject={submitProject}
                       onCreateUser={submitUser}
+                      onProjectEditDisplayNameChange={setProjectEditDisplayName}
                       onProjectDisplayNameChange={setProjectDisplayName}
                       onProjectSlugChange={setProjectSlug}
                       onSelectProject={selectProject}
+                      onUpdateProject={submitProjectUpdate}
                       onUserDisplayNameChange={setUserDisplayName}
                       onUserEmailChange={setUserEmail}
                       onUserIssuerChange={setUserIssuer}
@@ -1219,8 +1383,14 @@ export function App() {
                       projectCreateError={projectCreateError}
                       projectCreateStatus={projectCreateStatus}
                       projectDisplayName={projectDisplayName}
+                      projectEditDisplayName={projectEditDisplayName}
+                      projectEditSlug={projectEditSlug}
+                      projectMutationError={projectMutationError}
+                      projectMutationStatus={projectMutationStatus}
                       projectSlug={projectSlug}
+                      projectArchiving={projectArchiving}
                       projectSubmitting={projectSubmitting}
+                      projectUpdating={projectUpdating}
                       projects={projects}
                       projectsLoading={projectsLoading}
                       selectedProject={selectedProject}

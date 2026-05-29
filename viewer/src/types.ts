@@ -33,6 +33,7 @@ export interface ViewerSessionResponse {
 }
 
 export interface ViewerProject {
+  archivedAt: string | null
   createdAt: string
   displayName: string
   slug: string

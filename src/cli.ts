@@ -8,7 +8,7 @@ import { access, appendFile, chmod, mkdir, readFile, rm, stat, writeFile } from 
 import { basename, dirname, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import ssh2 from 'ssh2'
-import { createAuthStore } from './auth/store.js'
+import { createAuthStore, type AuthStore } from './auth/store.js'
 import { inferViewerOrigin } from './cli-login-config.js'
 import { loadLocalEnvFile } from './env.js'
 import { loadInstanceConfig } from './instance-config.js'
@@ -32,6 +32,7 @@ import {
   createSetupMarkdown,
   createSkillMarkdown,
 } from './shell/helper-content.js'
+import { ensureWorkspaceLayout } from './workspace/layout.js'
 
 const execFileAsync = promisify(execFile)
 const { utils: sshUtils } = ssh2
@@ -76,9 +77,13 @@ Usage:
   docs-ssh login [--server <alias>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open]
   docs-ssh status [--server <alias>] [--project <slug>] [--json]
   docs-ssh logout [--server <alias>] [--project <slug>] [--json]
+  docs-ssh projects list [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all]
+  docs-ssh projects create --project <slug> [--display-name <name>] [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
+  docs-ssh projects update --project <slug> --display-name <name> [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
+  docs-ssh projects archive --project <slug> [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
   docs-ssh auth init [--db-path <path>] [--tenant-slug <slug>] [--tenant-name <name>] [--owner-login <login>] [--owner-name <name>]
   docs-ssh auth create-project --project <slug> [--display-name <name>] [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
-  docs-ssh auth list-projects [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
+  docs-ssh auth list-projects [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all]
   docs-ssh auth add-ssh-key <public-key-path> [--db-path <path>] [--user <login>] [--name <name>]
   docs-ssh auth create-ssh-session <public-key-path> [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--project <slug>] [--scopes <csv>] [--ttl-seconds <seconds>] [--username <name>]
   docs-ssh auth list-ssh-sessions [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all] [--include-expired] [--include-revoked]
@@ -711,7 +716,44 @@ async function resolveProjectSlugForCommand(args: ParsedArgs): Promise<string | 
   return projectConfig?.project
 }
 
-async function authCreateProject(args: ParsedArgs): Promise<void> {
+function inferProjectWorkspaceLogin(authStore: AuthStore, args: ParsedArgs): string | undefined {
+  const explicitUser = getFlagString(args, 'user')
+  if (explicitUser) return explicitUser
+
+  const projectManagers = authStore
+    .listUsers({ tenantSlug: getFlagString(args, 'tenant-slug') })
+    .filter((user) => user.role === 'owner' || user.role === 'admin')
+  return projectManagers.length === 1 ? projectManagers[0].login : undefined
+}
+
+async function ensureCliProjectWorkspace(
+  args: ParsedArgs,
+  authStore: AuthStore,
+  projectSlug: string,
+): Promise<void> {
+  const instanceConfig = loadInstanceConfig({
+    docsDir: getFlagString(args, 'docs-dir'),
+    stateDir: getFlagString(args, 'state-dir'),
+    workspaceDir: getFlagString(args, 'workspace-dir'),
+  })
+  const userLogin = inferProjectWorkspaceLogin(authStore, args)
+  const principalSession = userLogin ? authStore.findUserProjectSession(userLogin, projectSlug) : null
+  const sourceStore = await loadSourceStore({
+    registryPath: instanceConfig.statePaths.registryPath,
+    fallbackDocsDir: instanceConfig.docsDir,
+    principalId: principalSession?.principal.id,
+    projectSlug,
+    tenantSlug: principalSession?.tenant.slug ?? getFlagString(args, 'tenant-slug'),
+    workspaceDir: instanceConfig.workspaceDir,
+  })
+  await ensureWorkspaceLayout(sourceStore.tenantRootPath, {
+    homeRootPath: sourceStore.homeRootPath,
+    projectRootPath: sourceStore.projectRootPath,
+    projectSlug: sourceStore.projectSlug,
+  })
+}
+
+async function projectCreate(args: ParsedArgs): Promise<void> {
   const authStore = createAuthStore({
     dbPath: getAuthDbPath(args),
   })
@@ -723,6 +765,7 @@ async function authCreateProject(args: ParsedArgs): Promise<void> {
       tenantSlug: getFlagString(args, 'tenant-slug'),
       userLogin: getFlagString(args, 'user'),
     })
+    await ensureCliProjectWorkspace(args, authStore, project.slug)
 
     console.log('Created project')
     console.log(`- slug: ${project.slug}`)
@@ -733,13 +776,14 @@ async function authCreateProject(args: ParsedArgs): Promise<void> {
   }
 }
 
-async function authListProjects(args: ParsedArgs): Promise<void> {
+async function projectList(args: ParsedArgs): Promise<void> {
   const authStore = createAuthStore({
     dbPath: getAuthDbPath(args),
   })
 
   try {
     const projects = authStore.listProjects({
+      includeArchived: getFlagBoolean(args, 'all') || getFlagBoolean(args, 'include-archived'),
       tenantSlug: getFlagString(args, 'tenant-slug'),
       userLogin: getFlagString(args, 'user'),
     })
@@ -750,10 +794,72 @@ async function authListProjects(args: ParsedArgs): Promise<void> {
       console.log(`  name: ${project.displayName}`)
       console.log(`  tenant: ${project.tenantId}`)
       console.log(`  created: ${project.createdAt}`)
+      if (project.archivedAt) console.log(`  archived: ${project.archivedAt}`)
     }
   } finally {
     authStore.close()
   }
+}
+
+async function projectUpdate(args: ParsedArgs): Promise<void> {
+  const displayName = getFlagString(args, 'display-name')
+  if (getFlagString(args, 'new-project') || getFlagString(args, 'new-slug')) {
+    throw new Error('Project slugs cannot be changed.')
+  }
+  if (!displayName) {
+    throw new Error('Pass --display-name to update a project.')
+  }
+
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const project = authStore.updateProject({
+      displayName,
+      slug: getRequiredFlagString(args, 'project'),
+      tenantSlug: getFlagString(args, 'tenant-slug'),
+      userLogin: getFlagString(args, 'user'),
+    })
+    await ensureCliProjectWorkspace(args, authStore, project.slug)
+
+    console.log('Updated project')
+    console.log(`- slug: ${project.slug}`)
+    console.log(`- name: ${project.displayName}`)
+    console.log(`- tenant: ${project.tenantId}`)
+  } finally {
+    authStore.close()
+  }
+}
+
+async function projectArchive(args: ParsedArgs): Promise<void> {
+  const authStore = createAuthStore({
+    dbPath: getAuthDbPath(args),
+  })
+
+  try {
+    const project = authStore.archiveProject({
+      slug: getRequiredFlagString(args, 'project'),
+      tenantSlug: getFlagString(args, 'tenant-slug'),
+      userLogin: getFlagString(args, 'user'),
+    })
+
+    console.log('Archived project')
+    console.log(`- slug: ${project.slug}`)
+    console.log(`- name: ${project.displayName}`)
+    console.log(`- tenant: ${project.tenantId}`)
+    console.log(`- archived: ${project.archivedAt}`)
+  } finally {
+    authStore.close()
+  }
+}
+
+async function authCreateProject(args: ParsedArgs): Promise<void> {
+  await projectCreate(args)
+}
+
+async function authListProjects(args: ParsedArgs): Promise<void> {
+  await projectList(args)
 }
 
 async function authCreateSshSession(args: ParsedArgs): Promise<void> {
@@ -979,6 +1085,31 @@ async function main() {
 
   if (command === 'sources' && subcommand === 'list') {
     await listSources(args)
+    return
+  }
+
+  if (command === 'projects') {
+    if (subcommand === 'list') {
+      await projectList(args)
+      return
+    }
+
+    if (subcommand === 'create') {
+      await projectCreate(args)
+      return
+    }
+
+    if (subcommand === 'update') {
+      await projectUpdate(args)
+      return
+    }
+
+    if (subcommand === 'archive' || subcommand === 'delete') {
+      await projectArchive(args)
+      return
+    }
+
+    printUsage()
     return
   }
 

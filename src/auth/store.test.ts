@@ -172,7 +172,7 @@ describe('createAuthStore', () => {
     authStore.close()
 
     const migratedDatabase = new Database(dbPath)
-    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(3)
+    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(4)
     expect(
       migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get(),
     ).toBeTruthy()
@@ -296,6 +296,98 @@ describe('createAuthStore', () => {
       'default',
       'product-docs',
     ])
+
+    authStore.close()
+  })
+
+  it('updates and archives projects without allowing slug changes', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({
+      dbPath: resolve(tempDir, 'auth.sqlite'),
+    })
+    authStore.ensureSingleTenantOwner({
+      ownerLogin: 'alice',
+      ownerName: 'Alice',
+    })
+    authStore.createProject({
+      displayName: 'Product Docs',
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
+
+    const updated = authStore.updateProject({
+      displayName: 'Product Knowledge',
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
+    expect(updated).toMatchObject({
+      archivedAt: null,
+      displayName: 'Product Knowledge',
+      slug: 'product-docs',
+    })
+    expect(authStore.listProjects({ userLogin: 'alice' }).map((entry) => entry.slug)).toEqual([
+      'default',
+      'product-docs',
+    ])
+    expect(() =>
+      authStore.updateProject({
+        newSlug: 'product-knowledge',
+        slug: 'product-docs',
+        userLogin: 'alice',
+      }),
+    ).toThrow(/Project slugs cannot be changed/)
+
+    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const session = authStore.createSshSession({
+      projectSlug: 'product-docs',
+      publicKey: keys.public,
+      ttlSeconds: 60,
+      userLogin: 'alice',
+      username: 'sess_project_crud',
+    })
+
+    expect(() =>
+      authStore.updateProject({
+        newSlug: 'project-v2',
+        slug: 'product-docs',
+        userLogin: 'alice',
+      }),
+    ).toThrow(/Project slugs cannot be changed/)
+    expect(() =>
+      authStore.archiveProject({
+        slug: 'product-docs',
+        userLogin: 'alice',
+      }),
+    ).toThrow(/active SSH sessions/)
+
+    authStore.revokeSshSession({
+      identifier: session.username,
+      userLogin: 'alice',
+    })
+    const archived = authStore.archiveProject({
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
+    expect(archived.archivedAt).toEqual(expect.any(String))
+    expect(authStore.listProjects({ userLogin: 'alice' }).map((entry) => entry.slug)).toEqual(['default'])
+    expect(authStore.listProjects({ includeArchived: true, userLogin: 'alice' }).map((entry) => entry.slug)).toEqual([
+      'default',
+      'product-docs',
+    ])
+    expect(() =>
+      authStore.createSshSession({
+        projectSlug: 'product-docs',
+        publicKey: keys.public,
+        ttlSeconds: 60,
+        userLogin: 'alice',
+      }),
+    ).toThrow(/Project "product-docs" was not found/)
+    expect(() =>
+      authStore.archiveProject({
+        slug: 'default',
+        userLogin: 'alice',
+      }),
+    ).toThrow(/default project cannot be archived/)
 
     authStore.close()
   })

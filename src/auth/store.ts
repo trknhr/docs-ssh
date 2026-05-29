@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { normalizeSshPublicKey } from './ssh-key.js'
 
-const AUTH_SCHEMA_VERSION = 3
+const AUTH_SCHEMA_VERSION = 4
 const IDENTIFIER_PATTERN = /[^a-z0-9-]+/g
 const DEFAULT_TENANT_SLUG = 'default'
 const DEFAULT_TENANT_NAME = 'Personal docs-ssh'
@@ -94,6 +94,7 @@ export interface AuthPrincipalSession {
 }
 
 export interface AuthProject {
+  archivedAt: string | null
   createdAt: string
   displayName: string
   id: string
@@ -110,6 +111,20 @@ export interface AuthProjectMembership {
 
 export interface CreateProjectInput {
   displayName?: string
+  slug: string
+  tenantSlug?: string
+  userLogin?: string
+}
+
+export interface UpdateProjectInput {
+  displayName?: string
+  newSlug?: string
+  slug: string
+  tenantSlug?: string
+  userLogin?: string
+}
+
+export interface ArchiveProjectInput {
   slug: string
   tenantSlug?: string
   userLogin?: string
@@ -200,6 +215,7 @@ export interface ListSshSessionsOptions {
 }
 
 export interface ListProjectsOptions {
+  includeArchived?: boolean
   tenantSlug?: string
   userLogin?: string
 }
@@ -266,6 +282,7 @@ interface AuthSshKeyRow {
 }
 
 interface AuthProjectRow {
+  archivedAt: string | null
   createdAt: string
   displayName: string
   id: string
@@ -350,12 +367,20 @@ function migrateDatabase(database: Database.Database): void {
   if (currentVersion === 1) {
     migrateSchemaV1ToV2(database)
     migrateSchemaV2ToV3(database)
+    migrateSchemaV3ToV4(database)
     database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
     return
   }
 
   if (currentVersion === 2) {
     migrateSchemaV2ToV3(database)
+    migrateSchemaV3ToV4(database)
+    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
+    return
+  }
+
+  if (currentVersion === 3) {
+    migrateSchemaV3ToV4(database)
     database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
     return
   }
@@ -454,6 +479,7 @@ function createSchemaV2(database: Database.Database): void {
       slug TEXT NOT NULL,
       display_name TEXT NOT NULL,
       created_at TEXT NOT NULL,
+      archived_at TEXT,
       UNIQUE (tenant_id, slug)
     );
 
@@ -663,6 +689,7 @@ function createSchemaV2Extensions(database: Database.Database): void {
       slug TEXT NOT NULL,
       display_name TEXT NOT NULL,
       created_at TEXT NOT NULL,
+      archived_at TEXT,
       UNIQUE (tenant_id, slug)
     );
 
@@ -733,7 +760,7 @@ function migrateSchemaV2ToV3(database: Database.Database): void {
       .all() as TenantRow[]
 
     const getProject = database.prepare(
-      `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt
+      `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt, NULL AS archivedAt
        FROM projects
        WHERE tenant_id = ? AND slug = ?`,
     )
@@ -755,6 +782,7 @@ function migrateSchemaV2ToV3(database: Database.Database): void {
       let project = getProject.get(tenant.id, DEFAULT_PROJECT_SLUG) as AuthProjectRow | undefined
       if (!project) {
         project = {
+          archivedAt: null,
           createdAt: now,
           displayName: DEFAULT_PROJECT_NAME,
           id: randomUUID(),
@@ -771,6 +799,15 @@ function migrateSchemaV2ToV3(database: Database.Database): void {
   })
 
   tx()
+}
+
+function migrateSchemaV3ToV4(database: Database.Database): void {
+  const columns = database.pragma('table_info(projects)') as Array<{ name: string }>
+  if (columns.some((column) => column.name === 'archived_at')) return
+
+  database.exec(`
+    ALTER TABLE projects ADD COLUMN archived_at TEXT;
+  `)
 }
 
 function parseTenant(row: TenantRow): AuthTenant {
@@ -840,6 +877,7 @@ function parseAuthSshKey(row: AuthSshKeyRow): AuthSshKey {
 
 function parseProject(row: AuthProjectRow): AuthProject {
   return {
+    archivedAt: row.archivedAt,
     createdAt: row.createdAt,
     displayName: row.displayName,
     id: row.id,
@@ -1128,12 +1166,15 @@ function getProjectByTenantAndSlug(
   database: Database.Database,
   tenantId: string,
   slug: string,
+  opts: { includeArchived?: boolean } = {},
 ): AuthProject | null {
   const row = database
     .prepare(
-      `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt
+      `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName,
+              created_at AS createdAt, archived_at AS archivedAt
        FROM projects
-       WHERE tenant_id = ? AND slug = ?`,
+       WHERE tenant_id = ? AND slug = ?
+         ${opts.includeArchived ? '' : 'AND archived_at IS NULL'}`,
     )
     .get(tenantId, slug) as AuthProjectRow | undefined
 
@@ -1167,6 +1208,7 @@ function ensureProjectForTenant(
   if (existing) return existing
 
   const projectRow: AuthProjectRow = {
+    archivedAt: null,
     createdAt: createTimestamp(),
     displayName: normalizeLabel(displayName, DEFAULT_PROJECT_NAME),
     id: randomUUID(),
@@ -1191,12 +1233,13 @@ function createProjectForTenant(
   displayName: string,
 ): AuthProject {
   const normalizedSlug = normalizeIdentifier(slug, DEFAULT_PROJECT_SLUG)
-  const existing = getProjectByTenantAndSlug(database, tenantId, normalizedSlug)
+  const existing = getProjectByTenantAndSlug(database, tenantId, normalizedSlug, { includeArchived: true })
   if (existing) {
     throw new Error(`Project "${normalizedSlug}" already exists.`)
   }
 
   const projectRow: AuthProjectRow = {
+    archivedAt: null,
     createdAt: createTimestamp(),
     displayName: normalizeLabel(displayName, normalizedSlug),
     id: randomUUID(),
@@ -1305,6 +1348,66 @@ function getSshSessionByIdentifier(database: Database.Database, identifier: stri
   return row ? parseSshSession(row) : null
 }
 
+function countActiveSshSessionsForProject(
+  database: Database.Database,
+  tenantId: string,
+  projectSlug: string,
+): number {
+  const row = database
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM ssh_sessions
+       WHERE tenant_id = ?
+         AND current_project_slug = ?
+         AND revoked_at IS NULL
+         AND expires_at > ?`,
+    )
+    .get(tenantId, projectSlug, createTimestamp()) as { count: number }
+
+  return row.count
+}
+
+function resolveProjectMutator(
+  database: Database.Database,
+  input: { tenantSlug?: string, userLogin?: string },
+): {
+  membership: AuthMembership
+  principal: AuthPrincipal
+  tenant: AuthTenant
+  user: AuthUser
+} {
+  const user = resolveTargetUser(database, input.userLogin)
+  const principal = getPrincipalById(database, user.principalId)
+  if (!principal) {
+    throw new Error(`Principal "${user.principalId}" for user "${user.login}" was not found.`)
+  }
+
+  const tenant = input.tenantSlug
+    ? getTenantBySlug(database, normalizeIdentifier(input.tenantSlug, DEFAULT_TENANT_SLUG))
+    : (() => {
+        const primaryMembership = getPrimaryMembershipForPrincipal(database, principal.id)
+        return primaryMembership ? getTenantById(database, primaryMembership.tenantId) : null
+      })()
+  if (!tenant) {
+    throw new Error(`Tenant "${input.tenantSlug ?? DEFAULT_TENANT_SLUG}" was not found.`)
+  }
+
+  const membership = getMembershipForPrincipalInTenant(database, principal.id, tenant.id)
+  if (!membership) {
+    throw new Error(`Principal "${principal.id}" is not a member of tenant "${tenant.slug}".`)
+  }
+  if (membership.role !== 'owner' && membership.role !== 'admin') {
+    throw new Error(`Principal "${principal.id}" cannot manage projects in tenant "${tenant.slug}".`)
+  }
+
+  return {
+    membership,
+    principal,
+    tenant,
+    user,
+  }
+}
+
 function countUsers(database: Database.Database): number {
   const row = database
     .prepare('SELECT COUNT(*) AS count FROM users')
@@ -1353,6 +1456,7 @@ export interface AuthStore {
   addAuthIdentity(input: AddAuthIdentityInput): AuthIdentity
   addSshKey(input: AddSshKeyInput): AuthSshKey
   addUser(input: AddUserInput): AuthTenantUser
+  archiveProject(input: ArchiveProjectInput): AuthProject
   close(): void
   createProject(input: CreateProjectInput): AuthProject
   createSshSession(input: CreateSshSessionInput): AuthSshSession
@@ -1374,6 +1478,7 @@ export interface AuthStore {
     identity: AuthIdentity
     owner: SingleTenantOwner
   } | null
+  updateProject(input: UpdateProjectInput): AuthProject
 }
 
 export function createAuthStore(opts: { dbPath: string }): AuthStore {
@@ -1591,9 +1696,11 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     ensureProjectForTenant(database, tenant.id, DEFAULT_PROJECT_SLUG, DEFAULT_PROJECT_NAME)
     const projects = database
       .prepare(
-        `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt
+        `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName,
+                created_at AS createdAt, archived_at AS archivedAt
          FROM projects
-         WHERE tenant_id = ?`,
+         WHERE tenant_id = ?
+           AND archived_at IS NULL`,
       )
       .all(tenant.id) as AuthProjectRow[]
     for (const project of projects) {
@@ -1660,34 +1767,79 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     addUser(input: AddUserInput): AuthTenantUser {
       return addUserTx(input)
     },
+    archiveProject(input: ArchiveProjectInput): AuthProject {
+      const actor = resolveProjectMutator(database, input)
+      const slug = normalizeIdentifier(input.slug, '')
+      if (!slug) throw new Error('Missing required project slug.')
+      if (slug === DEFAULT_PROJECT_SLUG) {
+        throw new Error('The default project cannot be archived.')
+      }
+
+      const project = getProjectByTenantAndSlug(database, actor.tenant.id, slug)
+      if (!project) {
+        throw new Error(`Project "${slug}" was not found.`)
+      }
+
+      if (countActiveSshSessionsForProject(database, actor.tenant.id, project.slug) > 0) {
+        throw new Error(`Project "${project.slug}" has active SSH sessions. Revoke them before archiving the project.`)
+      }
+
+      const archivedAt = createTimestamp()
+      database
+        .prepare(
+          `UPDATE projects
+           SET archived_at = ?
+           WHERE id = ?`,
+        )
+        .run(archivedAt, project.id)
+
+      const archivedProject = getProjectByTenantAndSlug(database, actor.tenant.id, project.slug, { includeArchived: true })
+      if (!archivedProject) {
+        throw new Error(`Project "${project.slug}" was not found after archive.`)
+      }
+      return archivedProject
+    },
     createProject(input: CreateProjectInput): AuthProject {
-      const user = resolveTargetUser(database, input.userLogin)
-      const principal = getPrincipalById(database, user.principalId)
-      if (!principal) {
-        throw new Error(`Principal "${user.principalId}" for user "${user.login}" was not found.`)
-      }
-
-      const tenant = input.tenantSlug
-        ? getTenantBySlug(database, normalizeIdentifier(input.tenantSlug, DEFAULT_TENANT_SLUG))
-        : (() => {
-            const primaryMembership = getPrimaryMembershipForPrincipal(database, principal.id)
-            return primaryMembership ? getTenantById(database, primaryMembership.tenantId) : null
-          })()
-      if (!tenant) {
-        throw new Error(`Tenant "${input.tenantSlug ?? DEFAULT_TENANT_SLUG}" was not found.`)
-      }
-
-      const membership = getMembershipForPrincipalInTenant(database, principal.id, tenant.id)
-      if (!membership) {
-        throw new Error(`Principal "${principal.id}" is not a member of tenant "${tenant.slug}".`)
-      }
-      if (membership.role !== 'owner' && membership.role !== 'admin') {
-        throw new Error(`Principal "${principal.id}" cannot create projects in tenant "${tenant.slug}".`)
-      }
-
-      const project = createProjectForTenant(database, tenant.id, input.slug, input.displayName ?? input.slug)
-      ensureProjectMembership(database, project.id, principal.id, membership.role)
+      const actor = resolveProjectMutator(database, input)
+      const project = createProjectForTenant(database, actor.tenant.id, input.slug, input.displayName ?? input.slug)
+      ensureProjectMembership(database, project.id, actor.principal.id, actor.membership.role)
       return project
+    },
+    updateProject(input: UpdateProjectInput): AuthProject {
+      const actor = resolveProjectMutator(database, input)
+      const slug = normalizeIdentifier(input.slug, '')
+      if (!slug) throw new Error('Missing required project slug.')
+
+      const project = getProjectByTenantAndSlug(database, actor.tenant.id, slug)
+      if (!project) {
+        throw new Error(`Project "${slug}" was not found.`)
+      }
+
+      if (input.newSlug !== undefined && input.newSlug !== null) {
+        const requestedSlug = normalizeIdentifier(input.newSlug, '')
+        if (!requestedSlug) throw new Error('Missing required new project slug.')
+        if (requestedSlug !== project.slug) {
+          throw new Error('Project slugs cannot be changed.')
+        }
+      }
+
+      const nextDisplayName = input.displayName === undefined || input.displayName === null
+        ? project.displayName
+        : normalizeLabel(input.displayName, project.slug)
+
+      database
+        .prepare(
+          `UPDATE projects
+           SET display_name = ?
+           WHERE id = ?`,
+        )
+        .run(nextDisplayName, project.id)
+
+      const updatedProject = getProjectByTenantAndSlug(database, actor.tenant.id, project.slug)
+      if (!updatedProject) {
+        throw new Error(`Project "${project.slug}" was not found after update.`)
+      }
+      return updatedProject
     },
     ensureSingleTenantOwner(opts: EnsureSingleTenantOwnerOptions = {}): SingleTenantOwner {
       return ensureSingleTenantOwnerTx({
@@ -1986,10 +2138,14 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         conditions.push('p.tenant_id = ?')
         params.push(tenant.id)
       }
+      if (!opts.includeArchived) {
+        conditions.push('p.archived_at IS NULL')
+      }
 
       return database
         .prepare(
-          `SELECT p.id, p.tenant_id AS tenantId, p.slug, p.display_name AS displayName, p.created_at AS createdAt
+          `SELECT p.id, p.tenant_id AS tenantId, p.slug, p.display_name AS displayName,
+                  p.created_at AS createdAt, p.archived_at AS archivedAt
            FROM projects p
            INNER JOIN project_memberships pm ON pm.project_id = p.id
            WHERE ${conditions.join(' AND ')}

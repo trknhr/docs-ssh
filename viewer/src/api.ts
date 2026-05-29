@@ -56,6 +56,25 @@ export async function createProject(input: {
   })
 }
 
+export async function updateProject(input: {
+  displayName?: string
+  slug: string
+}) {
+  return fetchJson<ViewerProjectMutationResponse>('/api/projects', {
+    body: JSON.stringify(input),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    method: 'PATCH',
+  })
+}
+
+export async function archiveProject(slug: string) {
+  return fetchJson<ViewerProjectMutationResponse>(`/api/projects?slug=${encodeURIComponent(slug)}`, {
+    method: 'DELETE',
+  })
+}
+
 export async function getUsers() {
   return fetchJson<ViewerUserListResponse>('/api/users')
 }

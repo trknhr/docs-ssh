@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -284,6 +284,7 @@ async function createViewerFixture(config: {
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     owner,
+    workspaceDir,
   }
 }
 
@@ -638,6 +639,9 @@ describe('createViewerServer OIDC session flow', () => {
       displayName: 'Product Docs',
       slug: 'product-docs',
     })
+    await expect(
+      stat(resolve(viewer.workspaceDir, 'tenants', 'default', 'projects', 'product-docs', 'README.md')),
+    ).resolves.toBeTruthy()
 
     const treeResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tree?project=product-docs`, jar)
     const treePayload = await treeResponse.json() as {
@@ -753,6 +757,101 @@ describe('createViewerServer OIDC session flow', () => {
     expect(cliExchangePayload.session.project).toBe('product-docs')
     expect(cliExchangePayload.session.username).toMatch(/^sess_[a-f0-9]{16}$/)
     expect(cliExchangePayload.session.fingerprint.startsWith('SHA256:')).toBe(true)
+  })
+
+  it('updates and archives projects through the viewer API', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'owner@example.com',
+      subject: 'user-123',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      linkedIdentity: {
+        issuer: provider.issuer,
+        provider: 'oidc',
+        subject: 'user-123',
+      },
+    })
+    const jar = new CookieJar()
+
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar, {
+      body: JSON.stringify({
+        displayName: 'Product Docs',
+        slug: 'product-docs',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+
+    const updateProjectResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar, {
+      body: JSON.stringify({
+        displayName: 'Product Knowledge',
+        slug: 'product-docs',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PATCH',
+    })
+    const updateProjectPayload = await updateProjectResponse.json() as {
+      project: {
+        displayName: string
+        slug: string
+      }
+    }
+    expect(updateProjectResponse.status).toBe(200)
+    expect(updateProjectPayload.project).toMatchObject({
+      displayName: 'Product Knowledge',
+      slug: 'product-docs',
+    })
+
+    const renameProjectResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar, {
+      body: JSON.stringify({
+        newSlug: 'product-knowledge',
+        slug: 'product-docs',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'PATCH',
+    })
+    const renameProjectPayload = await renameProjectResponse.json() as { error: string }
+    expect(renameProjectResponse.status).toBe(400)
+    expect(renameProjectPayload.error).toContain('Project slugs cannot be changed')
+
+    const archiveProjectResponse = await fetchWithCookies(
+      `${viewer.baseUrl}/api/projects?slug=${encodeURIComponent('product-docs')}`,
+      jar,
+      {
+        method: 'DELETE',
+      },
+    )
+    const archiveProjectPayload = await archiveProjectResponse.json() as {
+      project: {
+        archivedAt?: string | null
+        slug: string
+      }
+    }
+    expect(archiveProjectResponse.status).toBe(200)
+    expect(archiveProjectPayload.project).toMatchObject({
+      archivedAt: expect.any(String),
+      slug: 'product-docs',
+    })
+
+    const projectsResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar)
+    const projectsPayload = await projectsResponse.json() as {
+      projects: Array<{ slug: string }>
+    }
+    expect(projectsPayload.projects.map((project) => project.slug)).toEqual(['default'])
   })
 
   it('lets owners list and add web users', async () => {
@@ -878,6 +977,64 @@ describe('createViewerServer OIDC session flow', () => {
     const createOwnerPayload = await createOwnerResponse.json() as { error: string }
     expect(createOwnerResponse.status).toBe(403)
     expect(createOwnerPayload.error).toContain('Only owners can assign the owner role.')
+
+    const usersResponse = await fetchWithCookies(`${viewer.baseUrl}/api/users`, jar)
+    const usersPayload = await usersResponse.json() as {
+      users: Array<{ login: string; role: string }>
+    }
+    expect(usersPayload.users.map((user) => [user.login, user.role])).toEqual([
+      ['owner', 'owner'],
+      ['admin', 'admin'],
+    ])
+  })
+
+  it('prevents admins from changing existing owner roles through user creation', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'admin@example.com',
+      subject: 'admin-123',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      extraUsers: [
+        {
+          displayName: 'Admin User',
+          identity: {
+            issuer: provider.issuer,
+            provider: 'oidc',
+            subject: 'admin-123',
+          },
+          login: 'admin',
+          role: 'admin',
+        },
+      ],
+      issuer: provider.issuer,
+    })
+    const jar = new CookieJar()
+
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    const demoteOwnerResponse = await fetchWithCookies(`${viewer.baseUrl}/api/users`, jar, {
+      body: JSON.stringify({
+        displayName: 'Owner',
+        email: 'owner@example.com',
+        issuer: provider.issuer,
+        login: 'owner',
+        provider: 'oidc',
+        role: 'member',
+        subject: 'owner-subject',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const demoteOwnerPayload = await demoteOwnerResponse.json() as { error: string }
+    expect(demoteOwnerResponse.status).toBe(403)
+    expect(demoteOwnerPayload.error).toContain('Only owners can update owner users.')
 
     const usersResponse = await fetchWithCookies(`${viewer.baseUrl}/api/users`, jar)
     const usersPayload = await usersResponse.json() as {

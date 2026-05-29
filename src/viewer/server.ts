@@ -57,6 +57,7 @@ const TEXT_EXTENSIONS = new Set([
   '.zsh',
 ])
 const IMAGE_EXTENSIONS = new Set(['.avif', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
+const IDENTIFIER_PATTERN = /[^a-z0-9-]+/g
 const SPECIAL_TEXT_FILES = new Set([
   '.gitignore',
   'Dockerfile',
@@ -242,6 +243,7 @@ function toViewerSshSessionPayload(session: AuthSshSession) {
 
 function toViewerProjectPayload(project: AuthProject) {
   return {
+    archivedAt: project.archivedAt,
     createdAt: project.createdAt,
     displayName: project.displayName,
     slug: project.slug,
@@ -271,6 +273,14 @@ function parseMembershipRole(value: unknown): AuthMembershipRole {
   if (value === undefined || value === null || value === '') return 'member'
   if (value === 'owner' || value === 'admin' || value === 'member') return value
   throw new Error('Role must be owner, admin, or member.')
+}
+
+function normalizeViewerIdentifier(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(IDENTIFIER_PATTERN, '-')
+    .replace(/^-+|-+$/g, '')
 }
 
 function escapeHtml(value: string): string {
@@ -479,6 +489,33 @@ async function loadViewerContext(
     docsName: opts.docsName ?? 'Documentation',
     mounts,
   }
+}
+
+async function ensureViewerProjectWorkspace(
+  opts: ViewerServerOptions,
+  authStore: AuthStore,
+  userLogin: string,
+  projectSlug: string,
+): Promise<void> {
+  const principalSession = authStore.findUserProjectSession(userLogin, projectSlug)
+  if (!principalSession) {
+    throw new Error(`Project "${projectSlug}" was not found or is not accessible.`)
+  }
+
+  const statePaths = getStatePaths()
+  const sourceStore = await loadSourceStore({
+    registryPath: opts.registryPath,
+    fallbackDocsDir: opts.docsDir,
+    principalId: principalSession.principal.id,
+    projectSlug: principalSession.project.slug,
+    tenantSlug: principalSession.tenant.slug,
+    workspaceDir: resolve(opts.workspaceDir ?? `${statePaths.stateDir}/workspace`),
+  })
+  await ensureWorkspaceLayout(sourceStore.tenantRootPath, {
+    homeRootPath: sourceStore.homeRootPath,
+    projectRootPath: sourceStore.projectRootPath,
+    projectSlug: sourceStore.projectSlug,
+  })
 }
 
 function isMountMatch(mountPath: string, path: string): boolean {
@@ -830,6 +867,8 @@ export function createViewerServer(opts: ViewerServerOptions) {
         && !(isSshKeyRoute && method === 'POST')
         && !(isSshSessionRoute && method === 'POST')
         && !(isProjectRoute && method === 'POST')
+        && !(isProjectRoute && method === 'PATCH')
+        && !(isProjectRoute && method === 'DELETE')
         && !(isUserRoute && method === 'POST')
         && !(isCliLoginRequestRoute && method === 'POST')
         && !(isCliLoginExchangeRoute && method === 'POST')
@@ -1267,6 +1306,77 @@ export function createViewerServer(opts: ViewerServerOptions) {
               slug: payload.slug,
               userLogin: session.login,
             })
+            await ensureViewerProjectWorkspace(opts, authStore, session.login, project.slug)
+            sendJson(response, 200, {
+              project: toViewerProjectPayload(project),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        if (method === 'PATCH') {
+          let payload
+          try {
+            payload = await readJsonBody(request) as {
+              displayName?: unknown
+              newSlug?: unknown
+              slug?: unknown
+            }
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+            return
+          }
+
+          if (typeof payload.slug !== 'string' || payload.slug.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing project slug.' })
+            return
+          }
+          if (payload.displayName !== undefined && payload.displayName !== null && typeof payload.displayName !== 'string') {
+            sendJson(response, 400, { error: 'Project display name must be a string.' })
+            return
+          }
+          if (payload.newSlug !== undefined && payload.newSlug !== null && typeof payload.newSlug !== 'string') {
+            sendJson(response, 400, { error: 'New project slug must be a string.' })
+            return
+          }
+
+          try {
+            const project = authStore.updateProject({
+              displayName: typeof payload.displayName === 'string' ? payload.displayName : undefined,
+              newSlug: typeof payload.newSlug === 'string' ? payload.newSlug : undefined,
+              slug: payload.slug,
+              userLogin: session.login,
+            })
+            await ensureViewerProjectWorkspace(opts, authStore, session.login, project.slug)
+            sendJson(response, 200, {
+              project: toViewerProjectPayload(project),
+            })
+          } catch (error) {
+            sendJson(response, 400, {
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          return
+        }
+
+        if (method === 'DELETE') {
+          const slug = url.searchParams.get('slug')
+          if (!slug || slug.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing project slug.' })
+            return
+          }
+
+          try {
+            const project = authStore.archiveProject({
+              slug,
+              userLogin: session.login,
+            })
             sendJson(response, 200, {
               project: toViewerProjectPayload(project),
             })
@@ -1366,6 +1476,22 @@ export function createViewerServer(opts: ViewerServerOptions) {
           if (role === 'owner' && principalSession.membership.role !== 'owner') {
             sendJson(response, 403, { error: 'Only owners can assign the owner role.' })
             return
+          }
+          const targetLogin = normalizeViewerIdentifier(payload.login)
+          const existingTargetUser = targetLogin
+            ? authStore
+                .listUsers({ tenantSlug: principalSession.tenant.slug })
+                .find((user) => user.login === targetLogin)
+            : null
+          if (existingTargetUser && principalSession.membership.role !== 'owner') {
+            if (existingTargetUser.role === 'owner') {
+              sendJson(response, 403, { error: 'Only owners can update owner users.' })
+              return
+            }
+            if (existingTargetUser.role !== role) {
+              sendJson(response, 403, { error: 'Only owners can change existing user roles.' })
+              return
+            }
           }
 
           try {

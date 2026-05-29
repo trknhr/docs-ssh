@@ -284,6 +284,11 @@ textarea {
   box-shadow: 0 0 0 3px rgba(34, 195, 238, 0.12);
 }
 
+.field input[readonly] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 .field textarea {
   min-height: 8rem;
   resize: vertical;
@@ -340,6 +345,21 @@ textarea {
 .action-button:disabled {
   cursor: progress;
   opacity: 0.7;
+}
+
+.danger-button {
+  background: rgba(127, 29, 29, 0.28);
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  border-radius: 0.9rem;
+  color: #fecaca;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0.8rem 1rem;
+}
+
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .explorer-node {
@@ -499,6 +519,12 @@ textarea {
   justify-items: start;
 }
 
+.account-form__footer--inline {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+}
+
 .status-message {
   border-radius: 0.85rem;
   font-size: 0.92rem;
@@ -521,6 +547,13 @@ textarea {
 .project-list {
   display: grid;
   gap: 0.75rem;
+}
+
+.project-editor {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.9rem;
+  padding-top: 0.95rem;
 }
 
 .project-item {
