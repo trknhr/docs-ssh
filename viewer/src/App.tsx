@@ -3,16 +3,25 @@ import { Allotment } from 'allotment'
 import DOMPurify from 'dompurify'
 import { Renderer, marked } from 'marked'
 import { Tree, type NodeApi, type NodeRendererProps, type TreeApi } from 'react-arborist'
-import { archiveProject, createProject, createUser, getFile, getProjects, getSession, getTree, getUsers, updateProject } from './api'
+import { archiveProject, createApiToken, createProject, createUser, getApiTokens, getFile, getProjects, getSession, getTree, getUsers, revokeApiToken, updateProject } from './api'
 import type {
   FilePayload,
   RootSummary,
   TreeNodeData,
+  ViewerApiToken,
+  ViewerApiTokenScope,
   ViewerOidcState,
   ViewerProject,
   ViewerSessionUser,
   ViewerUser,
 } from './types'
+
+const API_TOKEN_SCOPE_OPTIONS: ViewerApiTokenScope[] = [
+  'project:read',
+  'project:write',
+  'sources:read',
+  'ssh-session:create',
+]
 
 function escapeHtml(value: string) {
   return value
@@ -315,13 +324,26 @@ function PreviewHeader(props: {
 }
 
 function AccountPanel(props: {
+  apiTokenCreateError: string | null
+  apiTokenCreateStatus: string | null
+  apiTokenLabel: string
+  apiTokenPlaintext: string | null
+  apiTokenRevokingId: string | null
+  apiTokenScopes: ViewerApiTokenScope[]
+  apiTokenSubmitting: boolean
+  apiTokens: ViewerApiToken[]
+  apiTokensLoading: boolean
   canManageUsers: boolean
   onArchiveProject: () => void
+  onApiTokenLabelChange: (value: string) => void
+  onApiTokenScopeChange: (scope: ViewerApiTokenScope, checked: boolean) => void
+  onCreateApiToken: () => void
   onCreateProject: () => void
   onCreateUser: () => void
   onProjectEditDisplayNameChange: (value: string) => void
   onProjectDisplayNameChange: (value: string) => void
   onProjectSlugChange: (value: string) => void
+  onRevokeApiToken: (id: string) => void
   onSelectProject: (slug: string) => void
   onUpdateProject: () => void
   onUserDisplayNameChange: (value: string) => void
@@ -629,6 +651,90 @@ function AccountPanel(props: {
           </article>
         ) : null}
 
+        {props.canManageUsers && selectedProject ? (
+          <article className="account-card">
+            <p className="eyebrow">API Tokens</p>
+            <h3>Create project-scoped access</h3>
+            <div className="account-form">
+              <label className="field field--stacked">
+                <span>Label</span>
+                <input
+                  maxLength={120}
+                  onChange={(event) => props.onApiTokenLabelChange(event.target.value)}
+                  placeholder="agent token"
+                  type="text"
+                  value={props.apiTokenLabel}
+                />
+              </label>
+              <div className="token-scope-grid">
+                {API_TOKEN_SCOPE_OPTIONS.map((scope) => (
+                  <label className="check-field" key={scope}>
+                    <input
+                      checked={props.apiTokenScopes.includes(scope)}
+                      onChange={(event) => props.onApiTokenScopeChange(scope, event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>{scope}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="account-form__footer">
+                <button
+                  className="action-button"
+                  disabled={props.apiTokenSubmitting}
+                  onClick={props.onCreateApiToken}
+                  type="button"
+                >
+                  {props.apiTokenSubmitting ? 'Creating token...' : 'Create token'}
+                </button>
+                {props.apiTokenCreateStatus ? (
+                  <p className="status-message status-message--success">{props.apiTokenCreateStatus}</p>
+                ) : null}
+                {props.apiTokenCreateError ? (
+                  <p className="status-message status-message--error">{props.apiTokenCreateError}</p>
+                ) : null}
+              </div>
+            </div>
+            {props.apiTokenPlaintext ? (
+              <label className="field field--stacked token-secret">
+                <span>New token</span>
+                <textarea readOnly rows={3} value={props.apiTokenPlaintext} />
+              </label>
+            ) : null}
+            {props.apiTokensLoading ? (
+              <div className="preview-state preview-state--compact">
+                <p>Loading tokens...</p>
+              </div>
+            ) : props.apiTokens.length === 0 ? (
+              <div className="preview-state preview-state--compact">
+                <p>No active API tokens for this project.</p>
+              </div>
+            ) : (
+              <div className="token-list">
+                {props.apiTokens.map((token) => (
+                  <div className="token-item" key={token.id}>
+                    <div>
+                      <strong>{token.label || 'API token'}</strong>
+                      <code>{token.scopes.join(', ')}</code>
+                      <span>
+                        {token.lastUsedAt ? `last used ${new Date(token.lastUsedAt).toLocaleString()}` : 'not used yet'}
+                      </span>
+                    </div>
+                    <button
+                      className="danger-button danger-button--small"
+                      disabled={props.apiTokenRevokingId === token.id}
+                      onClick={() => props.onRevokeApiToken(token.id)}
+                      type="button"
+                    >
+                      {props.apiTokenRevokingId === token.id ? 'Revoking...' : 'Revoke'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </article>
+        ) : null}
+
         <article className="account-card">
           <p className="eyebrow">Agent Config</p>
           <h3>Use the selected project from this directory</h3>
@@ -877,6 +983,19 @@ export function App() {
   const [userCreateError, setUserCreateError] = useState<string | null>(null)
   const [userCreateStatus, setUserCreateStatus] = useState<string | null>(null)
   const [userSubmitting, setUserSubmitting] = useState(false)
+  const [apiTokens, setApiTokens] = useState<ViewerApiToken[]>([])
+  const [apiTokensLoading, setApiTokensLoading] = useState(false)
+  const [apiTokenLabel, setApiTokenLabel] = useState('')
+  const [apiTokenScopes, setApiTokenScopes] = useState<ViewerApiTokenScope[]>([
+    'project:read',
+    'sources:read',
+    'ssh-session:create',
+  ])
+  const [apiTokenPlaintext, setApiTokenPlaintext] = useState<string | null>(null)
+  const [apiTokenCreateError, setApiTokenCreateError] = useState<string | null>(null)
+  const [apiTokenCreateStatus, setApiTokenCreateStatus] = useState<string | null>(null)
+  const [apiTokenSubmitting, setApiTokenSubmitting] = useState(false)
+  const [apiTokenRevokingId, setApiTokenRevokingId] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const deferredSearchTerm = useDeferredValue(searchTerm)
   const explorerViewport = useElementSize<HTMLDivElement>()
@@ -1003,6 +1122,35 @@ export function App() {
       cancelled = true
     }
   }, [canManageUsers, session])
+
+  useEffect(() => {
+    if (!session || !canManageUsers || !selectedProject) {
+      setApiTokens([])
+      setApiTokensLoading(false)
+      setApiTokenPlaintext(null)
+      return
+    }
+
+    let cancelled = false
+    setApiTokensLoading(true)
+    setApiTokenCreateError(null)
+
+    getApiTokens(selectedProject)
+      .then((payload) => {
+        if (cancelled) return
+        setApiTokens(payload.tokens)
+        setApiTokensLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setApiTokenCreateError(error instanceof Error ? error.message : String(error))
+        setApiTokensLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [canManageUsers, selectedProject, session])
 
   useEffect(() => {
     const handlePopState = () => {
@@ -1242,6 +1390,68 @@ export function App() {
     }
   }
 
+  const setApiTokenScope = (scope: ViewerApiTokenScope, checked: boolean) => {
+    setApiTokenScopes((current) => {
+      if (checked) return [...new Set([...current, scope])]
+      return current.filter((entry) => entry !== scope)
+    })
+    setApiTokenPlaintext(null)
+  }
+
+  const submitApiToken = async () => {
+    const project = getSelectedProject()
+    if (!project) {
+      setApiTokenCreateError('Select a project first.')
+      setApiTokenCreateStatus(null)
+      return
+    }
+    if (apiTokenScopes.length === 0) {
+      setApiTokenCreateError('Select at least one token scope.')
+      setApiTokenCreateStatus(null)
+      return
+    }
+
+    setApiTokenSubmitting(true)
+    setApiTokenCreateError(null)
+    setApiTokenCreateStatus(null)
+    setApiTokenPlaintext(null)
+
+    try {
+      const payload = await createApiToken({
+        label: apiTokenLabel.trim() || undefined,
+        project: project.slug,
+        scopes: apiTokenScopes,
+      })
+      setApiTokens((current) => payload.tokens ?? [payload.token, ...current])
+      setApiTokenLabel('')
+      setApiTokenPlaintext(payload.token.token ?? null)
+      setApiTokenCreateStatus(`Created token for ${project.slug}`)
+    } catch (error) {
+      setApiTokenCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setApiTokenSubmitting(false)
+    }
+  }
+
+  const revokeSelectedApiToken = async (id: string) => {
+    if (!window.confirm('Revoke this API token?')) return
+
+    setApiTokenRevokingId(id)
+    setApiTokenCreateError(null)
+    setApiTokenCreateStatus(null)
+    setApiTokenPlaintext(null)
+
+    try {
+      await revokeApiToken(id)
+      setApiTokens((current) => current.filter((token) => token.id !== id))
+      setApiTokenCreateStatus('Revoked token')
+    } catch (error) {
+      setApiTokenCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setApiTokenRevokingId(null)
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -1364,13 +1574,26 @@ export function App() {
                 <div className="preview-body">
                   {showAccountPanel ? (
                     <AccountPanel
+                      apiTokenCreateError={apiTokenCreateError}
+                      apiTokenCreateStatus={apiTokenCreateStatus}
+                      apiTokenLabel={apiTokenLabel}
+                      apiTokenPlaintext={apiTokenPlaintext}
+                      apiTokenRevokingId={apiTokenRevokingId}
+                      apiTokenScopes={apiTokenScopes}
+                      apiTokenSubmitting={apiTokenSubmitting}
+                      apiTokens={apiTokens}
+                      apiTokensLoading={apiTokensLoading}
                       canManageUsers={canManageUsers}
                       onArchiveProject={submitProjectArchive}
+                      onApiTokenLabelChange={setApiTokenLabel}
+                      onApiTokenScopeChange={setApiTokenScope}
+                      onCreateApiToken={submitApiToken}
                       onCreateProject={submitProject}
                       onCreateUser={submitUser}
                       onProjectEditDisplayNameChange={setProjectEditDisplayName}
                       onProjectDisplayNameChange={setProjectDisplayName}
                       onProjectSlugChange={setProjectSlug}
+                      onRevokeApiToken={revokeSelectedApiToken}
                       onSelectProject={selectProject}
                       onUpdateProject={submitProjectUpdate}
                       onUserDisplayNameChange={setUserDisplayName}

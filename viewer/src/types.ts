@@ -47,6 +47,29 @@ export interface ViewerProjectMutationResponse {
   project: ViewerProject
 }
 
+export type ViewerApiTokenScope = 'project:read' | 'project:write' | 'sources:read' | 'ssh-session:create'
+
+export interface ViewerApiToken {
+  createdAt: string
+  expiresAt: string | null
+  id: string
+  label: string | null
+  lastUsedAt: string | null
+  project: string
+  revokedAt: string | null
+  scopes: ViewerApiTokenScope[]
+  token?: string
+}
+
+export interface ViewerApiTokenListResponse {
+  tokens: ViewerApiToken[]
+}
+
+export interface ViewerApiTokenMutationResponse {
+  token: ViewerApiToken
+  tokens?: ViewerApiToken[]
+}
+
 export interface ViewerUserIdentity {
   email?: string | null
   issuer: string

@@ -1,6 +1,9 @@
 import type {
   FileResponse,
   TreeResponse,
+  ViewerApiTokenListResponse,
+  ViewerApiTokenMutationResponse,
+  ViewerApiTokenScope,
   ViewerProjectListResponse,
   ViewerProjectMutationResponse,
   ViewerSessionResponse,
@@ -71,6 +74,31 @@ export async function updateProject(input: {
 
 export async function archiveProject(slug: string) {
   return fetchJson<ViewerProjectMutationResponse>(`/api/projects?slug=${encodeURIComponent(slug)}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function getApiTokens(project: string) {
+  return fetchJson<ViewerApiTokenListResponse>(`/api/tokens?project=${encodeURIComponent(project)}`)
+}
+
+export async function createApiToken(input: {
+  expiresAt?: string
+  label?: string
+  project: string
+  scopes?: ViewerApiTokenScope[]
+}) {
+  return fetchJson<ViewerApiTokenMutationResponse>('/api/tokens', {
+    body: JSON.stringify(input),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    method: 'POST',
+  })
+}
+
+export async function revokeApiToken(id: string) {
+  return fetchJson<ViewerApiTokenMutationResponse>(`/api/tokens?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
 }
