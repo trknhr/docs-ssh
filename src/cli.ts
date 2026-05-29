@@ -66,6 +66,15 @@ interface CliSessionFile {
   viewerOrigin: string
 }
 
+interface CliSshSessionPayload {
+  createdAt: string
+  expiresAt: string
+  fingerprint: string
+  project: string
+  scopes: string[]
+  username: string
+}
+
 function printUsage(): void {
   console.log(`docs-ssh CLI
 
@@ -75,6 +84,7 @@ Usage:
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
   docs-ssh login [--server <alias>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open]
+  docs-ssh token login --token <token> [--server <alias>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json]
   docs-ssh status [--server <alias>] [--project <slug>] [--json]
   docs-ssh logout [--server <alias>] [--project <slug>] [--json]
   docs-ssh projects list [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all]
@@ -227,6 +237,62 @@ function createSshCommand(session: {
   username: string
 }): string {
   return `ssh -i ${session.identityFile} ${session.username}@${session.server}`
+}
+
+async function createCliIdentity(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): Promise<{
+  identityFile: string
+  publicKey: string
+}> {
+  const sessionDir = getCliSessionDir(args, config)
+  const identityFile = resolve(sessionDir, 'id_ed25519')
+  const keyPair = sshUtils.generateKeyPairSync('ed25519')
+
+  await mkdir(sessionDir, { recursive: true, mode: 0o700 })
+  await chmod(sessionDir, 0o700)
+  await writeFile(identityFile, String(keyPair.private), { mode: 0o600 })
+  await chmod(identityFile, 0o600)
+
+  return {
+    identityFile,
+    publicKey: String(keyPair.public),
+  }
+}
+
+async function writeCliSessionFile(
+  args: ParsedArgs,
+  config: CliLoginConfig,
+  identityFile: string,
+  session: CliSshSessionPayload,
+): Promise<CliSessionFile> {
+  const sessionFile: CliSessionFile = {
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    fingerprint: session.fingerprint,
+    identityFile,
+    project: session.project,
+    scopes: session.scopes,
+    server: config.server,
+    sshCommand: createSshCommand({
+      identityFile,
+      server: config.server,
+      username: session.username,
+    }),
+    username: session.username,
+    viewerOrigin: config.viewerOrigin,
+  }
+  await writeFile(getCliSessionPath(args, config), `${JSON.stringify(sessionFile, null, 2)}\n`, { mode: 0o600 })
+  await chmod(getCliSessionPath(args, config), 0o600)
+  return sessionFile
+}
+
+function printCliSessionSummary(sessionFile: CliSessionFile): void {
+  console.log('Created docs-ssh SSH session')
+  console.log(`- server: ${sessionFile.server}`)
+  console.log(`- project: ${sessionFile.project}`)
+  console.log(`- username: ${sessionFile.username}`)
+  console.log(`- expires: ${sessionFile.expiresAt}`)
+  console.log(`- identity: ${sessionFile.identityFile}`)
+  console.log(`- command: ${sessionFile.sshCommand}`)
 }
 
 async function openBrowser(url: string): Promise<void> {
@@ -512,15 +578,7 @@ async function cliLogin(args: ParsedArgs): Promise<void> {
   const scopes = getFlagString(args, 'scopes')?.split(',')
   const state = randomBytes(24).toString('base64url')
   const callback = await createCliLoginCallback(state)
-  const sessionDir = getCliSessionDir(args, config)
-  const identityFile = resolve(sessionDir, 'id_ed25519')
-  const keyPair = sshUtils.generateKeyPairSync('ed25519')
-  const publicKey = String(keyPair.public)
-
-  await mkdir(sessionDir, { recursive: true, mode: 0o700 })
-  await chmod(sessionDir, 0o700)
-  await writeFile(identityFile, String(keyPair.private), { mode: 0o600 })
-  await chmod(identityFile, 0o600)
+  const identity = await createCliIdentity(args, config)
 
   try {
     const requestPayload = await fetchJson<{
@@ -531,7 +589,7 @@ async function cliLogin(args: ParsedArgs): Promise<void> {
       body: JSON.stringify({
         callbackUrl: callback.callbackUrl,
         project: config.project,
-        publicKey,
+        publicKey: identity.publicKey,
         scopes,
         state,
         ttlSeconds,
@@ -551,14 +609,7 @@ async function cliLogin(args: ParsedArgs): Promise<void> {
 
     const callbackPayload = await callback.wait
     const exchangePayload = await fetchJson<{
-      session: {
-        createdAt: string
-        expiresAt: string
-        fingerprint: string
-        project: string
-        scopes: string[]
-        username: string
-      }
+      session: CliSshSessionPayload
     }>(`${config.viewerOrigin}/api/cli-login/exchange`, {
       body: JSON.stringify({
         code: callbackPayload.code,
@@ -570,40 +621,46 @@ async function cliLogin(args: ParsedArgs): Promise<void> {
       method: 'POST',
     })
 
-    const sessionFile: CliSessionFile = {
-      createdAt: exchangePayload.session.createdAt,
-      expiresAt: exchangePayload.session.expiresAt,
-      fingerprint: exchangePayload.session.fingerprint,
-      identityFile,
-      project: exchangePayload.session.project,
-      scopes: exchangePayload.session.scopes,
-      server: config.server,
-      sshCommand: createSshCommand({
-        identityFile,
-        server: config.server,
-        username: exchangePayload.session.username,
-      }),
-      username: exchangePayload.session.username,
-      viewerOrigin: config.viewerOrigin,
-    }
-    await writeFile(getCliSessionPath(args, config), `${JSON.stringify(sessionFile, null, 2)}\n`, { mode: 0o600 })
-    await chmod(getCliSessionPath(args, config), 0o600)
+    const sessionFile = await writeCliSessionFile(args, config, identity.identityFile, exchangePayload.session)
 
     if (json) {
       console.log(JSON.stringify(sessionFile, null, 2))
       return
     }
 
-    console.log('Created docs-ssh SSH session')
-    console.log(`- server: ${sessionFile.server}`)
-    console.log(`- project: ${sessionFile.project}`)
-    console.log(`- username: ${sessionFile.username}`)
-    console.log(`- expires: ${sessionFile.expiresAt}`)
-    console.log(`- identity: ${sessionFile.identityFile}`)
-    console.log(`- command: ${sessionFile.sshCommand}`)
+    printCliSessionSummary(sessionFile)
   } finally {
     await callback.close()
   }
+}
+
+async function cliTokenLogin(args: ParsedArgs): Promise<void> {
+  const config = await resolveCliLoginConfig(args)
+  const token = getRequiredFlagString(args, 'token')
+  const ttlSeconds = getOptionalIntegerFlag(args, 'ttl-seconds') ?? DEFAULT_CLI_LOGIN_TTL_SECONDS
+  const identity = await createCliIdentity(args, config)
+  const payload = await fetchJson<{
+    session: CliSshSessionPayload
+  }>(`${config.viewerOrigin}/api/ssh-sessions`, {
+    body: JSON.stringify({
+      project: config.project,
+      publicKey: identity.publicKey,
+      ttlSeconds,
+    }),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    method: 'POST',
+  })
+  const sessionFile = await writeCliSessionFile(args, config, identity.identityFile, payload.session)
+
+  if (getJsonFlag(args)) {
+    console.log(JSON.stringify(sessionFile, null, 2))
+    return
+  }
+
+  printCliSessionSummary(sessionFile)
 }
 
 async function cliStatus(args: ParsedArgs): Promise<void> {
@@ -1115,6 +1172,16 @@ async function main() {
 
   if (command === 'login') {
     await cliLogin(args)
+    return
+  }
+
+  if (command === 'token') {
+    if (subcommand === 'login') {
+      await cliTokenLogin(args)
+      return
+    }
+
+    printUsage()
     return
   }
 
