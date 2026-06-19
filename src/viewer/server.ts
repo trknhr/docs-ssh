@@ -132,7 +132,6 @@ interface CliLoginRequest {
   createdAt: number
   expiresAt: number
   id: string
-  project?: string
   publicKey: string
   result?: ReturnType<typeof toViewerSshSessionPayload>
   scopes?: string[]
@@ -421,7 +420,7 @@ function createCliLoginRequestHtml(request: CliLoginRequest, session: ActiveView
     '<h1>Authorize docs-ssh CLI</h1>',
     `<p>Signed in as <strong>${escapeHtml(session.userDisplayName || session.login)}</strong>.</p>`,
     '<dl>',
-    `<div><dt>Project</dt><dd><code>${escapeHtml(request.project ?? 'default')}</code></dd></div>`,
+    '<div><dt>Access</dt><dd><code>Authorized projects for this user</code></dd></div>',
     `<div><dt>Expires</dt><dd><code>${escapeHtml(new Date(request.expiresAt).toISOString())}</code></dd></div>`,
     '</dl>',
     `<form method="post" action="/cli-login/${encodeURIComponent(request.id)}/approve">`,
@@ -999,7 +998,6 @@ export function createViewerServer(opts: ViewerServerOptions) {
         try {
           payload = await readJsonBody(request) as {
             callbackUrl?: unknown
-            project?: unknown
             publicKey?: unknown
             scopes?: unknown
             state?: unknown
@@ -1024,10 +1022,6 @@ export function createViewerServer(opts: ViewerServerOptions) {
           sendJson(response, 400, { error: 'Missing state.' })
           return
         }
-        if (payload.project !== undefined && payload.project !== null && typeof payload.project !== 'string') {
-          sendJson(response, 400, { error: 'Project slug must be a string.' })
-          return
-        }
         const ttlSeconds = payload.ttlSeconds
         if (ttlSeconds !== undefined && ttlSeconds !== null && (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds) || ttlSeconds <= 0)) {
           sendJson(response, 400, { error: 'ttlSeconds must be a positive integer.' })
@@ -1049,7 +1043,6 @@ export function createViewerServer(opts: ViewerServerOptions) {
           createdAt,
           expiresAt: createdAt + CLI_LOGIN_REQUEST_TTL_MS,
           id,
-          project: typeof payload.project === 'string' && payload.project.trim() ? payload.project.trim() : undefined,
           publicKey: payload.publicKey,
           scopes: Array.isArray(payload.scopes) ? payload.scopes : undefined,
           state: payload.state,
@@ -1121,7 +1114,6 @@ export function createViewerServer(opts: ViewerServerOptions) {
 
         try {
           const sshSession = authStore.createSshSession({
-            projectSlug: loginRequest.project,
             publicKey: loginRequest.publicKey,
             scopes: loginRequest.scopes,
             ttlSeconds: loginRequest.ttlSeconds,
@@ -1459,6 +1451,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
                 ?? (typeof payload.project === 'string' ? payload.project : undefined),
               publicKey: payload.publicKey,
               scopes: apiTokenSession?.token.scopes ?? (Array.isArray(payload.scopes) ? payload.scopes : undefined),
+              sourceApiTokenId: apiTokenSession?.token.id,
               ttlSeconds: typeof ttlSeconds === 'number' ? ttlSeconds : undefined,
               userLogin: session?.login ?? apiTokenSession?.principalSession.login,
             })

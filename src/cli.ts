@@ -53,6 +53,8 @@ interface CliLoginConfig {
   viewerOrigin: string
 }
 
+type CliSessionScope = 'project' | 'server'
+
 interface CliSessionFile {
   createdAt: string
   expiresAt: string
@@ -83,7 +85,7 @@ Usage:
   docs-ssh ingest git-repo <repo-url> [--name <name>] [--subdir <path>] [--ref <ref>] [--default]
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
-  docs-ssh login [--server <alias>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open]
+  docs-ssh login [--server <alias>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open]
   docs-ssh token login --token <token> [--server <alias>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json]
   docs-ssh status [--server <alias>] [--project <slug>] [--json]
   docs-ssh logout [--server <alias>] [--project <slug>] [--json]
@@ -187,17 +189,26 @@ function getDocsSshHome(args: ParsedArgs): string {
   return resolve(getFlagString(args, 'home') ?? process.env.DOCS_SSH_HOME ?? `${homedir()}/.docs-ssh`)
 }
 
-function getCliSessionDir(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): string {
-  return resolve(
+function getCliSessionDir(
+  args: ParsedArgs,
+  config: Pick<CliLoginConfig, 'project' | 'server'>,
+  scope: CliSessionScope = 'project',
+): string {
+  const pathParts = [
     getDocsSshHome(args),
     'sessions',
     sanitizePathPart(config.server),
-    sanitizePathPart(config.project),
-  )
+  ]
+  if (scope === 'project') pathParts.push(sanitizePathPart(config.project))
+  return resolve(...pathParts)
 }
 
-function getCliSessionPath(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): string {
-  return resolve(getCliSessionDir(args, config), 'session.json')
+function getCliSessionPath(
+  args: ParsedArgs,
+  config: Pick<CliLoginConfig, 'project' | 'server'>,
+  scope: CliSessionScope = 'project',
+): string {
+  return resolve(getCliSessionDir(args, config, scope), 'session.json')
 }
 
 async function resolveCliLoginConfig(args: ParsedArgs): Promise<CliLoginConfig> {
@@ -218,13 +229,19 @@ async function resolveCliLoginConfig(args: ParsedArgs): Promise<CliLoginConfig> 
   }
 }
 
-async function readCliSession(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): Promise<CliSessionFile | null> {
+async function readCliSessionFile(path: string): Promise<CliSessionFile | null> {
   try {
-    return JSON.parse(await readFile(getCliSessionPath(args, config), 'utf8')) as CliSessionFile
+    return JSON.parse(await readFile(path, 'utf8')) as CliSessionFile
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
     throw error
   }
+}
+
+async function readCliSession(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): Promise<CliSessionFile | null> {
+  const serverSession = await readCliSessionFile(getCliSessionPath(args, config, 'server'))
+  if (serverSession) return serverSession
+  return readCliSessionFile(getCliSessionPath(args, config, 'project'))
 }
 
 function isCliSessionActive(session: CliSessionFile | null): boolean {
@@ -239,11 +256,15 @@ function createSshCommand(session: {
   return `ssh -i ${session.identityFile} ${session.username}@${session.server}`
 }
 
-async function createCliIdentity(args: ParsedArgs, config: Pick<CliLoginConfig, 'project' | 'server'>): Promise<{
+async function createCliIdentity(
+  args: ParsedArgs,
+  config: Pick<CliLoginConfig, 'project' | 'server'>,
+  scope: CliSessionScope = 'project',
+): Promise<{
   identityFile: string
   publicKey: string
 }> {
-  const sessionDir = getCliSessionDir(args, config)
+  const sessionDir = getCliSessionDir(args, config, scope)
   const identityFile = resolve(sessionDir, 'id_ed25519')
   const keyPair = sshUtils.generateKeyPairSync('ed25519')
 
@@ -263,6 +284,7 @@ async function writeCliSessionFile(
   config: CliLoginConfig,
   identityFile: string,
   session: CliSshSessionPayload,
+  scope: CliSessionScope = 'project',
 ): Promise<CliSessionFile> {
   const sessionFile: CliSessionFile = {
     createdAt: session.createdAt,
@@ -280,8 +302,8 @@ async function writeCliSessionFile(
     username: session.username,
     viewerOrigin: config.viewerOrigin,
   }
-  await writeFile(getCliSessionPath(args, config), `${JSON.stringify(sessionFile, null, 2)}\n`, { mode: 0o600 })
-  await chmod(getCliSessionPath(args, config), 0o600)
+  await writeFile(getCliSessionPath(args, config, scope), `${JSON.stringify(sessionFile, null, 2)}\n`, { mode: 0o600 })
+  await chmod(getCliSessionPath(args, config, scope), 0o600)
   return sessionFile
 }
 
@@ -578,7 +600,7 @@ async function cliLogin(args: ParsedArgs): Promise<void> {
   const scopes = getFlagString(args, 'scopes')?.split(',')
   const state = randomBytes(24).toString('base64url')
   const callback = await createCliLoginCallback(state)
-  const identity = await createCliIdentity(args, config)
+  const identity = await createCliIdentity(args, config, 'server')
 
   try {
     const requestPayload = await fetchJson<{
@@ -588,7 +610,6 @@ async function cliLogin(args: ParsedArgs): Promise<void> {
     }>(`${config.viewerOrigin}/api/cli-login/requests`, {
       body: JSON.stringify({
         callbackUrl: callback.callbackUrl,
-        project: config.project,
         publicKey: identity.publicKey,
         scopes,
         state,
@@ -621,7 +642,7 @@ async function cliLogin(args: ParsedArgs): Promise<void> {
       method: 'POST',
     })
 
-    const sessionFile = await writeCliSessionFile(args, config, identity.identityFile, exchangePayload.session)
+    const sessionFile = await writeCliSessionFile(args, config, identity.identityFile, exchangePayload.session, 'server')
 
     if (json) {
       console.log(JSON.stringify(sessionFile, null, 2))
@@ -693,8 +714,11 @@ async function cliStatus(args: ParsedArgs): Promise<void> {
 
 async function cliLogout(args: ParsedArgs): Promise<void> {
   const config = await resolveCliLoginConfig(args)
-  const sessionDir = getCliSessionDir(args, config)
-  await rm(sessionDir, { force: true, recursive: true })
+  const sessionDirs = new Set([
+    getCliSessionDir(args, config, 'server'),
+    getCliSessionDir(args, config, 'project'),
+  ])
+  await Promise.all([...sessionDirs].map((sessionDir) => rm(sessionDir, { force: true, recursive: true })))
 
   if (getJsonFlag(args)) {
     console.log(JSON.stringify({
@@ -705,7 +729,7 @@ async function cliLogout(args: ParsedArgs): Promise<void> {
     return
   }
 
-  console.log(`Removed local docs-ssh session for ${config.server}/${config.project}`)
+  console.log(`Removed local docs-ssh session for ${config.server}`)
   console.log('The server-side SSH session will stop working when it expires.')
 }
 

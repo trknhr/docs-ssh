@@ -172,7 +172,7 @@ describe('createAuthStore', () => {
     authStore.close()
 
     const migratedDatabase = new Database(dbPath)
-    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(5)
+    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(6)
     expect(
       migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get(),
     ).toBeTruthy()
@@ -463,6 +463,86 @@ describe('createAuthStore', () => {
         userLogin: 'alice',
       }),
     ).toThrow(/ttlSeconds must be positive/)
+
+    authStore.close()
+  })
+
+  it('authorizes SSH project access against current memberships and source tokens', async () => {
+    const tempDir = await createTempDir()
+    const dbPath = resolve(tempDir, 'auth.sqlite')
+    const authStore = createAuthStore({ dbPath })
+    const owner = authStore.ensureSingleTenantOwner({
+      ownerLogin: 'alice',
+      ownerName: 'Alice',
+    })
+    const project = authStore.createProject({
+      displayName: 'Product Docs',
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
+    const tokenSessionKey = sshUtils.generateKeyPairSync('ed25519')
+    const apiToken = authStore.createApiToken({
+      label: 'agent token',
+      projectSlug: 'product-docs',
+      scopes: ['project:read', 'ssh-session:create'],
+      userLogin: 'alice',
+    })
+    const tokenSession = authStore.createSshSession({
+      projectSlug: 'product-docs',
+      publicKey: tokenSessionKey.public,
+      scopes: apiToken.scopes,
+      sourceApiTokenId: apiToken.id,
+      userLogin: 'alice',
+      username: 'sess_token_authz',
+    })
+
+    expect(authStore.authorizeSshProjectAccess({
+      operation: 'read',
+      principalId: owner.principal.id,
+      projectSlug: 'product-docs',
+      sshSessionId: tokenSession.id,
+      tenantId: owner.tenant.id,
+    })).toEqual({ allowed: true })
+
+    authStore.revokeApiToken({
+      id: apiToken.id,
+      userLogin: 'alice',
+    })
+    expect(authStore.authorizeSshProjectAccess({
+      operation: 'read',
+      principalId: owner.principal.id,
+      projectSlug: 'product-docs',
+      sshSessionId: tokenSession.id,
+      tenantId: owner.tenant.id,
+    })).toMatchObject({
+      allowed: false,
+      reason: 'Source API token is no longer active.',
+    })
+
+    const membershipSessionKey = sshUtils.generateKeyPairSync('ed25519')
+    const membershipSession = authStore.createSshSession({
+      projectSlug: 'product-docs',
+      publicKey: membershipSessionKey.public,
+      scopes: ['project:read'],
+      userLogin: 'alice',
+      username: 'sess_membership_authz',
+    })
+    const database = new Database(dbPath)
+    database
+      .prepare('DELETE FROM project_memberships WHERE project_id = ? AND principal_id = ?')
+      .run(project.id, owner.principal.id)
+    database.close()
+
+    expect(authStore.authorizeSshProjectAccess({
+      operation: 'read',
+      principalId: owner.principal.id,
+      projectSlug: 'product-docs',
+      sshSessionId: membershipSession.id,
+      tenantId: owner.tenant.id,
+    })).toMatchObject({
+      allowed: false,
+      reason: 'Project access denied for "product-docs".',
+    })
 
     authStore.close()
   })

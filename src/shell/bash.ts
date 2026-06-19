@@ -8,12 +8,13 @@ import { resolve } from 'node:path'
 import { Bash, defineCommand, InMemoryFs, ReadWriteFs } from 'just-bash'
 import { loadInstanceConfig, type InstanceConfig } from '../instance-config.js'
 import { loadSourceStore } from '../sources/source-store.js'
+import type { SourceStore } from '../sources/types.js'
 import {
   ensureWorkspaceLayout,
   getWorkspaceReadOnlyPaths,
   getWorkspaceWritablePaths,
 } from '../workspace/layout.js'
-import { ExtendedMountableFs } from './extended-mountable-fs.js'
+import { ExtendedMountableFs, type FsAccessGuard } from './extended-mountable-fs.js'
 import {
   createAgentsMarkdown,
   createSetupMarkdown,
@@ -89,6 +90,7 @@ function createBootstrapCommand(payload: unknown, canRead: boolean) {
 }
 
 export interface CreateBashSessionContext {
+  accessibleProjects?: Array<{ displayName?: string, slug: string }>
   displayName?: string
   login?: string
   principalId?: string
@@ -100,6 +102,7 @@ export interface CreateBashSessionContext {
 }
 
 export interface CreateBashOptions {
+  accessGuard?: FsAccessGuard
   docsDir?: string
   docsName?: string
   env?: Record<string, string>
@@ -131,6 +134,27 @@ export async function createBash(opts: CreateBashOptions = {}) {
     projectSlug: sourceStore.projectSlug,
     projectRootPath: sourceStore.projectRootPath,
   })
+  const accessibleProjectInputs = opts.session?.accessibleProjects ?? [{ slug: sourceStore.projectSlug }]
+  const accessibleProjectSlugs = accessibleProjectInputs.map((project) => project.slug)
+  const projectStores: SourceStore[] = []
+  for (const projectSlug of [...new Set(accessibleProjectSlugs)]) {
+    const projectSourceStore = projectSlug === sourceStore.projectSlug
+      ? sourceStore
+      : await loadSourceStore({
+        registryPath,
+        fallbackDocsDir: docsDir,
+        principalId: opts.session?.principalId,
+        projectSlug,
+        tenantSlug: opts.session?.tenantSlug,
+        workspaceDir,
+      })
+    await ensureWorkspaceLayout(projectSourceStore.tenantRootPath, {
+      homeRootPath: projectSourceStore.homeRootPath,
+      projectSlug: projectSourceStore.projectSlug,
+      projectRootPath: projectSourceStore.projectRootPath,
+    })
+    projectStores.push(projectSourceStore)
+  }
   const sshHost = opts.sshHost ?? instanceConfig.ssh.connectHost
   const sshPort = opts.sshPort ?? instanceConfig.ssh.connectPort
   const agentsMarkdown = createAgentsMarkdown({
@@ -158,6 +182,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '',
     '- `/home` is private durable work for the authenticated principal.',
     `- \`${sourceStore.projectMountPath}\` is the current project workspace.`,
+    `- \`${sourceStore.projectsMountPath}\` contains accessible project workspaces by slug.`,
     `- \`${sourceStore.projectMountPath}/issues\` is project issue tracking: what to do, why, status, next action, and result links.`,
     `- \`${sourceStore.projectMountPath}/tasks\` stores research and work results.`,
     '- `/tmp` is temporary and resets between SSH sessions.',
@@ -199,6 +224,11 @@ export async function createBash(opts: CreateBashOptions = {}) {
       root: sourceStore.projectMountPath,
       slug: sourceStore.projectSlug,
     },
+    projects: projectStores.map((projectStore) => ({
+      current: projectStore.projectSlug === sourceStore.projectSlug,
+      root: projectStore.projectMountPath,
+      slug: projectStore.projectSlug,
+    })),
     paths: {
       rootReadme: '/README.md',
       home: sourceStore.homeMountPath,
@@ -212,13 +242,16 @@ export async function createBash(opts: CreateBashOptions = {}) {
   }
 
   const fs = new ExtendedMountableFs({
+    accessGuard: opts.accessGuard,
     readOnlyPaths: [
-      ...getWorkspaceReadOnlyPaths({
-        homeMountPath: sourceStore.homeMountPath,
-        projectMountPath: sourceStore.projectMountPath,
-        projectSlug: sourceStore.projectSlug,
-        projectsMountPath: sourceStore.projectsMountPath,
-      }),
+      ...projectStores.flatMap((projectStore) =>
+        getWorkspaceReadOnlyPaths({
+          homeMountPath: sourceStore.homeMountPath,
+          projectMountPath: projectStore.projectMountPath,
+          projectSlug: projectStore.projectSlug,
+          projectsMountPath: projectStore.projectsMountPath,
+        }),
+      ),
     ],
     writablePaths: [
       '/bin',
@@ -226,44 +259,65 @@ export async function createBash(opts: CreateBashOptions = {}) {
       '/proc',
       '/usr',
       '/usr/bin',
-      ...(canWriteHome || canWriteProject ? getWorkspaceWritablePaths({
-        homeMountPath: sourceStore.homeMountPath,
-        projectMountPath: sourceStore.projectMountPath,
-        projectSlug: sourceStore.projectSlug,
-        projectsMountPath: sourceStore.projectsMountPath,
-        tmpMountPath: sourceStore.tmpMountPath,
-      }).filter((path) => {
+      ...(canWriteHome || canWriteProject ? [
+        ...getWorkspaceWritablePaths({
+          homeMountPath: sourceStore.homeMountPath,
+          projectMountPath: sourceStore.projectMountPath,
+          projectSlug: sourceStore.projectSlug,
+          projectsMountPath: sourceStore.projectsMountPath,
+          tmpMountPath: sourceStore.tmpMountPath,
+        }),
+        ...projectStores.flatMap((projectStore) =>
+          getWorkspaceWritablePaths({
+            homeMountPath: sourceStore.homeMountPath,
+            projectMountPath: projectStore.projectMountPath,
+            projectSlug: projectStore.projectSlug,
+            projectsMountPath: projectStore.projectsMountPath,
+            tmpMountPath: sourceStore.tmpMountPath,
+          }),
+        ),
+      ].filter((path) => {
         if (path === sourceStore.tmpMountPath) return true
         if (path === sourceStore.homeMountPath || path.startsWith(`${sourceStore.homeMountPath}/`)) {
           return canWriteHome
         }
-        if (path.startsWith(`${sourceStore.projectMountPath}/`)) {
-          return canWriteProject
-        }
-        const concreteProjectPath = `${sourceStore.projectsMountPath}/${sourceStore.projectSlug}`
-        if (path.startsWith(`${concreteProjectPath}/`)) {
-          return canWriteProject
-        }
-        return false
+        return canWriteProject && projectStores.some((projectStore) => path.startsWith(`${projectStore.projectMountPath}/`))
       }) : [sourceStore.tmpMountPath]),
     ],
     initialFiles: {
       '/README.md': rootReadme,
-      ...(canReadProject ? { [`${sourceStore.projectMountPath}/README.md`]: projectReadme } : {}),
+      ...(canReadProject
+        ? Object.fromEntries(projectStores.map((projectStore) => [
+          `${projectStore.projectMountPath}/README.md`,
+          projectStore.projectSlug === sourceStore.projectSlug
+            ? projectReadme
+            : [
+              '# Project',
+              '',
+              `This is the project workspace for \`${projectStore.projectSlug}\`.`,
+              '',
+              '- `issues/`: project issue tracking.',
+              '- `tasks/`: research and work results.',
+              '',
+            ].join('\n'),
+        ]))
+        : {}),
     },
     mounts: [
       ...(canReadHome ? [{
         mountPoint: sourceStore.homeMountPath,
         filesystem: new ReadWriteFs({ root: sourceStore.homeRootPath }),
       }] : []),
-      ...(canReadProject ? [{
-        mountPoint: `${sourceStore.projectMountPath}/issues`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/issues` }),
-      },
-      {
-        mountPoint: `${sourceStore.projectMountPath}/tasks`,
-        filesystem: new ReadWriteFs({ root: `${sourceStore.projectRootPath}/tasks` }),
-      }] : []),
+      ...(canReadProject ? projectStores.flatMap((projectStore) => [
+        {
+          mountPoint: `${projectStore.projectMountPath}/issues`,
+          filesystem: new ReadWriteFs({ root: `${projectStore.projectRootPath}/issues` }),
+        },
+        {
+          mountPoint: `${projectStore.projectMountPath}/tasks`,
+          filesystem: new ReadWriteFs({ root: `${projectStore.projectRootPath}/tasks` }),
+        },
+      ]) : []),
       {
         mountPoint: sourceStore.tmpMountPath,
         filesystem: new InMemoryFs(),

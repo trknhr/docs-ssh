@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import ssh2 from 'ssh2'
 import { createAuthStore } from './auth/store.js'
@@ -69,6 +70,7 @@ async function createTestServer() {
   const port = await server.listen()
   return {
     allowedKey,
+    authDbPath,
     owner,
     port,
     sessionKey,
@@ -247,6 +249,17 @@ describe('createSSHServer', () => {
       project: { slug: 'product-docs' },
       scopes: ['bootstrap:read', 'project:read'],
     })
+    const bootstrapPayload = JSON.parse(bootstrapJson) as {
+      projects: Array<{ slug: string }>
+    }
+    expect(bootstrapPayload.projects.map((project) => project.slug).sort()).toEqual([
+      'default',
+      'product-docs',
+    ])
+
+    const crossProject = await execCommand(client, 'ls /projects/default/tasks')
+    expect(crossProject.exitCode).toBe(0)
+    expect(crossProject.stderr).toBe('')
 
     await expect(
       connectExpectFailure({
@@ -256,6 +269,77 @@ describe('createSSHServer', () => {
         username: 'wrong-session-user',
       }),
     ).resolves.toHaveProperty('message')
+  })
+
+  it('checks current project membership for existing SSH sessions', async () => {
+    const { authDbPath, owner, port, sessionKey, sshSession } = await createTestServer()
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: sessionKey.private,
+      username: sshSession.username,
+    })
+
+    const beforeRevoke = await execCommand(client, 'ls /projects/product-docs/tasks')
+    expect(beforeRevoke.exitCode).toBe(0)
+    expect(beforeRevoke.stderr).toBe('')
+
+    const database = new Database(authDbPath)
+    database
+      .prepare(
+        `DELETE FROM project_memberships
+         WHERE principal_id = ?
+           AND project_id = (
+             SELECT id FROM projects WHERE slug = 'product-docs'
+           )`,
+      )
+      .run(owner.principal.id)
+    database.close()
+
+    const afterRevoke = await execCommand(client, 'ls /projects/product-docs/tasks')
+    expect(afterRevoke.exitCode).not.toBe(0)
+  })
+
+  it('checks source API token status for existing SSH sessions', async () => {
+    const { authDbPath, port } = await createTestServer()
+    const tokenSessionKey = sshUtils.generateKeyPairSync('ed25519')
+    const authStore = createAuthStore({ dbPath: authDbPath })
+    const apiToken = authStore.createApiToken({
+      label: 'agent token',
+      projectSlug: 'product-docs',
+      scopes: ['bootstrap:read', 'project:read', 'ssh-session:create'],
+      userLogin: 'alice',
+    })
+    const apiSshSession = authStore.createSshSession({
+      projectSlug: 'product-docs',
+      publicKey: tokenSessionKey.public,
+      scopes: apiToken.scopes,
+      sourceApiTokenId: apiToken.id,
+      userLogin: 'alice',
+      username: 'sess_token',
+    })
+    authStore.close()
+
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: tokenSessionKey.private,
+      username: apiSshSession.username,
+    })
+
+    const beforeRevoke = await execCommand(client, 'ls /projects/product-docs/tasks')
+    expect(beforeRevoke.exitCode).toBe(0)
+    expect(beforeRevoke.stderr).toBe('')
+
+    const revokeStore = createAuthStore({ dbPath: authDbPath })
+    revokeStore.revokeApiToken({
+      id: apiToken.id,
+      userLogin: 'alice',
+    })
+    revokeStore.close()
+
+    const afterRevoke = await execCommand(client, 'ls /projects/product-docs/tasks')
+    expect(afterRevoke.exitCode).not.toBe(0)
   })
 
   it('rejects public keys that are not stored in the auth database', async () => {

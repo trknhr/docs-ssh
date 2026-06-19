@@ -702,7 +702,7 @@ describe('createViewerServer OIDC session flow', () => {
     const cliRequestResponse = await fetch(`${viewer.baseUrl}/api/cli-login/requests`, {
       body: JSON.stringify({
         callbackUrl: 'http://127.0.0.1:54321/callback',
-        project: 'product-docs',
+        project: 'missing-project',
         publicKey: cliSessionKeyPair.public,
         state: 'cli-state',
         ttlSeconds: 600,
@@ -756,7 +756,7 @@ describe('createViewerServer OIDC session flow', () => {
       }
     }
     expect(cliExchangeResponse.status).toBe(200)
-    expect(cliExchangePayload.session.project).toBe('product-docs')
+    expect(cliExchangePayload.session.project).toBe('default')
     expect(cliExchangePayload.session.username).toMatch(/^sess_[a-f0-9]{16}$/)
     expect(cliExchangePayload.session.fingerprint.startsWith('SHA256:')).toBe(true)
   })

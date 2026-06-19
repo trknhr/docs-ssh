@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { normalizeSshPublicKey } from './ssh-key.js'
 
-const AUTH_SCHEMA_VERSION = 5
+const AUTH_SCHEMA_VERSION = 6
 const IDENTIFIER_PATTERN = /[^a-z0-9-]+/g
 const DEFAULT_TENANT_SLUG = 'default'
 const DEFAULT_TENANT_NAME = 'Personal docs-ssh'
@@ -150,6 +150,7 @@ export interface AuthSshSession {
   publicKey: string
   revokedAt: string | null
   scopes: string[]
+  sourceApiTokenId: string | null
   tenantId: string
   username: string
 }
@@ -231,10 +232,31 @@ export interface CreateSshSessionInput {
   projectSlug?: string
   publicKey: string
   scopes?: string[]
+  sourceApiTokenId?: string
   tenantSlug?: string
   ttlSeconds?: number
   userLogin?: string
   username?: string
+}
+
+export interface AuthorizeSshProjectAccessInput {
+  operation: 'read' | 'write'
+  principalId: string
+  projectSlug: string
+  scopes?: string[]
+  sshSessionId?: string | null
+  tenantId: string
+}
+
+export interface AuthorizeSshProjectAccessResult {
+  allowed: boolean
+  reason?: string
+}
+
+export interface ListPrincipalProjectsOptions {
+  includeArchived?: boolean
+  principalId: string
+  tenantId: string
 }
 
 export interface ListSshSessionsOptions {
@@ -365,6 +387,7 @@ interface AuthSshSessionRow {
   publicKey: string
   revokedAt: string | null
   scopes: string
+  sourceApiTokenId: string | null
   tenantId: string
   username: string
 }
@@ -441,6 +464,7 @@ function migrateDatabase(database: Database.Database): void {
     migrateSchemaV2ToV3(database)
     migrateSchemaV3ToV4(database)
     migrateSchemaV4ToV5(database)
+    migrateSchemaV5ToV6(database)
     database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
     return
   }
@@ -449,6 +473,7 @@ function migrateDatabase(database: Database.Database): void {
     migrateSchemaV2ToV3(database)
     migrateSchemaV3ToV4(database)
     migrateSchemaV4ToV5(database)
+    migrateSchemaV5ToV6(database)
     database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
     return
   }
@@ -456,12 +481,20 @@ function migrateDatabase(database: Database.Database): void {
   if (currentVersion === 3) {
     migrateSchemaV3ToV4(database)
     migrateSchemaV4ToV5(database)
+    migrateSchemaV5ToV6(database)
     database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
     return
   }
 
   if (currentVersion === 4) {
     migrateSchemaV4ToV5(database)
+    migrateSchemaV5ToV6(database)
+    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
+    return
+  }
+
+  if (currentVersion === 5) {
+    migrateSchemaV5ToV6(database)
     database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
     return
   }
@@ -603,6 +636,7 @@ function createSchemaV2(database: Database.Database): void {
       public_key TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
       scopes TEXT NOT NULL,
+      source_api_token_id TEXT REFERENCES api_tokens(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       revoked_at TEXT
@@ -808,6 +842,7 @@ function createSchemaV2Extensions(database: Database.Database): void {
       public_key TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
       scopes TEXT NOT NULL,
+      source_api_token_id TEXT REFERENCES api_tokens(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       revoked_at TEXT
@@ -909,6 +944,15 @@ function migrateSchemaV4ToV5(database: Database.Database): void {
   }
   if (!columnNames.has('last_used_at')) {
     database.exec('ALTER TABLE api_tokens ADD COLUMN last_used_at TEXT;')
+  }
+}
+
+function migrateSchemaV5ToV6(database: Database.Database): void {
+  const columns = database.pragma('table_info(ssh_sessions)') as Array<{ name: string }>
+  const columnNames = new Set(columns.map((column) => column.name))
+
+  if (!columnNames.has('source_api_token_id')) {
+    database.exec('ALTER TABLE ssh_sessions ADD COLUMN source_api_token_id TEXT REFERENCES api_tokens(id) ON DELETE SET NULL;')
   }
 }
 
@@ -1080,6 +1124,7 @@ function parseSshSession(row: AuthSshSessionRow): AuthSshSession {
     publicKey: row.publicKey,
     revokedAt: row.revokedAt,
     scopes: parseScopes(row.scopes),
+    sourceApiTokenId: row.sourceApiTokenId ?? null,
     tenantId: row.tenantId,
     username: row.username,
   }
@@ -1472,6 +1517,7 @@ function getActiveSshSessionByFingerprint(
   const trimmedUsername = username?.trim()
   const sql = `SELECT id, tenant_id AS tenantId, principal_id AS principalId, current_project_slug AS currentProjectSlug,
                       username, algorithm, public_key AS publicKey, fingerprint, scopes,
+                      source_api_token_id AS sourceApiTokenId,
                       created_at AS createdAt, expires_at AS expiresAt, revoked_at AS revokedAt
                FROM ssh_sessions
                WHERE fingerprint = ?
@@ -1486,11 +1532,31 @@ function getActiveSshSessionByFingerprint(
   return row ? parseSshSession(row) : null
 }
 
+function getActiveSshSessionById(database: Database.Database, id: string): AuthSshSession | null {
+  const row = database
+    .prepare(
+      `SELECT id, tenant_id AS tenantId, principal_id AS principalId, current_project_slug AS currentProjectSlug,
+              username, algorithm, public_key AS publicKey, fingerprint, scopes,
+              source_api_token_id AS sourceApiTokenId,
+              created_at AS createdAt, expires_at AS expiresAt, revoked_at AS revokedAt
+       FROM ssh_sessions
+       WHERE id = ?
+         AND revoked_at IS NULL
+         AND expires_at > ?
+       ORDER BY expires_at DESC
+       LIMIT 1`,
+    )
+    .get(id, createTimestamp()) as AuthSshSessionRow | undefined
+
+  return row ? parseSshSession(row) : null
+}
+
 function getSshSessionByIdentifier(database: Database.Database, identifier: string): AuthSshSession | null {
   const row = database
     .prepare(
       `SELECT id, tenant_id AS tenantId, principal_id AS principalId, current_project_slug AS currentProjectSlug,
               username, algorithm, public_key AS publicKey, fingerprint, scopes,
+              source_api_token_id AS sourceApiTokenId,
               created_at AS createdAt, expires_at AS expiresAt, revoked_at AS revokedAt
        FROM ssh_sessions
        WHERE id = ? OR username = ?
@@ -1534,6 +1600,11 @@ function getApiTokenRowById(database: Database.Database, id: string): AuthApiTok
     .get(id) as AuthApiTokenRow | undefined
 
   return row ?? null
+}
+
+function isApiTokenActive(apiToken: AuthApiToken): boolean {
+  if (apiToken.revokedAt) return false
+  return !apiToken.expiresAt || Date.parse(apiToken.expiresAt) > Date.now()
 }
 
 function countActiveSshSessionsForProject(
@@ -1645,6 +1716,7 @@ export interface AuthStore {
   addSshKey(input: AddSshKeyInput): AuthSshKey
   addUser(input: AddUserInput): AuthTenantUser
   archiveProject(input: ArchiveProjectInput): AuthProject
+  authorizeSshProjectAccess(input: AuthorizeSshProjectAccessInput): AuthorizeSshProjectAccessResult
   authenticateApiToken(token: string, opts?: AuthenticateApiTokenOptions): AuthApiTokenSession | null
   close(): void
   createApiToken(input: CreateApiTokenInput): CreatedAuthApiToken
@@ -1661,6 +1733,7 @@ export interface AuthStore {
   listApiTokens(opts?: ListApiTokensOptions): AuthApiToken[]
   listAuthIdentities(userLogin?: string): AuthIdentity[]
   listProjects(opts?: ListProjectsOptions): AuthProject[]
+  listPrincipalProjects(opts: ListPrincipalProjectsOptions): AuthProject[]
   listSshSessions(opts?: ListSshSessionsOptions): AuthSshSession[]
   listSshKeys(userLogin?: string): AuthSshKey[]
   listUsers(opts?: ListUsersOptions): AuthTenantUser[]
@@ -1958,6 +2031,53 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     },
     addUser(input: AddUserInput): AuthTenantUser {
       return addUserTx(input)
+    },
+    authorizeSshProjectAccess(input: AuthorizeSshProjectAccessInput): AuthorizeSshProjectAccessResult {
+      const principal = getPrincipalById(database, input.principalId)
+      if (!principal) return { allowed: false, reason: 'Principal no longer exists.' }
+
+      const tenant = getTenantById(database, input.tenantId)
+      if (!tenant) return { allowed: false, reason: 'Tenant no longer exists.' }
+
+      const membership = getMembershipForPrincipalInTenant(database, principal.id, tenant.id)
+      if (!membership) return { allowed: false, reason: 'Principal is no longer a tenant member.' }
+
+      let scopes = normalizeScopes(input.scopes)
+      let activeSshSession: AuthSshSession | null = null
+      if (input.sshSessionId) {
+        activeSshSession = getActiveSshSessionById(database, input.sshSessionId)
+        if (!activeSshSession) return { allowed: false, reason: 'SSH session is no longer active.' }
+        if (activeSshSession.principalId !== principal.id || activeSshSession.tenantId !== tenant.id) {
+          return { allowed: false, reason: 'SSH session principal changed.' }
+        }
+        scopes = activeSshSession.scopes
+
+        if (activeSshSession.sourceApiTokenId) {
+          const apiTokenRow = getApiTokenRowById(database, activeSshSession.sourceApiTokenId)
+          if (!apiTokenRow) return { allowed: false, reason: 'Source API token no longer exists.' }
+          const apiToken = parseApiToken(apiTokenRow)
+          if (!isApiTokenActive(apiToken)) return { allowed: false, reason: 'Source API token is no longer active.' }
+          if (apiTokenRow.principalId !== principal.id || apiToken.tenantId !== tenant.id) {
+            return { allowed: false, reason: 'Source API token principal changed.' }
+          }
+          if (apiToken.projectSlug !== normalizeIdentifier(input.projectSlug, DEFAULT_PROJECT_SLUG)) {
+            return { allowed: false, reason: `Source API token is not valid for project "${input.projectSlug}".` }
+          }
+        }
+      }
+
+      const canRead = scopes.includes('admin') || scopes.includes('project:read') || scopes.includes('project:write')
+      const canWrite = scopes.includes('admin') || scopes.includes('project:write')
+      if (input.operation === 'read' && !canRead) return { allowed: false, reason: 'SSH session is missing project read scope.' }
+      if (input.operation === 'write' && !canWrite) return { allowed: false, reason: 'SSH session is missing project write scope.' }
+
+      const project = getProjectByTenantAndSlug(database, tenant.id, normalizeIdentifier(input.projectSlug, DEFAULT_PROJECT_SLUG))
+      if (!project) return { allowed: false, reason: `Project "${input.projectSlug}" was not found.` }
+      if (!getProjectMembership(database, project.id, principal.id)) {
+        return { allowed: false, reason: `Project access denied for "${project.slug}".` }
+      }
+
+      return { allowed: true }
     },
     authenticateApiToken(token: string, opts: AuthenticateApiTokenOptions = {}): AuthApiTokenSession | null {
       const trimmedToken = token.trim()
@@ -2290,6 +2410,20 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
       }
       requireProjectMembership(database, project, principal.id)
 
+      const sourceApiTokenId = input.sourceApiTokenId?.trim() || null
+      if (sourceApiTokenId) {
+        const apiTokenRow = getApiTokenRowById(database, sourceApiTokenId)
+        if (!apiTokenRow) throw new Error(`Source API token "${sourceApiTokenId}" was not found.`)
+        const apiToken = parseApiToken(apiTokenRow)
+        if (!isApiTokenActive(apiToken)) throw new Error(`Source API token "${sourceApiTokenId}" is not active.`)
+        if (apiTokenRow.principalId !== principal.id || apiToken.tenantId !== tenant.id) {
+          throw new Error(`Source API token "${sourceApiTokenId}" is not valid for this principal.`)
+        }
+        if (apiToken.projectSlug !== project.slug) {
+          throw new Error(`Source API token "${sourceApiTokenId}" is not valid for project "${project.slug}".`)
+        }
+      }
+
       const normalizedKey = normalizeSshPublicKey(input.publicKey)
       const scopes = normalizeScopes(input.scopes)
       const now = createTimestamp()
@@ -2305,6 +2439,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         publicKey: normalizedKey.publicKey,
         revokedAt: null,
         scopes: JSON.stringify(scopes),
+        sourceApiTokenId,
         tenantId: tenant.id,
         username: input.username?.trim() || `sess_${randomUUID().replaceAll('-', '').slice(0, 16)}`,
       }
@@ -2312,8 +2447,9 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
       database
         .prepare(
           `INSERT INTO ssh_sessions (id, tenant_id, principal_id, current_project_slug, username,
-                                    algorithm, public_key, fingerprint, scopes, created_at, expires_at, revoked_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                    algorithm, public_key, fingerprint, scopes, source_api_token_id,
+                                    created_at, expires_at, revoked_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           sessionRow.id,
@@ -2325,6 +2461,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
           sessionRow.publicKey,
           sessionRow.fingerprint,
           sessionRow.scopes,
+          sessionRow.sourceApiTokenId,
           sessionRow.createdAt,
           sessionRow.expiresAt,
           sessionRow.revokedAt,
@@ -2510,6 +2647,26 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         .all(...params)
         .map((row) => parseProject(row as AuthProjectRow))
     },
+    listPrincipalProjects(opts: ListPrincipalProjectsOptions): AuthProject[] {
+      const conditions = ['pm.principal_id = ?', 'p.tenant_id = ?']
+      const params: unknown[] = [opts.principalId, opts.tenantId]
+
+      if (!opts.includeArchived) {
+        conditions.push('p.archived_at IS NULL')
+      }
+
+      return database
+        .prepare(
+          `SELECT p.id, p.tenant_id AS tenantId, p.slug, p.display_name AS displayName,
+                  p.created_at AS createdAt, p.archived_at AS archivedAt
+           FROM projects p
+           INNER JOIN project_memberships pm ON pm.project_id = p.id
+           WHERE ${conditions.join(' AND ')}
+           ORDER BY p.slug ASC`,
+        )
+        .all(...params)
+        .map((row) => parseProject(row as AuthProjectRow))
+    },
     listSshSessions(opts: ListSshSessionsOptions = {}): AuthSshSession[] {
       const user = opts.userLogin
         ? getUserByLogin(database, normalizeIdentifier(opts.userLogin, DEFAULT_OWNER_LOGIN))
@@ -2546,6 +2703,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
           `SELECT ss.id, ss.tenant_id AS tenantId, ss.principal_id AS principalId,
                   ss.current_project_slug AS currentProjectSlug, ss.username, ss.algorithm,
                   ss.public_key AS publicKey, ss.fingerprint, ss.scopes,
+                  ss.source_api_token_id AS sourceApiTokenId,
                   ss.created_at AS createdAt, ss.expires_at AS expiresAt, ss.revoked_at AS revokedAt
            FROM ssh_sessions ss
            WHERE ${conditions.join(' AND ')}

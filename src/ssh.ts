@@ -4,6 +4,7 @@
  */
 
 import type { AddressInfo } from 'node:net'
+import { posix } from 'node:path'
 import { Chalk } from 'chalk'
 import ssh2, { type PublicKeyAuthContext, type ServerChannel } from 'ssh2'
 import { createAuthStore, type AuthPrincipalSession } from './auth/store.js'
@@ -184,8 +185,61 @@ function createSessionEnv(principal: AuthenticatedPrincipal): Record<string, str
   }
 }
 
-function createBashSessionContext(principal: AuthenticatedPrincipal) {
+function getProjectSlugFromPath(path: string): string | null {
+  const normalized = posix.normalize(path.startsWith('/') ? path : `/${path}`)
+  const match = /^\/projects\/([^/]+)(?:\/|$)/u.exec(normalized)
+  return match ? match[1] : null
+}
+
+function createSshAccessGuard(
+  authStore: ReturnType<typeof createAuthStore>,
+  principal: AuthenticatedPrincipal,
+) {
+  return async (path: string, operation: 'read' | 'write') => {
+    const projectSlug = getProjectSlugFromPath(path)
+    if (!projectSlug) return
+
+    const result = authStore.authorizeSshProjectAccess({
+      operation,
+      principalId: principal.auth.principal.id,
+      projectSlug,
+      scopes: principal.auth.scopes,
+      sshSessionId: principal.auth.sshSession?.id,
+      tenantId: principal.auth.tenant.id,
+    })
+    if (!result.allowed) {
+      throw new Error(`EACCES: ${result.reason ?? `Project access denied for "${projectSlug}".`}`)
+    }
+  }
+}
+
+function createBashSessionContext(
+  principal: AuthenticatedPrincipal,
+  authStore: ReturnType<typeof createAuthStore>,
+) {
+  const accessibleProjects = (() => {
+    if (!principal.auth.sshSession?.sourceApiTokenId) {
+      return authStore.listPrincipalProjects({
+        principalId: principal.auth.principal.id,
+        tenantId: principal.auth.tenant.id,
+      })
+    }
+
+    const result = authStore.authorizeSshProjectAccess({
+      operation: 'read',
+      principalId: principal.auth.principal.id,
+      projectSlug: principal.auth.project.slug,
+      sshSessionId: principal.auth.sshSession.id,
+      tenantId: principal.auth.tenant.id,
+    })
+    return result.allowed ? [principal.auth.project] : []
+  })().map((project) => ({
+    displayName: project.displayName,
+    slug: project.slug,
+  }))
+
   return {
+    accessibleProjects,
     displayName: principal.auth.displayName,
     login: principal.auth.login,
     principalId: principal.auth.principal.id,
@@ -296,6 +350,7 @@ export function createSSHServer(opts: SSHServerOptions) {
 
         const principal = authenticatedPrincipal
         const sessionEnv = createSessionEnv(principal)
+        const accessGuard = createSshAccessGuard(authStore, principal)
 
         client.on('session', (accept) => {
           const session = accept()
@@ -318,8 +373,9 @@ export function createSSHServer(opts: SSHServerOptions) {
                 docsDir,
                 docsName,
                 env: sessionEnv,
+                accessGuard,
                 registryPath,
-                session: createBashSessionContext(principal),
+                session: createBashSessionContext(principal, authStore),
                 sshHost: sshConnectHost,
                 sshPort: sshConnectPort,
                 workspaceDir,
@@ -355,8 +411,9 @@ export function createSSHServer(opts: SSHServerOptions) {
               docsDir,
               docsName,
               env: sessionEnv,
+              accessGuard,
               registryPath,
-              session: createBashSessionContext(principal),
+              session: createBashSessionContext(principal, authStore),
               sshHost: sshConnectHost,
               sshPort: sshConnectPort,
               workspaceDir,
