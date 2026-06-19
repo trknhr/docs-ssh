@@ -325,9 +325,9 @@ function PreviewHeader(props: {
       <header className="preview-header">
         <div>
           <p className="eyebrow">Preview</p>
-          <h2>{props.session ? 'Account' : 'No file selected'}</h2>
+          <h2>{props.session ? 'Workspace' : 'No file selected'}</h2>
           {props.session ? (
-            <p className="preview-path">SSH access for {props.session.login}</p>
+            <p className="preview-path">Project access for {props.session.login}</p>
           ) : null}
         </div>
       </header>
@@ -355,6 +355,63 @@ function PreviewHeader(props: {
     </header>
   )
 }
+
+function CopyBlock(props: {
+  label: string
+  value: string
+}) {
+  const [copied, setCopied] = useState(false)
+
+  return (
+    <div className="copy-block">
+      <div className="copy-block__header">
+        <span>{props.label}</span>
+        <button
+          className="meta-link meta-button"
+          disabled={!props.value}
+          onClick={() => {
+            void navigator.clipboard.writeText(props.value).then(() => {
+              setCopied(true)
+              window.setTimeout(() => setCopied(false), 1400)
+            })
+          }}
+          type="button"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="config-snippet">{props.value || 'Select a project'}</pre>
+    </div>
+  )
+}
+
+function StatusMessages(props: {
+  error: string | null
+  success: string | null
+}) {
+  return (
+    <>
+      {props.success ? (
+        <p className="status-message status-message--success">{props.success}</p>
+      ) : null}
+      {props.error ? (
+        <p className="status-message status-message--error">{props.error}</p>
+      ) : null}
+    </>
+  )
+}
+
+function EmptyInline(props: {
+  children: string
+}) {
+  return (
+    <div className="preview-state preview-state--compact">
+      <p>{props.children}</p>
+    </div>
+  )
+}
+
+type WorkspaceTab = 'access' | 'projects' | 'setup' | 'tokens' | 'users'
 
 function AccountPanel(props: {
   apiTokenCreateError: string | null
@@ -416,9 +473,8 @@ function AccountPanel(props: {
   users: ViewerUser[]
   usersLoading: boolean
 }) {
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('setup')
   const selectedProject = props.projects.find((project) => project.slug === props.selectedProject) ?? props.projects[0]
-  const [configCopied, setConfigCopied] = useState(false)
-  const [tokenCopied, setTokenCopied] = useState(false)
   const projectConfig = selectedProject
     ? [
         'server = "docs-ssh"',
@@ -426,319 +482,231 @@ function AccountPanel(props: {
         '',
       ].join('\n')
     : ''
+  const loginCommand = 'docs-ssh login --server docs-ssh'
+  const activeTokenCount = props.apiTokens.filter((token) => !token.revokedAt).length
+  const roleLabel = props.session.role ?? 'member'
+  const workspaceTabs: Array<{ count?: string, id: WorkspaceTab, label: string }> = [
+    { id: 'setup', label: 'Setup' },
+    {
+      count: props.projectsLoading ? '...' : String(props.projects.length),
+      id: 'projects',
+      label: 'Projects',
+    },
+    ...(props.canManageUsers && selectedProject
+      ? [{
+          count: props.apiTokensLoading ? '...' : String(activeTokenCount),
+          id: 'tokens' as const,
+          label: 'Tokens',
+        }]
+      : []),
+    ...(props.canManageUsers
+      ? [{
+          count: props.usersLoading ? '...' : String(props.users.length),
+          id: 'users' as const,
+          label: 'Users',
+        }]
+      : [{ id: 'access' as const, label: 'Access' }]),
+  ]
+  const visibleActiveTab = workspaceTabs.some((tab) => tab.id === activeTab)
+    ? activeTab
+    : workspaceTabs[0]?.id ?? 'setup'
 
   return (
-    <section className="account-dashboard">
-      <div className="account-banner">
-        <div>
-          <p className="eyebrow">Agent Access</p>
-          <h3>Prepare project config for {props.session.login}</h3>
-          <p>
-            Create or select the project that local agents should use from this work directory.
-          </p>
-        </div>
-        <div className="account-banner__meta">
-          <span className="meta-pill">{props.session.userDisplayName}</span>
-          <span className="meta-pill meta-pill--muted">
-            {selectedProject ? `project: ${selectedProject.slug}` : 'select a project'}
-          </span>
-        </div>
-      </div>
+    <section className="account-dashboard docs-page">
+      <nav className="docs-tabs" aria-label="Workspace sections" role="tablist">
+        {workspaceTabs.map((tab) => (
+          <button
+            aria-controls={`workspace-panel-${tab.id}`}
+            aria-selected={visibleActiveTab === tab.id}
+            className={`docs-tab ${visibleActiveTab === tab.id ? 'selected' : ''}`}
+            id={`workspace-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            tabIndex={visibleActiveTab === tab.id ? 0 : -1}
+            type="button"
+          >
+            <span>{tab.label}</span>
+            {tab.count ? <strong>{tab.count}</strong> : null}
+          </button>
+        ))}
+      </nav>
 
-      <div className="account-grid">
-        <article className="account-card">
-          <p className="eyebrow">Projects</p>
-          <h3>Create or select a project</h3>
-          <div className="account-form">
-            <label className="field field--stacked">
-              <span>Slug</span>
-              <input
-                maxLength={120}
-                onChange={(event) => props.onProjectSlugChange(event.target.value)}
-                placeholder="EXAMPLE-project-slug"
-                type="text"
-                value={props.projectSlug}
-              />
-            </label>
-            <label className="field field--stacked">
-              <span>Display name</span>
-              <input
-                maxLength={160}
-                onChange={(event) => props.onProjectDisplayNameChange(event.target.value)}
-                placeholder="EXAMPLE Project Name"
-                type="text"
-                value={props.projectDisplayName}
-              />
-            </label>
-            <div className="account-form__footer">
-              <button
-                className="action-button"
-                disabled={props.projectSubmitting}
-                onClick={props.onCreateProject}
-                type="button"
-              >
-                {props.projectSubmitting ? 'Creating project...' : 'Create project'}
-              </button>
-              {props.projectCreateStatus ? (
-                <p className="status-message status-message--success">{props.projectCreateStatus}</p>
-              ) : null}
-              {props.projectCreateError ? (
-                <p className="status-message status-message--error">{props.projectCreateError}</p>
-              ) : null}
+      {visibleActiveTab === 'setup' ? (
+        <section
+          aria-labelledby="workspace-tab-setup"
+          className="docs-section docs-section--setup"
+          id="workspace-panel-setup"
+          role="tabpanel"
+        >
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Agent setup</p>
+              <h3>Commands</h3>
             </div>
           </div>
-          {props.projectsLoading ? (
-            <div className="preview-state preview-state--compact">
-              <p>Loading projects...</p>
-            </div>
-          ) : props.projects.length === 0 ? (
-            <div className="preview-state preview-state--compact">
-              <p>No projects available.</p>
-            </div>
-          ) : (
-            <div className="project-list">
-              {props.projects.map((project) => (
-                <button
-                  className={`project-item ${project.slug === selectedProject?.slug ? 'selected' : ''}`}
-                  key={project.slug}
-                  onClick={() => props.onSelectProject(project.slug)}
-                  type="button"
-                >
-                  <strong>{project.displayName}</strong>
-                  <code>{project.slug}</code>
-                </button>
-              ))}
-            </div>
-          )}
-          {selectedProject ? (
-            <div className="project-editor">
-              <div className="form-grid">
-                <label className="field field--stacked">
-                  <span>Selected slug</span>
-                  <input
-                    aria-readonly="true"
-                    maxLength={120}
-                    readOnly
-                    type="text"
-                    value={props.projectEditSlug}
-                  />
-                </label>
-                <label className="field field--stacked">
-                  <span>Selected display name</span>
-                  <input
-                    maxLength={160}
-                    onChange={(event) => props.onProjectEditDisplayNameChange(event.target.value)}
-                    type="text"
-                    value={props.projectEditDisplayName}
-                  />
-                </label>
-              </div>
-              <div className="account-form__footer account-form__footer--inline">
-                <button
-                  className="action-button"
-                  disabled={props.projectUpdating || props.projectArchiving}
-                  onClick={props.onUpdateProject}
-                  type="button"
-                >
-                  {props.projectUpdating ? 'Saving project...' : 'Save project'}
-                </button>
-                <button
-                  className="danger-button"
-                  disabled={
-                    props.projectUpdating
-                    || props.projectArchiving
-                    || selectedProject.slug === 'default'
-                  }
-                  onClick={props.onArchiveProject}
-                  type="button"
-                >
-                  {props.projectArchiving ? 'Archiving project...' : 'Archive project'}
-                </button>
-                {props.projectMutationStatus ? (
-                  <p className="status-message status-message--success">{props.projectMutationStatus}</p>
-                ) : null}
-                {props.projectMutationError ? (
-                  <p className="status-message status-message--error">{props.projectMutationError}</p>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </article>
+          <div className="setup-strip">
+            <CopyBlock label="Web session" value={loginCommand} />
+            <CopyBlock label="Directory project" value={projectConfig} />
+          </div>
+        </section>
+      ) : null}
 
-        {props.canManageUsers ? (
-          <article className="account-card">
-            <p className="eyebrow">Users</p>
-            <h3>Add a web user</h3>
-            <div className="account-form">
-              <div className="form-grid">
-                <label className="field field--stacked">
-                  <span>Login</span>
-                  <input
-                    maxLength={120}
-                    onChange={(event) => props.onUserLoginChange(event.target.value)}
-                    placeholder="bob"
-                    type="text"
-                    value={props.userLogin}
-                  />
-                </label>
-                <label className="field field--stacked">
-                  <span>Display name</span>
-                  <input
-                    maxLength={160}
-                    onChange={(event) => props.onUserDisplayNameChange(event.target.value)}
-                    placeholder="Bob Member"
-                    type="text"
-                    value={props.userDisplayName}
-                  />
-                </label>
-              </div>
-              <div className="form-grid">
-                <label className="field field--stacked">
-                  <span>Provider</span>
-                  <input
-                    maxLength={80}
-                    onChange={(event) => props.onUserProviderChange(event.target.value)}
-                    placeholder="google"
-                    type="text"
-                    value={props.userProvider}
-                  />
-                </label>
-                <label className="field field--stacked">
-                  <span>Role</span>
-                  <select
-                    onChange={(event) => props.onUserRoleChange(event.target.value as 'owner' | 'admin' | 'member')}
-                    value={props.userRole}
-                  >
-                    <option value="member">member</option>
-                    <option value="admin">admin</option>
-                    {props.session.role === 'owner' ? <option value="owner">owner</option> : null}
-                  </select>
-                </label>
-              </div>
-              <label className="field field--stacked">
-                <span>Issuer</span>
-                <input
-                  maxLength={240}
-                  onChange={(event) => props.onUserIssuerChange(event.target.value)}
-                  placeholder="https://accounts.google.com"
-                  type="text"
-                  value={props.userIssuer}
-                />
-              </label>
-              <label className="field field--stacked">
-                <span>Subject</span>
-                <input
-                  maxLength={240}
-                  onChange={(event) => props.onUserSubjectChange(event.target.value)}
-                  placeholder="Google subject"
-                  type="text"
-                  value={props.userSubject}
-                />
-              </label>
-              <label className="field field--stacked">
-                <span>Email</span>
-                <input
-                  maxLength={240}
-                  onChange={(event) => props.onUserEmailChange(event.target.value)}
-                  placeholder="bob@example.com"
-                  type="email"
-                  value={props.userEmail}
-                />
-              </label>
-              <div className="account-form__footer">
-                <button
-                  className="action-button"
-                  disabled={props.userSubmitting}
-                  onClick={props.onCreateUser}
-                  type="button"
-                >
-                  {props.userSubmitting ? 'Adding user...' : 'Add user'}
-                </button>
-                {props.userCreateStatus ? (
-                  <p className="status-message status-message--success">{props.userCreateStatus}</p>
-                ) : null}
-                {props.userCreateError ? (
-                  <p className="status-message status-message--error">{props.userCreateError}</p>
-                ) : null}
-              </div>
+      {visibleActiveTab === 'projects' ? (
+        <section
+          aria-labelledby="workspace-tab-projects"
+          className="docs-section docs-section--projects"
+          id="workspace-panel-projects"
+          role="tabpanel"
+        >
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Projects</p>
+              <h3>Project switchboard</h3>
             </div>
-            {props.usersLoading ? (
-              <div className="preview-state preview-state--compact">
-                <p>Loading users...</p>
-              </div>
-            ) : (
-              <div className="user-list">
-                {props.users.map((user) => (
-                  <div className="user-item" key={user.login}>
-                    <div>
-                      <strong>{user.displayName}</strong>
-                      <code>{user.login}</code>
-                    </div>
-                    <span className="meta-pill">{user.role}</span>
-                    {user.identities.map((identity) => (
-                      <span className="meta-pill meta-pill--muted" key={`${identity.provider}:${identity.issuer}:${identity.subject}`}>
-                        {identity.provider}
-                      </span>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-        ) : null}
+          </div>
 
-        {props.canManageUsers && selectedProject ? (
-          <article className="account-card">
-            <p className="eyebrow">API Tokens</p>
-            <h3>Active API tokens</h3>
-            {props.apiTokensLoading ? (
-              <div className="preview-state preview-state--compact">
-                <p>Loading tokens...</p>
-              </div>
-            ) : props.apiTokens.length === 0 ? (
-              <div className="preview-state preview-state--compact">
-                <p>No active API tokens for this project.</p>
-              </div>
-            ) : (
-              <div className="token-list">
-                {props.apiTokens.map((token) => (
-                  <div className="token-item" key={token.id}>
-                    <div className="token-item__body">
-                      <div className="token-item__header">
-                        <strong>{token.label || 'API token'}</strong>
-                        <span className="meta-pill meta-pill--muted">{token.project}</span>
-                      </div>
-                      <dl className="token-meta-grid">
-                        <div>
-                          <dt>Created</dt>
-                          <dd>{formatTokenDate(token.createdAt)}</dd>
-                        </div>
-                        <div>
-                          <dt>Expires</dt>
-                          <dd>{formatTokenDate(token.expiresAt)}</dd>
-                        </div>
-                        <div>
-                          <dt>Last used</dt>
-                          <dd>{formatTokenDate(token.lastUsedAt)}</dd>
-                        </div>
-                      </dl>
-                      <code className="token-scopes">{formatApiTokenScopes(token.scopes)}</code>
-                    </div>
+          <div className="project-section-grid">
+            <div>
+              {props.projectsLoading ? (
+                <EmptyInline>Loading projects...</EmptyInline>
+              ) : props.projects.length === 0 ? (
+                <EmptyInline>No projects available.</EmptyInline>
+              ) : (
+                <div className="project-list">
+                  {props.projects.map((project) => (
                     <button
-                      className="danger-button danger-button--small"
-                      disabled={props.apiTokenRevokingId === token.id}
-                      onClick={() => props.onRevokeApiToken(token.id)}
+                      aria-pressed={project.slug === selectedProject?.slug}
+                      className={`project-item ${project.slug === selectedProject?.slug ? 'selected' : ''}`}
+                      key={project.slug}
+                      onClick={() => props.onSelectProject(project.slug)}
                       type="button"
                     >
-                      {props.apiTokenRevokingId === token.id ? 'Revoking...' : 'Revoke'}
+                      <span>
+                        <strong>{project.displayName}</strong>
+                        <code>{project.slug}</code>
+                      </span>
+                      <span className="project-item__status">
+                        {project.slug === selectedProject?.slug ? 'Current' : 'Open'}
+                      </span>
                     </button>
+                  ))}
+                </div>
+              )}
+              {selectedProject ? (
+                <div className="project-editor">
+                  <div className="form-grid">
+                    <label className="field field--stacked">
+                      <span>Selected slug</span>
+                      <input
+                        aria-readonly="true"
+                        maxLength={120}
+                        readOnly
+                        type="text"
+                        value={props.projectEditSlug}
+                      />
+                    </label>
+                    <label className="field field--stacked">
+                      <span>Selected display name</span>
+                      <input
+                        maxLength={160}
+                        onChange={(event) => props.onProjectEditDisplayNameChange(event.target.value)}
+                        type="text"
+                        value={props.projectEditDisplayName}
+                      />
+                    </label>
                   </div>
-                ))}
-              </div>
-            )}
+                  <div className="account-form__footer account-form__footer--inline">
+                    <button
+                      className="action-button"
+                      disabled={props.projectUpdating || props.projectArchiving}
+                      onClick={props.onUpdateProject}
+                      type="button"
+                    >
+                      {props.projectUpdating ? 'Saving project...' : 'Save project'}
+                    </button>
+                    <button
+                      className="danger-button"
+                      disabled={
+                        props.projectUpdating
+                        || props.projectArchiving
+                        || selectedProject.slug === 'default'
+                      }
+                      onClick={props.onArchiveProject}
+                      type="button"
+                    >
+                      {props.projectArchiving ? 'Archiving project...' : 'Archive project'}
+                    </button>
+                    <StatusMessages error={props.projectMutationError} success={props.projectMutationStatus} />
+                  </div>
+                </div>
+              ) : null}
+            </div>
 
-            <h3>Create token</h3>
-            <div className="account-form">
+            <div className="create-panel">
+              <div className="section-heading section-heading--compact">
+                <div>
+                  <p className="eyebrow">New project</p>
+                  <h3>Create project</h3>
+                </div>
+              </div>
+              <div className="account-form">
+                <div className="form-grid">
+                  <label className="field field--stacked">
+                    <span>Slug</span>
+                    <input
+                      maxLength={120}
+                      onChange={(event) => props.onProjectSlugChange(event.target.value)}
+                      placeholder="product-docs"
+                      type="text"
+                      value={props.projectSlug}
+                    />
+                  </label>
+                  <label className="field field--stacked">
+                    <span>Display name</span>
+                    <input
+                      maxLength={160}
+                      onChange={(event) => props.onProjectDisplayNameChange(event.target.value)}
+                      placeholder="Product Docs"
+                      type="text"
+                      value={props.projectDisplayName}
+                    />
+                  </label>
+                </div>
+                <div className="account-form__footer">
+                  <button
+                    className="action-button"
+                    disabled={props.projectSubmitting}
+                    onClick={props.onCreateProject}
+                    type="button"
+                  >
+                    {props.projectSubmitting ? 'Creating project...' : 'Create project'}
+                  </button>
+                  <StatusMessages error={props.projectCreateError} success={props.projectCreateStatus} />
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {visibleActiveTab === 'tokens' && props.canManageUsers && selectedProject ? (
+        <section
+          aria-labelledby="workspace-tab-tokens"
+          className="docs-section docs-section--tokens"
+          id="workspace-panel-tokens"
+          role="tabpanel"
+        >
+          <div className="content-section-grid">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">API Tokens</p>
+                <h3>{selectedProject.slug}</h3>
+              </div>
+              <span className="meta-pill">{activeTokenCount} active</span>
+            </div>
+
+            <div className="account-form content-section-form">
               <div className="form-grid">
                 <label className="field field--stacked">
                   <span>Label</span>
@@ -785,72 +753,213 @@ function AccountPanel(props: {
                 >
                   {props.apiTokenSubmitting ? 'Creating token...' : 'Create token'}
                 </button>
-                {props.apiTokenCreateStatus ? (
-                  <p className="status-message status-message--success">{props.apiTokenCreateStatus}</p>
-                ) : null}
-                {props.apiTokenCreateError ? (
-                  <p className="status-message status-message--error">{props.apiTokenCreateError}</p>
-                ) : null}
+                <StatusMessages error={props.apiTokenCreateError} success={props.apiTokenCreateStatus} />
               </div>
             </div>
-            {props.apiTokenPlaintext ? (
-              <div className="token-secret">
-                <label className="field field--stacked">
-                  <span>New token</span>
-                  <textarea readOnly rows={3} value={props.apiTokenPlaintext} />
-                </label>
-                <button
-                  className="meta-link meta-button"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(props.apiTokenPlaintext ?? '').then(() => {
-                      setTokenCopied(true)
-                      window.setTimeout(() => setTokenCopied(false), 1400)
-                    })
-                  }}
-                  type="button"
-                >
-                  {tokenCopied ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-            ) : null}
-          </article>
-        ) : null}
+          </div>
 
-        <article className="account-card">
-          <p className="eyebrow">Agent Config</p>
-          <h3>Use the selected project from this directory</h3>
-          {selectedProject ? (
-            <>
-              <div className="config-snippet-wrap">
-                <pre className="config-snippet">{projectConfig}</pre>
-                <button
-                  className="meta-link meta-button config-copy-button"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(projectConfig).then(() => {
-                      setConfigCopied(true)
-                      window.setTimeout(() => setConfigCopied(false), 1400)
-                    })
-                  }}
-                  type="button"
-                >
-                  {configCopied ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-              <p>
-                Store this as
-                {' '}
-                <code>.docs-ssh.toml</code>
-                {' '}
-                in the local work directory. The server still verifies project membership before issuing an SSH session.
-              </p>
-            </>
+          {props.apiTokenPlaintext ? (
+            <CopyBlock label="New token" value={props.apiTokenPlaintext} />
+          ) : null}
+
+          {props.apiTokensLoading ? (
+            <EmptyInline>Loading tokens...</EmptyInline>
+          ) : props.apiTokens.length === 0 ? (
+            <EmptyInline>No active API tokens for this project.</EmptyInline>
           ) : (
-            <div className="preview-state preview-state--compact">
-              <p>Select or create a project to generate config.</p>
+            <div className="token-list">
+              {props.apiTokens.map((token) => (
+                <div className="token-item" key={token.id}>
+                  <div className="token-item__body">
+                    <div className="token-item__header">
+                      <strong>{token.label || 'API token'}</strong>
+                      <span className="meta-pill meta-pill--muted">{token.project}</span>
+                    </div>
+                    <dl className="token-meta-grid">
+                      <div>
+                        <dt>Created</dt>
+                        <dd>{formatTokenDate(token.createdAt)}</dd>
+                      </div>
+                      <div>
+                        <dt>Expires</dt>
+                        <dd>{formatTokenDate(token.expiresAt)}</dd>
+                      </div>
+                      <div>
+                        <dt>Last used</dt>
+                        <dd>{formatTokenDate(token.lastUsedAt)}</dd>
+                      </div>
+                    </dl>
+                    <code className="token-scopes">{formatApiTokenScopes(token.scopes)}</code>
+                  </div>
+                  <button
+                    className="danger-button danger-button--small"
+                    disabled={props.apiTokenRevokingId === token.id}
+                    onClick={() => props.onRevokeApiToken(token.id)}
+                    type="button"
+                  >
+                    {props.apiTokenRevokingId === token.id ? 'Revoking...' : 'Revoke'}
+                  </button>
+                </div>
+              ))}
             </div>
           )}
-        </article>
-      </div>
+        </section>
+      ) : null}
+
+      {visibleActiveTab === 'users' && props.canManageUsers ? (
+        <section
+          aria-labelledby="workspace-tab-users"
+          className="docs-section docs-section--users"
+          id="workspace-panel-users"
+          role="tabpanel"
+        >
+          <div className="content-section-grid">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Users</p>
+                <h3>Web access</h3>
+              </div>
+              <span className="meta-pill">{props.usersLoading ? '...' : props.users.length} users</span>
+            </div>
+
+            <div className="create-panel">
+              <div className="section-heading section-heading--compact">
+                <div>
+                  <p className="eyebrow">New user</p>
+                  <h3>Add web user</h3>
+                </div>
+              </div>
+              <div className="account-form">
+                <div className="form-grid">
+                  <label className="field field--stacked">
+                    <span>Login</span>
+                    <input
+                      maxLength={120}
+                      onChange={(event) => props.onUserLoginChange(event.target.value)}
+                      placeholder="bob"
+                      type="text"
+                      value={props.userLogin}
+                    />
+                  </label>
+                  <label className="field field--stacked">
+                    <span>Display name</span>
+                    <input
+                      maxLength={160}
+                      onChange={(event) => props.onUserDisplayNameChange(event.target.value)}
+                      placeholder="Bob Member"
+                      type="text"
+                      value={props.userDisplayName}
+                    />
+                  </label>
+                </div>
+                <div className="form-grid">
+                  <label className="field field--stacked">
+                    <span>Provider</span>
+                    <input
+                      maxLength={80}
+                      onChange={(event) => props.onUserProviderChange(event.target.value)}
+                      placeholder="google"
+                      type="text"
+                      value={props.userProvider}
+                    />
+                  </label>
+                  <label className="field field--stacked">
+                    <span>Role</span>
+                    <select
+                      onChange={(event) => props.onUserRoleChange(event.target.value as 'owner' | 'admin' | 'member')}
+                      value={props.userRole}
+                    >
+                      <option value="member">member</option>
+                      <option value="admin">admin</option>
+                      {props.session.role === 'owner' ? <option value="owner">owner</option> : null}
+                    </select>
+                  </label>
+                </div>
+                <label className="field field--stacked">
+                  <span>Issuer</span>
+                  <input
+                    maxLength={240}
+                    onChange={(event) => props.onUserIssuerChange(event.target.value)}
+                    placeholder="https://accounts.google.com"
+                    type="text"
+                    value={props.userIssuer}
+                  />
+                </label>
+                <label className="field field--stacked">
+                  <span>Subject</span>
+                  <input
+                    maxLength={240}
+                    onChange={(event) => props.onUserSubjectChange(event.target.value)}
+                    placeholder="Google subject"
+                    type="text"
+                    value={props.userSubject}
+                  />
+                </label>
+                <label className="field field--stacked">
+                  <span>Email</span>
+                  <input
+                    maxLength={240}
+                    onChange={(event) => props.onUserEmailChange(event.target.value)}
+                    placeholder="bob@example.com"
+                    type="email"
+                    value={props.userEmail}
+                  />
+                </label>
+                <div className="account-form__footer">
+                  <button
+                    className="action-button"
+                    disabled={props.userSubmitting}
+                    onClick={props.onCreateUser}
+                    type="button"
+                  >
+                    {props.userSubmitting ? 'Adding user...' : 'Add user'}
+                  </button>
+                  <StatusMessages error={props.userCreateError} success={props.userCreateStatus} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {props.usersLoading ? (
+            <EmptyInline>Loading users...</EmptyInline>
+          ) : (
+            <div className="user-list">
+              {props.users.map((user) => (
+                <div className="user-item" key={user.login}>
+                  <div>
+                    <strong>{user.displayName}</strong>
+                    <code>{user.login}</code>
+                  </div>
+                  <span className="meta-pill">{user.role}</span>
+                  {user.identities.map((identity) => (
+                    <span className="meta-pill meta-pill--muted" key={`${identity.provider}:${identity.issuer}:${identity.subject}`}>
+                      {identity.provider}
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {visibleActiveTab === 'access' && !props.canManageUsers ? (
+        <section
+          aria-labelledby="workspace-tab-access"
+          className="docs-section docs-section--readonly"
+          id="workspace-panel-access"
+          role="tabpanel"
+        >
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Access</p>
+              <h3>{props.session.userDisplayName}</h3>
+            </div>
+            <span className="meta-pill">{roleLabel}</span>
+          </div>
+          <CopyBlock label="Directory project" value={projectConfig} />
+        </section>
+      ) : null}
     </section>
   )
 }
@@ -1541,23 +1650,126 @@ export function App() {
     }
   }
 
+  const currentProject = selectedProject
+    ? projects.find((project) => project.slug === selectedProject) ?? null
+    : projects[0] ?? null
+  const firstFilePath = findFirstFile(tree)
+  const workspacePanel = session ? (
+    <AccountPanel
+      apiTokenCreateError={apiTokenCreateError}
+      apiTokenCreateStatus={apiTokenCreateStatus}
+      apiTokenExpirationDays={apiTokenExpirationDays}
+      apiTokenLabel={apiTokenLabel}
+      apiTokenPlaintext={apiTokenPlaintext}
+      apiTokenRevokingId={apiTokenRevokingId}
+      apiTokenScopes={apiTokenScopes}
+      apiTokenSubmitting={apiTokenSubmitting}
+      apiTokens={apiTokens}
+      apiTokensLoading={apiTokensLoading}
+      canManageUsers={canManageUsers}
+      onArchiveProject={submitProjectArchive}
+      onApiTokenExpirationDaysChange={(value) => {
+        setApiTokenExpirationDays(value)
+        setApiTokenPlaintext(null)
+      }}
+      onApiTokenLabelChange={setApiTokenLabel}
+      onApiTokenScopeChange={setApiTokenScope}
+      onCreateApiToken={submitApiToken}
+      onCreateProject={submitProject}
+      onCreateUser={submitUser}
+      onProjectEditDisplayNameChange={setProjectEditDisplayName}
+      onProjectDisplayNameChange={setProjectDisplayName}
+      onProjectSlugChange={setProjectSlug}
+      onRevokeApiToken={revokeSelectedApiToken}
+      onSelectProject={selectProject}
+      onUpdateProject={submitProjectUpdate}
+      onUserDisplayNameChange={setUserDisplayName}
+      onUserEmailChange={setUserEmail}
+      onUserIssuerChange={setUserIssuer}
+      onUserLoginChange={setUserLogin}
+      onUserProviderChange={setUserProvider}
+      onUserRoleChange={setUserRole}
+      onUserSubjectChange={setUserSubject}
+      projectCreateError={projectCreateError}
+      projectCreateStatus={projectCreateStatus}
+      projectDisplayName={projectDisplayName}
+      projectEditDisplayName={projectEditDisplayName}
+      projectEditSlug={projectEditSlug}
+      projectMutationError={projectMutationError}
+      projectMutationStatus={projectMutationStatus}
+      projectSlug={projectSlug}
+      projectArchiving={projectArchiving}
+      projectSubmitting={projectSubmitting}
+      projectUpdating={projectUpdating}
+      projects={projects}
+      projectsLoading={projectsLoading}
+      selectedProject={selectedProject}
+      session={session}
+      userCreateError={userCreateError}
+      userCreateStatus={userCreateStatus}
+      userDisplayName={userDisplayName}
+      userEmail={userEmail}
+      userIssuer={userIssuer}
+      userLogin={userLogin}
+      userProvider={userProvider}
+      userRole={userRole}
+      userSubject={userSubject}
+      userSubmitting={userSubmitting}
+      users={users}
+      usersLoading={usersLoading}
+    />
+  ) : null
+
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div>
+        <div className="topbar__brand">
           <p className="eyebrow">Viewer</p>
           <h1>DOCS-SSH</h1>
+          {currentProject ? (
+            <p className="topbar__subtitle">
+              <span>{currentProject.displayName}</span>
+              <code>{currentProject.slug}</code>
+            </p>
+          ) : null}
         </div>
         {session ? (
           <div className="topbar__actions">
+            <label className="project-switcher">
+              <span>Project</span>
+              <select
+                disabled={projectsLoading || projects.length === 0}
+                onChange={(event) => {
+                  if (event.target.value) selectProject(event.target.value)
+                }}
+                value={currentProject?.slug ?? ''}
+              >
+                {projects.length === 0 ? (
+                  <option value="">No projects</option>
+                ) : null}
+                {projects.map((project) => (
+                  <option key={project.slug} value={project.slug}>
+                    {project.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className="auth-panel">
               <div className="auth-panel__body">
                 <button
-                  className="meta-link meta-button"
+                  className={`meta-link meta-button ${showAccountPanel ? 'selected' : ''}`}
                   onClick={() => startTransition(() => setActivePath(null))}
                   type="button"
                 >
-                  Account
+                  Workspace
+                </button>
+                <button
+                  className={`meta-link meta-button ${activePath ? 'selected' : ''}`}
+                  disabled={!activePath && !firstFilePath}
+                  onClick={() => startTransition(() => setActivePath(activePath ?? firstFilePath))}
+                  type="button"
+                >
+                  Files
                 </button>
                 <span className="meta-pill">
                   {session.userDisplayName} ({session.login})
@@ -1590,6 +1802,13 @@ export function App() {
             <Allotment.Pane minSize={260} preferredSize={320}>
               <section className="sidebar">
                 <div className="sidebar__toolbar">
+                  {currentProject ? (
+                    <div className="sidebar__project">
+                      <span>Project</span>
+                      <strong>{currentProject.displayName}</strong>
+                      <code>{currentProject.slug}</code>
+                    </div>
+                  ) : null}
                   <label className="field field--stacked">
                     <span>Filter files</span>
                     <input
@@ -1661,70 +1880,8 @@ export function App() {
               <section className="preview-panel">
                 <PreviewHeader file={file} session={session} />
                 <div className="preview-body">
-                  {showAccountPanel ? (
-                    <AccountPanel
-                      apiTokenCreateError={apiTokenCreateError}
-                      apiTokenCreateStatus={apiTokenCreateStatus}
-                      apiTokenExpirationDays={apiTokenExpirationDays}
-                      apiTokenLabel={apiTokenLabel}
-                      apiTokenPlaintext={apiTokenPlaintext}
-                      apiTokenRevokingId={apiTokenRevokingId}
-                      apiTokenScopes={apiTokenScopes}
-                      apiTokenSubmitting={apiTokenSubmitting}
-                      apiTokens={apiTokens}
-                      apiTokensLoading={apiTokensLoading}
-                      canManageUsers={canManageUsers}
-                      onArchiveProject={submitProjectArchive}
-                      onApiTokenExpirationDaysChange={(value) => {
-                        setApiTokenExpirationDays(value)
-                        setApiTokenPlaintext(null)
-                      }}
-                      onApiTokenLabelChange={setApiTokenLabel}
-                      onApiTokenScopeChange={setApiTokenScope}
-                      onCreateApiToken={submitApiToken}
-                      onCreateProject={submitProject}
-                      onCreateUser={submitUser}
-                      onProjectEditDisplayNameChange={setProjectEditDisplayName}
-                      onProjectDisplayNameChange={setProjectDisplayName}
-                      onProjectSlugChange={setProjectSlug}
-                      onRevokeApiToken={revokeSelectedApiToken}
-                      onSelectProject={selectProject}
-                      onUpdateProject={submitProjectUpdate}
-                      onUserDisplayNameChange={setUserDisplayName}
-                      onUserEmailChange={setUserEmail}
-                      onUserIssuerChange={setUserIssuer}
-                      onUserLoginChange={setUserLogin}
-                      onUserProviderChange={setUserProvider}
-                      onUserRoleChange={setUserRole}
-                      onUserSubjectChange={setUserSubject}
-                      projectCreateError={projectCreateError}
-                      projectCreateStatus={projectCreateStatus}
-                      projectDisplayName={projectDisplayName}
-                      projectEditDisplayName={projectEditDisplayName}
-                      projectEditSlug={projectEditSlug}
-                      projectMutationError={projectMutationError}
-                      projectMutationStatus={projectMutationStatus}
-                      projectSlug={projectSlug}
-                      projectArchiving={projectArchiving}
-                      projectSubmitting={projectSubmitting}
-                      projectUpdating={projectUpdating}
-                      projects={projects}
-                      projectsLoading={projectsLoading}
-                      selectedProject={selectedProject}
-                      session={session}
-                      userCreateError={userCreateError}
-                      userCreateStatus={userCreateStatus}
-                      userDisplayName={userDisplayName}
-                      userEmail={userEmail}
-                      userIssuer={userIssuer}
-                      userLogin={userLogin}
-                      userProvider={userProvider}
-                      userRole={userRole}
-                      userSubject={userSubject}
-                      userSubmitting={userSubmitting}
-                      users={users}
-                      usersLoading={usersLoading}
-                    />
+                  {showAccountPanel && workspacePanel ? (
+                    workspacePanel
                   ) : (
                     <PreviewPane
                       file={file}
