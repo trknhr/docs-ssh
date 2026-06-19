@@ -47,7 +47,8 @@ export interface ViewerProjectMutationResponse {
   project: ViewerProject
 }
 
-export type ViewerApiTokenScope = 'project:read' | 'project:write' | 'sources:read' | 'ssh-session:create'
+export type ViewerApiTokenCreateScope = 'read' | 'write' | 'ssh-session'
+export type ViewerApiTokenScope = 'bootstrap:read' | 'project:read' | 'project:write' | 'sources:read' | 'ssh-session:create'
 
 export interface ViewerApiToken {
   createdAt: string

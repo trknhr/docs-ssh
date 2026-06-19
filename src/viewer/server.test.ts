@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import Database from 'better-sqlite3'
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose'
 import ssh2 from 'ssh2'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -282,6 +283,7 @@ async function createViewerFixture(config: {
   closers.push(() => viewer.close())
 
   return {
+    authDbPath,
     baseUrl: `http://127.0.0.1:${port}`,
     owner,
     workspaceDir,
@@ -966,9 +968,10 @@ describe('createViewerServer OIDC session flow', () => {
 
     const createTokenResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tokens`, jar, {
       body: JSON.stringify({
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         label: 'agent token',
         project: 'product-docs',
-        scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+        scopes: ['read', 'ssh-session'],
       }),
       headers: {
         'Content-Type': 'application/json',
@@ -978,8 +981,12 @@ describe('createViewerServer OIDC session flow', () => {
     const createTokenPayload = await createTokenResponse.json() as {
       token: {
         id: string
+        createdAt: string
+        expiresAt: string
         label: string
+        lastUsedAt: string | null
         project: string
+        revokedAt: string | null
         scopes: string[]
         token: string
       }
@@ -988,23 +995,63 @@ describe('createViewerServer OIDC session flow', () => {
     expect(createTokenPayload.token).toMatchObject({
       label: 'agent token',
       project: 'product-docs',
-      scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+      revokedAt: null,
+      scopes: ['bootstrap:read', 'project:read', 'sources:read', 'ssh-session:create'],
     })
+    expect(createTokenPayload.token.createdAt).toEqual(expect.any(String))
+    expect(createTokenPayload.token.expiresAt).toEqual(expect.any(String))
+    expect(createTokenPayload.token.lastUsedAt).toBeNull()
     expect(createTokenPayload.token.token).toMatch(/^dssh_/)
+
+    const expiredTokenResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tokens`, jar, {
+      body: JSON.stringify({
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        label: 'expired token',
+        project: 'product-docs',
+        scopes: ['project:read'],
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    const expiredTokenPayload = await expiredTokenResponse.json() as {
+      token: {
+        id: string
+      }
+    }
+    expect(expiredTokenResponse.status).toBe(200)
+    const database = new Database(viewer.authDbPath)
+    database
+      .prepare('UPDATE api_tokens SET expires_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 60 * 1000).toISOString(), expiredTokenPayload.token.id)
+    database.close()
 
     const listTokenResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tokens?project=product-docs`, jar)
     const listTokenPayload = await listTokenResponse.json() as {
       tokens: Array<{
+        createdAt: string
+        expiresAt: string | null
         id: string
+        label: string | null
+        lastUsedAt: string | null
         project: string
+        revokedAt: string | null
+        scopes: string[]
         token?: string
       }>
     }
     expect(listTokenResponse.status).toBe(200)
     expect(listTokenPayload.tokens).toEqual([
       expect.objectContaining({
+        createdAt: expect.any(String),
+        expiresAt: expect.any(String),
         id: createTokenPayload.token.id,
+        label: 'agent token',
+        lastUsedAt: null,
         project: 'product-docs',
+        revokedAt: null,
+        scopes: ['bootstrap:read', 'project:read', 'sources:read', 'ssh-session:create'],
       }),
     ])
     expect(listTokenPayload.tokens[0].token).toBeUndefined()
@@ -1031,7 +1078,7 @@ describe('createViewerServer OIDC session flow', () => {
     expect(bearerSessionResponse.status).toBe(200)
     expect(bearerSessionPayload.session).toMatchObject({
       project: 'product-docs',
-      scopes: expect.arrayContaining(['project:read', 'sources:read', 'ssh-session:create']),
+      scopes: expect.arrayContaining(['bootstrap:read', 'project:read', 'sources:read', 'ssh-session:create']),
       username: expect.stringMatching(/^sess_/),
     })
 
@@ -1041,6 +1088,16 @@ describe('createViewerServer OIDC session flow', () => {
       },
     })
     expect(bearerProjectsResponse.status).toBe(401)
+
+    const revokeTokenResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tokens?id=${createTokenPayload.token.id}`, jar, {
+      method: 'DELETE',
+    })
+    expect(revokeTokenResponse.status).toBe(200)
+    const afterRevokeResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tokens?project=product-docs`, jar)
+    const afterRevokePayload = await afterRevokeResponse.json() as {
+      tokens: Array<{ id: string }>
+    }
+    expect(afterRevokePayload.tokens).toEqual([])
   })
 
   it('rejects owner role assignment from admin users', async () => {

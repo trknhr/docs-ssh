@@ -294,12 +294,38 @@ function parseApiTokenScopes(value: unknown): AuthApiTokenScope[] | undefined {
   if (!Array.isArray(value) || !value.every((scope) => typeof scope === 'string')) {
     throw new Error('scopes must be an array of strings.')
   }
-  return value.map((scope) => {
-    if (scope === 'project:read' || scope === 'project:write' || scope === 'sources:read' || scope === 'ssh-session:create') {
-      return scope
+
+  const scopes: AuthApiTokenScope[] = []
+  const addScopes = (...entries: AuthApiTokenScope[]) => {
+    for (const entry of entries) {
+      if (!scopes.includes(entry)) scopes.push(entry)
     }
-    throw new Error(`Unsupported API token scope: ${scope}`)
-  })
+  }
+
+  for (const scope of value) {
+    switch (scope) {
+      case 'read':
+        addScopes('bootstrap:read', 'project:read', 'sources:read')
+        break
+      case 'write':
+        addScopes('bootstrap:read', 'project:read', 'sources:read', 'project:write')
+        break
+      case 'ssh-session':
+        addScopes('ssh-session:create')
+        break
+      case 'bootstrap:read':
+      case 'project:read':
+      case 'project:write':
+      case 'sources:read':
+      case 'ssh-session:create':
+        addScopes(scope)
+        break
+      default:
+        throw new Error(`Unsupported API token scope: ${scope}`)
+    }
+  }
+
+  return scopes
 }
 
 function normalizeViewerIdentifier(value: string): string {

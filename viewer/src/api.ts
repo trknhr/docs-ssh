@@ -1,9 +1,9 @@
 import type {
   FileResponse,
   TreeResponse,
+  ViewerApiTokenCreateScope,
   ViewerApiTokenListResponse,
   ViewerApiTokenMutationResponse,
-  ViewerApiTokenScope,
   ViewerProjectListResponse,
   ViewerProjectMutationResponse,
   ViewerSessionResponse,
@@ -86,7 +86,7 @@ export async function createApiToken(input: {
   expiresAt?: string
   label?: string
   project: string
-  scopes?: ViewerApiTokenScope[]
+  scopes?: ViewerApiTokenCreateScope[]
 }) {
   return fetchJson<ViewerApiTokenMutationResponse>('/api/tokens', {
     body: JSON.stringify(input),

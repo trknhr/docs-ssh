@@ -21,8 +21,9 @@ const DEFAULT_SSH_SESSION_SCOPES = [
   'project:write',
   'projects:read',
 ] as const
-const DEFAULT_API_TOKEN_SCOPES = ['project:read', 'sources:read', 'ssh-session:create'] as const
+const DEFAULT_API_TOKEN_SCOPES = ['bootstrap:read', 'project:read', 'sources:read', 'ssh-session:create'] as const
 const API_TOKEN_SCOPES = new Set<AuthApiTokenScope>([
+  'bootstrap:read',
   'project:read',
   'project:write',
   'sources:read',
@@ -31,7 +32,7 @@ const API_TOKEN_SCOPES = new Set<AuthApiTokenScope>([
 
 export type AuthMembershipRole = 'owner' | 'admin' | 'member'
 export type AuthPrincipalKind = 'user' | 'service_account'
-export type AuthApiTokenScope = 'project:read' | 'project:write' | 'sources:read' | 'ssh-session:create'
+export type AuthApiTokenScope = 'bootstrap:read' | 'project:read' | 'project:write' | 'sources:read' | 'ssh-session:create'
 
 export interface AuthTenant {
   createdAt: string
@@ -268,6 +269,7 @@ export interface CreateApiTokenInput {
 }
 
 export interface ListApiTokensOptions {
+  includeExpired?: boolean
   includeRevoked?: boolean
   projectSlug?: string
   tenantSlug?: string
@@ -2442,6 +2444,11 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       if (!opts.includeRevoked) {
         conditions.push('at.revoked_at IS NULL')
+      }
+
+      if (!opts.includeExpired) {
+        conditions.push('(at.expires_at IS NULL OR at.expires_at > ?)')
+        params.push(createTimestamp())
       }
 
       return database

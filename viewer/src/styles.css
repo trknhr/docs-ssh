@@ -643,6 +643,13 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.token-secret {
+  align-items: end;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .token-secret textarea {
   color: #bae6fd;
   font-family: var(--font-mono);
@@ -671,17 +678,51 @@ textarea {
   min-width: min(100%, 16rem);
 }
 
+.token-item__body {
+  flex: 1 1 24rem;
+}
+
+.token-item__header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .token-item strong {
   color: var(--text);
 }
 
+.token-meta-grid {
+  display: grid;
+  gap: 0.4rem 0.85rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.token-meta-grid div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.token-meta-grid dt,
+.token-meta-grid dd,
 .token-item code,
 .token-item span {
   color: var(--text-muted);
   font-size: 0.82rem;
 }
 
-.token-item code {
+.token-meta-grid dt {
+  text-transform: uppercase;
+}
+
+.token-meta-grid dd {
+  margin: 0;
+}
+
+.token-item code,
+.token-scopes {
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
@@ -878,6 +919,15 @@ textarea {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .token-meta-grid,
+  .token-secret {
+    grid-template-columns: 1fr;
+  }
+
+  .token-secret .meta-button {
+    width: 100%;
   }
 
   .account-banner__meta {

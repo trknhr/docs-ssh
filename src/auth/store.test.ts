@@ -485,7 +485,7 @@ describe('createAuthStore', () => {
     const created = authStore.createApiToken({
       label: 'agent token',
       projectSlug: 'product-docs',
-      scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+      scopes: ['bootstrap:read', 'project:read', 'sources:read', 'ssh-session:create'],
       userLogin: 'alice',
     })
 
@@ -495,7 +495,7 @@ describe('createAuthStore', () => {
       lastUsedAt: null,
       projectSlug: 'product-docs',
       revokedAt: null,
-      scopes: ['project:read', 'sources:read', 'ssh-session:create'],
+      scopes: ['bootstrap:read', 'project:read', 'sources:read', 'ssh-session:create'],
     })
 
     const listed = authStore.listApiTokens({
@@ -547,6 +547,55 @@ describe('createAuthStore', () => {
     })
     expect(revoked.revokedAt).toEqual(expect.any(String))
     expect(authStore.authenticateApiToken(created.token, { projectSlug: 'product-docs' })).toBeNull()
+
+    authStore.close()
+  })
+
+  it('excludes expired API tokens from the active token list', async () => {
+    const tempDir = await createTempDir()
+    const dbPath = resolve(tempDir, 'auth.sqlite')
+    const authStore = createAuthStore({
+      dbPath,
+    })
+    authStore.ensureSingleTenantOwner({
+      ownerLogin: 'alice',
+      ownerName: 'Alice',
+    })
+    authStore.createProject({
+      displayName: 'Product Docs',
+      slug: 'product-docs',
+      userLogin: 'alice',
+    })
+
+    const active = authStore.createApiToken({
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      label: 'active token',
+      projectSlug: 'product-docs',
+      scopes: ['project:read'],
+      userLogin: 'alice',
+    })
+    const expired = authStore.createApiToken({
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      label: 'expired token',
+      projectSlug: 'product-docs',
+      scopes: ['project:read'],
+      userLogin: 'alice',
+    })
+    const database = new Database(dbPath)
+    database
+      .prepare('UPDATE api_tokens SET expires_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 60 * 1000).toISOString(), expired.id)
+    database.close()
+
+    expect(authStore.listApiTokens({
+      projectSlug: 'product-docs',
+      userLogin: 'alice',
+    }).map((token) => token.id)).toEqual([active.id])
+    expect(new Set(authStore.listApiTokens({
+      includeExpired: true,
+      projectSlug: 'product-docs',
+      userLogin: 'alice',
+    }).map((token) => token.id))).toEqual(new Set([expired.id, active.id]))
 
     authStore.close()
   })

@@ -9,6 +9,7 @@ import type {
   RootSummary,
   TreeNodeData,
   ViewerApiToken,
+  ViewerApiTokenCreateScope,
   ViewerApiTokenScope,
   ViewerOidcState,
   ViewerProject,
@@ -16,11 +17,18 @@ import type {
   ViewerUser,
 } from './types'
 
-const API_TOKEN_SCOPE_OPTIONS: ViewerApiTokenScope[] = [
-  'project:read',
-  'project:write',
-  'sources:read',
-  'ssh-session:create',
+const API_TOKEN_SCOPE_OPTIONS: Array<{ label: string; value: ViewerApiTokenCreateScope }> = [
+  { label: 'read', value: 'read' },
+  { label: 'write', value: 'write' },
+  { label: 'ssh-session', value: 'ssh-session' },
+]
+
+const API_TOKEN_EXPIRATION_OPTIONS = [
+  { label: '7 days', value: '7' },
+  { label: '30 days', value: '30' },
+  { label: '90 days', value: '90' },
+  { label: '1 year', value: '365' },
+  { label: 'No expiration', value: '' },
 ]
 
 function escapeHtml(value: string) {
@@ -80,6 +88,31 @@ function splitHref(href: string) {
 
 function toRawUrl(path: string) {
   return `/api/raw?path=${encodeURIComponent(path)}`
+}
+
+function formatTokenDate(value: string | null) {
+  return value ? new Date(value).toLocaleString() : 'never'
+}
+
+function formatApiTokenScopes(scopes: ViewerApiTokenScope[]) {
+  const labels: ViewerApiTokenCreateScope[] = []
+  if (scopes.some((scope) => scope === 'bootstrap:read' || scope === 'project:read' || scope === 'sources:read')) {
+    labels.push('read')
+  }
+  if (scopes.includes('project:write')) {
+    labels.push('write')
+  }
+  if (scopes.includes('ssh-session:create')) {
+    labels.push('ssh-session')
+  }
+  return labels.length > 0 ? labels.join(', ') : scopes.join(', ')
+}
+
+function createExpirationTimestamp(days: string) {
+  if (!days) return undefined
+  const parsedDays = Number.parseInt(days, 10)
+  if (!Number.isFinite(parsedDays) || parsedDays <= 0) return undefined
+  return new Date(Date.now() + parsedDays * 24 * 60 * 60 * 1000).toISOString()
 }
 
 function getCurrentReturnTo() {
@@ -326,17 +359,19 @@ function PreviewHeader(props: {
 function AccountPanel(props: {
   apiTokenCreateError: string | null
   apiTokenCreateStatus: string | null
+  apiTokenExpirationDays: string
   apiTokenLabel: string
   apiTokenPlaintext: string | null
   apiTokenRevokingId: string | null
-  apiTokenScopes: ViewerApiTokenScope[]
+  apiTokenScopes: ViewerApiTokenCreateScope[]
   apiTokenSubmitting: boolean
   apiTokens: ViewerApiToken[]
   apiTokensLoading: boolean
   canManageUsers: boolean
   onArchiveProject: () => void
+  onApiTokenExpirationDaysChange: (value: string) => void
   onApiTokenLabelChange: (value: string) => void
-  onApiTokenScopeChange: (scope: ViewerApiTokenScope, checked: boolean) => void
+  onApiTokenScopeChange: (scope: ViewerApiTokenCreateScope, checked: boolean) => void
   onCreateApiToken: () => void
   onCreateProject: () => void
   onCreateUser: () => void
@@ -383,6 +418,7 @@ function AccountPanel(props: {
 }) {
   const selectedProject = props.projects.find((project) => project.slug === props.selectedProject) ?? props.projects[0]
   const [configCopied, setConfigCopied] = useState(false)
+  const [tokenCopied, setTokenCopied] = useState(false)
   const projectConfig = selectedProject
     ? [
         'server = "docs-ssh"',
@@ -654,27 +690,89 @@ function AccountPanel(props: {
         {props.canManageUsers && selectedProject ? (
           <article className="account-card">
             <p className="eyebrow">API Tokens</p>
-            <h3>Create project-scoped access</h3>
+            <h3>Active API tokens</h3>
+            {props.apiTokensLoading ? (
+              <div className="preview-state preview-state--compact">
+                <p>Loading tokens...</p>
+              </div>
+            ) : props.apiTokens.length === 0 ? (
+              <div className="preview-state preview-state--compact">
+                <p>No active API tokens for this project.</p>
+              </div>
+            ) : (
+              <div className="token-list">
+                {props.apiTokens.map((token) => (
+                  <div className="token-item" key={token.id}>
+                    <div className="token-item__body">
+                      <div className="token-item__header">
+                        <strong>{token.label || 'API token'}</strong>
+                        <span className="meta-pill meta-pill--muted">{token.project}</span>
+                      </div>
+                      <dl className="token-meta-grid">
+                        <div>
+                          <dt>Created</dt>
+                          <dd>{formatTokenDate(token.createdAt)}</dd>
+                        </div>
+                        <div>
+                          <dt>Expires</dt>
+                          <dd>{formatTokenDate(token.expiresAt)}</dd>
+                        </div>
+                        <div>
+                          <dt>Last used</dt>
+                          <dd>{formatTokenDate(token.lastUsedAt)}</dd>
+                        </div>
+                      </dl>
+                      <code className="token-scopes">{formatApiTokenScopes(token.scopes)}</code>
+                    </div>
+                    <button
+                      className="danger-button danger-button--small"
+                      disabled={props.apiTokenRevokingId === token.id}
+                      onClick={() => props.onRevokeApiToken(token.id)}
+                      type="button"
+                    >
+                      {props.apiTokenRevokingId === token.id ? 'Revoking...' : 'Revoke'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <h3>Create token</h3>
             <div className="account-form">
-              <label className="field field--stacked">
-                <span>Label</span>
-                <input
-                  maxLength={120}
-                  onChange={(event) => props.onApiTokenLabelChange(event.target.value)}
-                  placeholder="agent token"
-                  type="text"
-                  value={props.apiTokenLabel}
-                />
-              </label>
+              <div className="form-grid">
+                <label className="field field--stacked">
+                  <span>Label</span>
+                  <input
+                    maxLength={120}
+                    onChange={(event) => props.onApiTokenLabelChange(event.target.value)}
+                    placeholder="agent token"
+                    type="text"
+                    value={props.apiTokenLabel}
+                  />
+                </label>
+                <label className="field field--stacked">
+                  <span>Expiration</span>
+                  <select
+                    onChange={(event) => props.onApiTokenExpirationDaysChange(event.target.value)}
+                    value={props.apiTokenExpirationDays}
+                  >
+                    {API_TOKEN_EXPIRATION_OPTIONS.map((option) => (
+                      <option key={option.value || 'none'} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <div className="token-scope-grid">
                 {API_TOKEN_SCOPE_OPTIONS.map((scope) => (
-                  <label className="check-field" key={scope}>
+                  <label className="check-field" key={scope.value}>
                     <input
-                      checked={props.apiTokenScopes.includes(scope)}
-                      onChange={(event) => props.onApiTokenScopeChange(scope, event.target.checked)}
+                      checked={props.apiTokenScopes.includes(scope.value)}
+                      onChange={(event) => props.onApiTokenScopeChange(scope.value, event.target.checked)}
                       type="checkbox"
                     />
-                    <span>{scope}</span>
+                    <span>{scope.label}</span>
                   </label>
                 ))}
               </div>
@@ -696,42 +794,25 @@ function AccountPanel(props: {
               </div>
             </div>
             {props.apiTokenPlaintext ? (
-              <label className="field field--stacked token-secret">
-                <span>New token</span>
-                <textarea readOnly rows={3} value={props.apiTokenPlaintext} />
-              </label>
+              <div className="token-secret">
+                <label className="field field--stacked">
+                  <span>New token</span>
+                  <textarea readOnly rows={3} value={props.apiTokenPlaintext} />
+                </label>
+                <button
+                  className="meta-link meta-button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(props.apiTokenPlaintext ?? '').then(() => {
+                      setTokenCopied(true)
+                      window.setTimeout(() => setTokenCopied(false), 1400)
+                    })
+                  }}
+                  type="button"
+                >
+                  {tokenCopied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
             ) : null}
-            {props.apiTokensLoading ? (
-              <div className="preview-state preview-state--compact">
-                <p>Loading tokens...</p>
-              </div>
-            ) : props.apiTokens.length === 0 ? (
-              <div className="preview-state preview-state--compact">
-                <p>No active API tokens for this project.</p>
-              </div>
-            ) : (
-              <div className="token-list">
-                {props.apiTokens.map((token) => (
-                  <div className="token-item" key={token.id}>
-                    <div>
-                      <strong>{token.label || 'API token'}</strong>
-                      <code>{token.scopes.join(', ')}</code>
-                      <span>
-                        {token.lastUsedAt ? `last used ${new Date(token.lastUsedAt).toLocaleString()}` : 'not used yet'}
-                      </span>
-                    </div>
-                    <button
-                      className="danger-button danger-button--small"
-                      disabled={props.apiTokenRevokingId === token.id}
-                      onClick={() => props.onRevokeApiToken(token.id)}
-                      type="button"
-                    >
-                      {props.apiTokenRevokingId === token.id ? 'Revoking...' : 'Revoke'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </article>
         ) : null}
 
@@ -986,11 +1067,8 @@ export function App() {
   const [apiTokens, setApiTokens] = useState<ViewerApiToken[]>([])
   const [apiTokensLoading, setApiTokensLoading] = useState(false)
   const [apiTokenLabel, setApiTokenLabel] = useState('')
-  const [apiTokenScopes, setApiTokenScopes] = useState<ViewerApiTokenScope[]>([
-    'project:read',
-    'sources:read',
-    'ssh-session:create',
-  ])
+  const [apiTokenExpirationDays, setApiTokenExpirationDays] = useState('90')
+  const [apiTokenScopes, setApiTokenScopes] = useState<ViewerApiTokenCreateScope[]>(['read', 'ssh-session'])
   const [apiTokenPlaintext, setApiTokenPlaintext] = useState<string | null>(null)
   const [apiTokenCreateError, setApiTokenCreateError] = useState<string | null>(null)
   const [apiTokenCreateStatus, setApiTokenCreateStatus] = useState<string | null>(null)
@@ -1390,10 +1468,19 @@ export function App() {
     }
   }
 
-  const setApiTokenScope = (scope: ViewerApiTokenScope, checked: boolean) => {
+  const setApiTokenScope = (scope: ViewerApiTokenCreateScope, checked: boolean) => {
     setApiTokenScopes((current) => {
-      if (checked) return [...new Set([...current, scope])]
-      return current.filter((entry) => entry !== scope)
+      const next = new Set(current)
+      if (checked) {
+        next.add(scope)
+        if (scope === 'write') next.add('read')
+      } else {
+        next.delete(scope)
+        if (scope === 'read') next.delete('write')
+      }
+      return API_TOKEN_SCOPE_OPTIONS
+        .map((option) => option.value)
+        .filter((entry) => next.has(entry))
     })
     setApiTokenPlaintext(null)
   }
@@ -1418,12 +1505,14 @@ export function App() {
 
     try {
       const payload = await createApiToken({
+        expiresAt: createExpirationTimestamp(apiTokenExpirationDays),
         label: apiTokenLabel.trim() || undefined,
         project: project.slug,
         scopes: apiTokenScopes,
       })
       setApiTokens((current) => payload.tokens ?? [payload.token, ...current])
       setApiTokenLabel('')
+      setApiTokenExpirationDays('90')
       setApiTokenPlaintext(payload.token.token ?? null)
       setApiTokenCreateStatus(`Created token for ${project.slug}`)
     } catch (error) {
@@ -1576,6 +1665,7 @@ export function App() {
                     <AccountPanel
                       apiTokenCreateError={apiTokenCreateError}
                       apiTokenCreateStatus={apiTokenCreateStatus}
+                      apiTokenExpirationDays={apiTokenExpirationDays}
                       apiTokenLabel={apiTokenLabel}
                       apiTokenPlaintext={apiTokenPlaintext}
                       apiTokenRevokingId={apiTokenRevokingId}
@@ -1585,6 +1675,10 @@ export function App() {
                       apiTokensLoading={apiTokensLoading}
                       canManageUsers={canManageUsers}
                       onArchiveProject={submitProjectArchive}
+                      onApiTokenExpirationDaysChange={(value) => {
+                        setApiTokenExpirationDays(value)
+                        setApiTokenPlaintext(null)
+                      }}
                       onApiTokenLabelChange={setApiTokenLabel}
                       onApiTokenScopeChange={setApiTokenScope}
                       onCreateApiToken={submitApiToken}
