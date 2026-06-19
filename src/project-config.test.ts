@@ -39,6 +39,26 @@ describe('findProjectConfig', () => {
     })
   })
 
+  it('accepts host as the SSH config host key', async () => {
+    const rootDir = await createTempDir()
+    await writeFile(
+      resolve(rootDir, '.docs-ssh.toml'),
+      [
+        'host = "docs-ssh"',
+        'viewer_origin = "https://docs.example.com"',
+        'project = "serverless-agent"',
+        '',
+      ].join('\n'),
+    )
+
+    await expect(findProjectConfig(rootDir)).resolves.toEqual({
+      path: resolve(rootDir, '.docs-ssh.toml'),
+      project: 'serverless-agent',
+      server: 'docs-ssh',
+      viewerOrigin: 'https://docs.example.com',
+    })
+  })
+
   it('returns null when no config file exists', async () => {
     const rootDir = await createTempDir()
     await expect(findProjectConfig(rootDir)).resolves.toBeNull()

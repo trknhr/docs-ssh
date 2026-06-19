@@ -29,6 +29,10 @@
     "sources:list": "pnpm run build:server && node dist/src/cli.js sources list",
     "generate:host-key": "tsx scripts/generate-host-key.ts",
     "generate:host-key:local": "tsx scripts/generate-host-key.ts > ssh_host_key",
+    "site:build": "pnpm run site:check && vite build --config site/vite.config.ts",
+    "site:check": "tsc -p site/tsconfig.json --noEmit",
+    "site:dev": "vite --config site/vite.config.ts",
+    "site:preview": "vite preview --config site/vite.config.ts",
     "test": "vitest run"
   },
   "dependencies": {

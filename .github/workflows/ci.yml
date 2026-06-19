@@ -43,3 +43,9 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      - name: Check docs site
+        run: pnpm run site:check
+
+      - name: Build docs site
+        run: pnpm run site:build

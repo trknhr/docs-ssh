@@ -24,7 +24,8 @@ function parseProjectConfig(content: string, path: string): DocsSshProjectConfig
     const key = match[1]
     const value = (match[2] ?? match[3] ?? match[4] ?? '').trim()
     if (key === 'project') config.project = value
-    if (key === 'server') config.server = value
+    if (key === 'host') config.server = value
+    if (key === 'server' && !config.server) config.server = value
     if (key === 'viewer' || key === 'viewer_origin') config.viewerOrigin = value
   }
 

@@ -4,8 +4,9 @@ import { randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { AddressInfo } from 'node:net'
 import { homedir } from 'node:os'
-import { access, appendFile, chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { access, appendFile, chmod, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, relative, resolve } from 'node:path'
+import { createInterface } from 'node:readline/promises'
 import { promisify } from 'node:util'
 import ssh2 from 'ssh2'
 import { createAuthStore, type AuthStore } from './auth/store.js'
@@ -39,6 +40,7 @@ const { utils: sshUtils } = ssh2
 
 const DEFAULT_CLI_LOGIN_TTL_SECONDS = 60 * 60
 const DEFAULT_CLI_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
+let promptReadline: ReturnType<typeof createInterface> | null = null
 
 loadLocalEnvFile()
 
@@ -51,6 +53,11 @@ interface CliLoginConfig {
   project: string
   server: string
   viewerOrigin: string
+}
+
+interface ResolveCliLoginConfigOptions {
+  promptForMissingHost?: boolean
+  promptForMissingViewerOrigin?: boolean
 }
 
 type CliSessionScope = 'project' | 'server'
@@ -77,6 +84,21 @@ interface CliSshSessionPayload {
   username: string
 }
 
+interface BootstrapProjectPayload {
+  current?: boolean
+  displayName?: string
+  root?: string
+  slug: string
+}
+
+interface BootstrapManifestPayload {
+  project?: {
+    root?: string
+    slug?: string
+  }
+  projects?: BootstrapProjectPayload[]
+}
+
 function printUsage(): void {
   console.log(`docs-ssh CLI
 
@@ -85,10 +107,11 @@ Usage:
   docs-ssh ingest git-repo <repo-url> [--name <name>] [--subdir <path>] [--ref <ref>] [--default]
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
-  docs-ssh login [--server <alias>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open]
-  docs-ssh token login --token <token> [--server <alias>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json]
-  docs-ssh status [--server <alias>] [--project <slug>] [--json]
-  docs-ssh logout [--server <alias>] [--project <slug>] [--json]
+  docs-ssh login [--host <ssh-config-host>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open] [--interactive]
+  docs-ssh token login --token <token> [--host <ssh-config-host>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json]
+  docs-ssh config init [--host <ssh-config-host>] [--project <slug>] [--viewer-origin <url>] [--output <path>] [--force] [--json] [--interactive]
+  docs-ssh status [--host <ssh-config-host>] [--project <slug>] [--json]
+  docs-ssh logout [--host <ssh-config-host>] [--project <slug>] [--json]
   docs-ssh projects list [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all]
   docs-ssh projects create --project <slug> [--display-name <name>] [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
   docs-ssh projects update --project <slug> --display-name <name> [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
@@ -110,6 +133,9 @@ Initial presets:
   supabase
   neon
   cloudflare
+
+Compatibility:
+  --server is still accepted as an alias for --host.
 `)
 }
 
@@ -145,6 +171,19 @@ function getFlagString(args: ParsedArgs, name: string): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+function getFlagAliasString(args: ParsedArgs, primaryName: string, legacyName: string): string | undefined {
+  const primaryValue = getFlagString(args, primaryName)
+  const legacyValue = getFlagString(args, legacyName)
+  if (primaryValue && legacyValue && primaryValue !== legacyValue) {
+    throw new Error(`--${primaryName} and --${legacyName} specify different values.`)
+  }
+  return primaryValue ?? legacyValue
+}
+
+function getHostFlagString(args: ParsedArgs): string | undefined {
+  return getFlagAliasString(args, 'host', 'server')
+}
+
 function getFlagBoolean(args: ParsedArgs, name: string): boolean {
   return args.flags.get(name) === true
 }
@@ -173,8 +212,65 @@ function getJsonFlag(args: ParsedArgs): boolean {
   return getFlagBoolean(args, 'json')
 }
 
+function isCliInteractive(args: ParsedArgs): boolean {
+  return getFlagBoolean(args, 'interactive') || Boolean(process.stdin.isTTY)
+}
+
+function getEditDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+  const current = Array.from({ length: right.length + 1 }, () => 0)
+
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+    current[0] = leftIndex
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1
+      current[rightIndex] = Math.min(
+        previous[rightIndex] + 1,
+        current[rightIndex - 1] + 1,
+        previous[rightIndex - 1] + substitutionCost,
+      )
+    }
+    previous.splice(0, previous.length, ...current)
+  }
+
+  return previous[right.length]
+}
+
+function findClosestFlag(flag: string, allowedFlags: string[]): string | undefined {
+  const [candidate, distance] = allowedFlags
+    .map((allowedFlag) => [allowedFlag, getEditDistance(flag, allowedFlag)] as const)
+    .sort((left, right) => left[1] - right[1])[0] ?? []
+  return candidate && distance <= 3 ? candidate : undefined
+}
+
+function assertKnownFlags(args: ParsedArgs, allowedFlags: string[]): void {
+  const allowed = new Set(allowedFlags)
+  for (const flag of args.flags.keys()) {
+    if (allowed.has(flag)) continue
+
+    const suggestion = findClosestFlag(flag, allowedFlags)
+    throw new Error(`Unknown flag --${flag}.${suggestion ? ` Did you mean --${suggestion}?` : ''}`)
+  }
+}
+
 function normalizeViewerOrigin(value: string): string {
   return value.replace(/\/+$/u, '')
+}
+
+async function promptForValue(label: string, defaultValue: string): Promise<string> {
+  promptReadline ??= createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  })
+  const answer = (await promptReadline.question(`${label} [${defaultValue}]: `)).trim()
+  return answer || defaultValue
+}
+
+function closePromptReadline(): void {
+  if (promptReadline) {
+    promptReadline.close()
+    promptReadline = null
+  }
 }
 
 function sanitizePathPart(value: string): string {
@@ -211,21 +307,91 @@ function getCliSessionPath(
   return resolve(getCliSessionDir(args, config, scope), 'session.json')
 }
 
-async function resolveCliLoginConfig(args: ParsedArgs): Promise<CliLoginConfig> {
+async function resolveCliLoginConfig(
+  args: ParsedArgs,
+  options: ResolveCliLoginConfigOptions = {},
+): Promise<CliLoginConfig> {
   const projectConfig = await findProjectConfig()
-  const server = getFlagString(args, 'server') ?? projectConfig?.server ?? 'docs-ssh'
+  const explicitHost = getHostFlagString(args)
+  let server = explicitHost ?? projectConfig?.server ?? 'docs-ssh'
+  if (options.promptForMissingHost && !explicitHost && !projectConfig?.server && isCliInteractive(args)) {
+    server = await promptForValue('SSH config host', server)
+  }
+
   const project = getFlagString(args, 'project') ?? projectConfig?.project ?? 'default'
-  const viewerOrigin = normalizeViewerOrigin(
+  const explicitViewerOrigin =
     getFlagString(args, 'viewer-origin')
     ?? projectConfig?.viewerOrigin
     ?? process.env.DOCS_SSH_VIEWER_ORIGIN
-    ?? inferViewerOrigin(server),
-  )
+  let viewerOrigin = explicitViewerOrigin ?? inferViewerOrigin(server)
+  if (options.promptForMissingViewerOrigin && !explicitViewerOrigin && isCliInteractive(args)) {
+    viewerOrigin = await promptForValue('Viewer origin', viewerOrigin)
+  }
+  viewerOrigin = normalizeViewerOrigin(viewerOrigin)
 
   return {
     project,
     server,
     viewerOrigin,
+  }
+}
+
+async function listActiveServerSessions(args: ParsedArgs): Promise<CliSessionFile[]> {
+  const sessionsRoot = resolve(getDocsSshHome(args), 'sessions')
+  let entries
+  try {
+    entries = await readdir(sessionsRoot, { withFileTypes: true })
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return []
+    throw error
+  }
+
+  const sessions: CliSessionFile[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const session = await readCliSessionFile(resolve(sessionsRoot, entry.name, 'session.json'))
+    if (session && isCliSessionActive(session)) sessions.push(session)
+  }
+  return sessions
+}
+
+async function resolveConfigInitBase(args: ParsedArgs): Promise<{
+  config: CliLoginConfig
+  projectConfig: Awaited<ReturnType<typeof findProjectConfig>>
+  session: CliSessionFile | null
+}> {
+  const projectConfig = await findProjectConfig()
+  const explicitServer = getHostFlagString(args)
+
+  if (!explicitServer && !projectConfig?.server) {
+    const activeServerSessions = await listActiveServerSessions(args)
+    if (activeServerSessions.length > 0) {
+      const session = await chooseConfigHost(activeServerSessions)
+      return {
+        config: {
+          project: getFlagString(args, 'project') ?? projectConfig?.project ?? session.project,
+          server: session.server,
+          viewerOrigin: normalizeViewerOrigin(
+            getFlagString(args, 'viewer-origin')
+            ?? projectConfig?.viewerOrigin
+            ?? process.env.DOCS_SSH_VIEWER_ORIGIN
+            ?? session.viewerOrigin,
+          ),
+        },
+        projectConfig,
+        session,
+      }
+    }
+  }
+
+  const config = await resolveCliLoginConfig(args, {
+    promptForMissingHost: true,
+    promptForMissingViewerOrigin: true,
+  })
+  return {
+    config,
+    projectConfig,
+    session: await readCliSession(args, config),
   }
 }
 
@@ -254,6 +420,153 @@ function createSshCommand(session: {
   username: string
 }): string {
   return `ssh -i ${session.identityFile} ${session.username}@${session.server}`
+}
+
+function formatTomlString(value: string): string {
+  return `"${value.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"`
+}
+
+function createProjectConfigContent(config: {
+  project?: string
+  server: string
+  viewerOrigin: string
+}): string {
+  const lines = [
+    `host = ${formatTomlString(config.server)}`,
+    `viewer_origin = ${formatTomlString(config.viewerOrigin)}`,
+  ]
+  if (config.project) lines.push(`project = ${formatTomlString(config.project)}`)
+  lines.push('')
+  return lines.join('\n')
+}
+
+function getConfigOutputPath(args: ParsedArgs): string {
+  return resolve(getFlagString(args, 'output') ?? '.docs-ssh.toml')
+}
+
+async function ensureConfigOutputWritable(
+  path: string,
+  force: boolean,
+  allowedExistingPath?: string,
+): Promise<void> {
+  if (force) return
+
+  try {
+    await access(path)
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return
+    throw error
+  }
+
+  if (allowedExistingPath) {
+    const [existingRealPath, allowedRealPath] = await Promise.all([
+      realpath(path),
+      realpath(allowedExistingPath),
+    ])
+    if (existingRealPath === allowedRealPath) return
+  }
+
+  throw new Error(`${path} already exists. Pass --force to overwrite it.`)
+}
+
+async function fetchBootstrapManifest(session: CliSessionFile): Promise<BootstrapManifestPayload> {
+  const { stdout } = await execFileAsync('ssh', [
+    '-i',
+    session.identityFile,
+    `${session.username}@${session.server}`,
+    'bootstrap --json',
+  ], {
+    timeout: 10_000,
+  })
+
+  return JSON.parse(stdout) as BootstrapManifestPayload
+}
+
+function getBootstrapProjects(manifest: BootstrapManifestPayload, fallbackProject: string): BootstrapProjectPayload[] {
+  if (manifest.projects?.length) return manifest.projects
+  const slug = manifest.project?.slug ?? fallbackProject
+  return [{ current: true, slug }]
+}
+
+function findBootstrapProject(
+  projects: BootstrapProjectPayload[],
+  slug: string,
+): BootstrapProjectPayload | undefined {
+  return projects.find((project) => project.slug === slug)
+}
+
+async function chooseConfigHost(sessions: CliSessionFile[]): Promise<CliSessionFile> {
+  if (sessions.length === 1) return sessions[0]
+
+  if (!process.stdin.isTTY) {
+    throw new Error('Multiple active docs-ssh hosts are available. Pass --host to select one.')
+  }
+
+  console.error('Select a docs-ssh SSH config host:')
+  sessions.forEach((session, index) => {
+    console.error(`${index + 1}. ${session.server}`)
+  })
+
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  })
+  try {
+    const answer = (await readline.question('Host number or name: ')).trim()
+    const answerIndex = Number(answer)
+    if (Number.isInteger(answerIndex) && answerIndex >= 1 && answerIndex <= sessions.length) {
+      return sessions[answerIndex - 1]
+    }
+
+    const session = sessions.find((candidate) => candidate.server === answer)
+    if (session) return session
+  } finally {
+    readline.close()
+  }
+
+  throw new Error('Selected docs-ssh host was not found.')
+}
+
+async function chooseConfigProject(args: ParsedArgs, projects: BootstrapProjectPayload[]): Promise<BootstrapProjectPayload> {
+  const explicitProject = getFlagString(args, 'project')
+  if (explicitProject) {
+    const project = findBootstrapProject(projects, explicitProject)
+    if (!project) {
+      throw new Error(`Project "${explicitProject}" is not accessible through the current docs-ssh session.`)
+    }
+    return project
+  }
+
+  if (projects.length === 1) return projects[0]
+
+  if (!process.stdin.isTTY) {
+    throw new Error('Multiple projects are accessible. Pass --project to select one.')
+  }
+
+  console.error('Select a docs-ssh project:')
+  projects.forEach((project, index) => {
+    const current = project.current ? ' (current)' : ''
+    console.error(`${index + 1}. ${project.slug}${current}`)
+  })
+
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  })
+  try {
+    const answer = (await readline.question('Project number or slug: ')).trim()
+    const answerIndex = Number(answer)
+    if (Number.isInteger(answerIndex) && answerIndex >= 1 && answerIndex <= projects.length) {
+      return projects[answerIndex - 1]
+    }
+
+    const project = findBootstrapProject(projects, answer)
+    if (project) return project
+  } finally {
+    readline.close()
+  }
+
+  throw new Error('Selected project was not found.')
 }
 
 async function createCliIdentity(
@@ -309,7 +622,7 @@ async function writeCliSessionFile(
 
 function printCliSessionSummary(sessionFile: CliSessionFile): void {
   console.log('Created docs-ssh SSH session')
-  console.log(`- server: ${sessionFile.server}`)
+  console.log(`- host: ${sessionFile.server}`)
   console.log(`- project: ${sessionFile.project}`)
   console.log(`- username: ${sessionFile.username}`)
   console.log(`- expires: ${sessionFile.expiresAt}`)
@@ -418,7 +731,16 @@ async function createCliLoginCallback(expectedState: string): Promise<{
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init)
+  let response
+  try {
+    response = await fetch(url, init)
+  } catch (error) {
+    const endpoint = new URL(url)
+    throw new Error(
+      `Could not reach docs-ssh viewer at ${endpoint.origin}. Pass --viewer-origin or check that the viewer is running.`,
+      { cause: error },
+    )
+  }
   const payload = (await response.json()) as T & { error?: string }
   if (!response.ok) {
     throw new Error(typeof payload.error === 'string' ? payload.error : `Request failed with ${response.status}.`)
@@ -594,7 +916,10 @@ async function listSources(args: ParsedArgs): Promise<void> {
 }
 
 async function cliLogin(args: ParsedArgs): Promise<void> {
-  const config = await resolveCliLoginConfig(args)
+  const config = await resolveCliLoginConfig(args, {
+    promptForMissingHost: true,
+    promptForMissingViewerOrigin: true,
+  })
   const json = getJsonFlag(args)
   const ttlSeconds = getOptionalIntegerFlag(args, 'ttl-seconds') ?? DEFAULT_CLI_LOGIN_TTL_SECONDS
   const scopes = getFlagString(args, 'scopes')?.split(',')
@@ -692,6 +1017,7 @@ async function cliStatus(args: ParsedArgs): Promise<void> {
   if (getJsonFlag(args)) {
     console.log(JSON.stringify({
       active,
+      host: config.server,
       project: config.project,
       server: config.server,
       session,
@@ -705,7 +1031,7 @@ async function cliStatus(args: ParsedArgs): Promise<void> {
   }
 
   console.log(active ? 'docs-ssh session is active' : 'docs-ssh session is expired')
-  console.log(`- server: ${session.server}`)
+  console.log(`- host: ${session.server}`)
   console.log(`- project: ${session.project}`)
   console.log(`- username: ${session.username}`)
   console.log(`- expires: ${session.expiresAt}`)
@@ -723,6 +1049,7 @@ async function cliLogout(args: ParsedArgs): Promise<void> {
   if (getJsonFlag(args)) {
     console.log(JSON.stringify({
       removed: true,
+      host: config.server,
       project: config.project,
       server: config.server,
     }, null, 2))
@@ -731,6 +1058,77 @@ async function cliLogout(args: ParsedArgs): Promise<void> {
 
   console.log(`Removed local docs-ssh session for ${config.server}`)
   console.log('The server-side SSH session will stop working when it expires.')
+}
+
+async function cliConfigInit(args: ParsedArgs): Promise<void> {
+  const { config, projectConfig, session } = await resolveConfigInitBase(args)
+  const outputPath = getConfigOutputPath(args)
+  await ensureConfigOutputWritable(outputPath, getFlagBoolean(args, 'force'), projectConfig?.path)
+
+  if (!isCliSessionActive(session)) {
+    const project = getFlagString(args, 'project') ?? projectConfig?.project
+    const nextConfig = {
+      project,
+      server: config.server,
+      viewerOrigin: config.viewerOrigin,
+    }
+
+    await mkdir(dirname(outputPath), { recursive: true })
+    await writeFile(outputPath, createProjectConfigContent(nextConfig), { mode: 0o644 })
+
+    if (getJsonFlag(args)) {
+      const payload: Record<string, unknown> = {
+        host: nextConfig.server,
+        loginRequired: true,
+        path: outputPath,
+        server: nextConfig.server,
+        viewerOrigin: nextConfig.viewerOrigin,
+      }
+      if (nextConfig.project) payload.project = nextConfig.project
+      console.log(JSON.stringify(payload, null, 2))
+      return
+    }
+
+    console.log(`Wrote ${outputPath}`)
+    console.log(`- host: ${nextConfig.server}`)
+    console.log(`- viewer: ${nextConfig.viewerOrigin}`)
+    if (nextConfig.project) console.log(`- project: ${nextConfig.project}`)
+    console.log('Next: run docs-ssh login, then docs-ssh config init again to select a project.')
+    return
+  }
+
+  const manifest = await fetchBootstrapManifest(session!)
+  const projects = getBootstrapProjects(manifest, session!.project)
+  const selectedProject = await chooseConfigProject(args, projects)
+  const viewerOrigin = normalizeViewerOrigin(getFlagString(args, 'viewer-origin') ?? session!.viewerOrigin)
+  const nextConfig = {
+    project: selectedProject.slug,
+    server: config.server,
+    viewerOrigin,
+  }
+
+  await mkdir(dirname(outputPath), { recursive: true })
+  await writeFile(outputPath, createProjectConfigContent(nextConfig), { mode: 0o644 })
+
+  if (getJsonFlag(args)) {
+    console.log(JSON.stringify({
+      path: outputPath,
+      host: nextConfig.server,
+      project: nextConfig.project,
+      projects: projects.map((project) => ({
+        current: Boolean(project.current),
+        slug: project.slug,
+      })),
+      server: nextConfig.server,
+      viewerOrigin: nextConfig.viewerOrigin,
+    }, null, 2))
+    return
+  }
+
+  console.log(`Wrote ${outputPath}`)
+  console.log(`- host: ${nextConfig.server}`)
+  console.log(`- viewer: ${nextConfig.viewerOrigin}`)
+  console.log(`- project: ${nextConfig.project}`)
 }
 
 function getAuthDbPath(args: ParsedArgs): string {
@@ -1195,12 +1593,34 @@ async function main() {
   }
 
   if (command === 'login') {
+    assertKnownFlags(args, [
+      'home',
+      'host',
+      'interactive',
+      'json',
+      'no-open',
+      'project',
+      'scopes',
+      'server',
+      'ttl-seconds',
+      'viewer-origin',
+    ])
     await cliLogin(args)
     return
   }
 
   if (command === 'token') {
     if (subcommand === 'login') {
+      assertKnownFlags(args, [
+        'home',
+        'host',
+        'json',
+        'project',
+        'server',
+        'token',
+        'ttl-seconds',
+        'viewer-origin',
+      ])
       await cliTokenLogin(args)
       return
     }
@@ -1210,12 +1630,47 @@ async function main() {
   }
 
   if (command === 'status') {
+    assertKnownFlags(args, [
+      'home',
+      'host',
+      'json',
+      'project',
+      'server',
+    ])
     await cliStatus(args)
     return
   }
 
   if (command === 'logout') {
+    assertKnownFlags(args, [
+      'home',
+      'host',
+      'json',
+      'project',
+      'server',
+    ])
     await cliLogout(args)
+    return
+  }
+
+  if (command === 'config') {
+    if (subcommand === 'init') {
+      assertKnownFlags(args, [
+        'force',
+        'home',
+        'host',
+        'interactive',
+        'json',
+        'output',
+        'project',
+        'server',
+        'viewer-origin',
+      ])
+      await cliConfigInit(args)
+      return
+    }
+
+    printUsage()
     return
   }
 
@@ -1276,7 +1731,13 @@ async function main() {
   printUsage()
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exit(1)
-})
+main().then(
+  () => {
+    closePromptReadline()
+  },
+  (error) => {
+    closePromptReadline()
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  },
+)

@@ -1,6 +1,7 @@
 node_modules
 dist
 viewer-dist
+site-dist
 ssh_host_key
 .docs-ssh
 .docs-ssh.toml

@@ -282,7 +282,7 @@ Repo-local client config can point the CLI at both the SSH alias and the public 
 
 ```toml
 # .docs-ssh.toml
-server = "docs-ssh"
+host = "docs-ssh"
 project = "default"
 viewer_origin = "https://docs.example.com"
 ```
@@ -393,27 +393,47 @@ docs-ssh auth list-projects
 
 To make a local work directory select a project by default, place `.docs-ssh.toml` in that directory or one of its parents:
 
+```bash
+docs-ssh config init
+docs-ssh login
+docs-ssh config init
+```
+
+On the first run, `config init` writes the SSH config host and viewer origin so `login` knows where to authorize. After `login` creates a short-lived SSH session, run `config init` again to call `bootstrap --json`, list the projects that session can access, and write the selected project. In non-interactive shells, pass the connection and project explicitly:
+
+```bash
+docs-ssh config init \
+  --host docs-ssh \
+  --viewer-origin https://docs.example.com
+docs-ssh login
+docs-ssh config init --project slack-ai-assistant-agentcore-migration
+```
+
+The generated file is equivalent to:
+
 ```toml
-server = "docs-ssh"
+host = "docs-ssh"
 viewer_origin = "https://docs.example.com"
 project = "slack-ai-assistant-agentcore-migration"
 ```
 
-For local development, `server = "docs-ssh-local"` defaults the viewer origin to `http://localhost:3000`, so `viewer_origin` can be omitted. The CLI reads this file when `docs-ssh login` or `auth create-ssh-session` is run without `--project`. The server still verifies that the project exists and that the principal is a member before issuing a session. A typo in the file fails with `Project "<slug>" was not found`; it does not create a new project.
+For local development, `host = "docs-ssh-local"` defaults the viewer origin to `http://localhost:3000`, so `viewer_origin` can be omitted. The `host` value is the SSH config `Host` alias; older files with `server = "..."` still work. In an interactive terminal, `config init` and `login` prompt for missing host or viewer origin values instead of failing with the inferred default. The CLI reads this file when `docs-ssh login` or `auth create-ssh-session` is run without `--project`. The server still verifies that the project exists and that the principal is a member before issuing a session. A typo in the file fails with `Project "<slug>" was not found`; it does not create a new project.
 
 ## Short-Lived SSH Sessions
 
-The preferred v0.1.0 access path is a short-lived SSH session issued from a web-authenticated user. Run `docs-ssh login` from a local work directory. The CLI creates a temporary SSH keypair, opens the browser for Web/OIDC approval, exchanges the approval for an expiring SSH session, and stores the private key locally under `~/.docs-ssh/sessions`.
+The preferred v0.1.0 access path is a short-lived SSH session issued from a web-authenticated user. Run `docs-ssh config init` first so the local directory knows the SSH host and viewer origin, then run `docs-ssh login`. The CLI creates a temporary SSH keypair, opens the browser for Web/OIDC approval, exchanges the approval for an expiring SSH session, and stores the private key locally under `~/.docs-ssh/sessions`.
 
 ```bash
+docs-ssh config init
 docs-ssh login --json
+docs-ssh config init
 docs-ssh status
-ssh -i ~/.docs-ssh/sessions/<server>/<project>/id_ed25519 <session-username>@docs-ssh bootstrap --json
-ssh -i ~/.docs-ssh/sessions/<server>/<project>/id_ed25519 <session-username>@docs-ssh cat /projects/<slug>/README.md
+ssh -i ~/.docs-ssh/sessions/<host>/<project>/id_ed25519 <session-username>@docs-ssh bootstrap --json
+ssh -i ~/.docs-ssh/sessions/<host>/<project>/id_ed25519 <session-username>@docs-ssh cat /projects/<slug>/README.md
 docs-ssh logout
 ```
 
-`docs-ssh login --json` returns `sshCommand`, `identityFile`, `username`, `server`, `project`, and `expiresAt` so agent skills can reuse the session without handling browser cookies directly. This binds the web-authenticated user, selected project, generated public key, TTL, and scopes into a single SSH grant. Long-lived SSH keys remain available through operator/CLI workflows for recovery cases.
+`docs-ssh login --json` returns `sshCommand`, `identityFile`, `username`, `server`, `project`, and `expiresAt` so agent skills can reuse the session without handling browser cookies directly. In CLI flags and `.docs-ssh.toml`, prefer `--host` / `host` for the SSH config alias; `server` remains in session JSON for compatibility. This binds the web-authenticated user, selected project, generated public key, TTL, and scopes into a single SSH grant. Long-lived SSH keys remain available through operator/CLI workflows for recovery cases.
 
 ## API Tokens
 
@@ -424,12 +444,13 @@ Use a token to create a short-lived SSH session without opening a browser:
 ```bash
 docs-ssh token login \
   --token dssh_<secret> \
+  --host docs-ssh \
   --project default \
   --viewer-origin https://docs.example.com \
   --json
 ```
 
-The command generates a temporary SSH keypair, calls the viewer API with `Authorization: Bearer <token>`, writes the same `~/.docs-ssh/sessions/<server>/<project>/session.json` format as `docs-ssh login`, and prints `sshCommand` in JSON mode.
+The command generates a temporary SSH keypair, calls the viewer API with `Authorization: Bearer <token>`, writes the same `~/.docs-ssh/sessions/<host>/<project>/session.json` format as `docs-ssh login`, and prints `sshCommand` in JSON mode.
 
 API tokens are limited to one project. They cannot list, create, update, or archive projects; manage users; or mint other tokens. Creating SSH sessions through a token requires the `ssh-session:create` scope.
 

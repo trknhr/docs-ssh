@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="docs-ssh documentation for self-hosting project docs with web sessions and scoped SSH access."
+    />
+    <title>docs-ssh documentation</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <div class="site-shell">
+      <header class="topbar">
+        <a class="brand" href="#overview" aria-label="docs-ssh documentation home">
+          <span class="brand-mark">d</span>
+          <span>
+            <strong>docs-ssh</strong>
+            <small>Documentation</small>
+          </span>
+        </a>
+
+        <div class="topbar-actions">
+          <label class="search">
+            <span class="sr-only">Search documentation</span>
+            <input id="site-search" type="search" placeholder="Search docs" autocomplete="off" />
+          </label>
+          <a class="topbar-link" href="https://github.com/trknhr/docs-ssh">GitHub</a>
+        </div>
+      </header>
+
+      <div class="docs-layout">
+        <aside class="sidebar" aria-label="Documentation navigation">
+          <nav class="sidebar-nav">
+            <a href="#overview">Overview</a>
+            <a href="#quick-start">Quick start</a>
+            <a href="#web-login">Web login</a>
+            <a href="#projects">Projects</a>
+            <a href="#tokens">API tokens</a>
+            <a href="#self-hosting">Self-hosting</a>
+            <a href="#agent-workflow">Agent workflow</a>
+            <a href="#reference">Reference</a>
+          </nav>
+        </aside>
+
+        <main class="content" id="content">
+          <section class="doc-section intro" id="overview" data-section>
+            <p class="eyebrow">SSH for AI-agent-friendly docs</p>
+            <h1>Use SSH to make docs agent-friendly</h1>
+            <p class="lead">
+              docs-ssh gives AI agents a shell-native interface to project docs,
+              while humans keep a browser viewer, project controls, and scoped access.
+            </p>
+            <div class="hero-tags" aria-label="docs-ssh highlights">
+              <span>Shell-native for agents</span>
+              <span>Readable for humans</span>
+              <span>Scoped by project</span>
+            </div>
+
+            <div class="intro-grid">
+              <div class="product-shot" aria-label="docs-ssh viewer preview">
+                <div class="shot-topbar">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                  <strong>docs-ssh viewer</strong>
+                </div>
+                <div class="shot-body">
+                  <div class="shot-tree">
+                    <b>serverless-agent</b>
+                    <span>README.md</span>
+                    <span>issues/</span>
+                    <span>tasks/</span>
+                  </div>
+                  <div class="shot-panel">
+                    <div class="shot-tabs">
+                      <span class="active">Setup</span>
+                      <span>Projects</span>
+                      <span>Tokens</span>
+                    </div>
+                    <code>docs-ssh login --host docs-ssh</code>
+                    <code>ssh docs-ssh bootstrap --json</code>
+                    <p>Agents start with the manifest, then work inside the project tree.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="intro-summary">
+                <h2>Built for agent workflows</h2>
+                <ul class="check-list">
+                  <li>AI agents use SSH instead of scraping browser-only docs.</li>
+                  <li>Short-lived grants keep local automation scoped and revocable.</li>
+                  <li>Humans still get a browser-visible project tree and controls.</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <section class="doc-section" id="quick-start" data-section>
+            <p class="eyebrow">Local setup</p>
+            <h2>Quick start</h2>
+            <p>
+              Build the server and viewer, link the CLI, then start the local SSH and
+              web viewer processes.
+            </p>
+            <div class="command-grid">
+              <div class="command-block">
+                <div class="command-header">
+                  <span>Install and build</span>
+                  <button data-copy="pnpm install&#10;pnpm run build&#10;npm link">Copy</button>
+                </div>
+                <pre><code>pnpm install
+pnpm run build
+npm link</code></pre>
+              </div>
+              <div class="command-block">
+                <div class="command-header">
+                  <span>Run locally</span>
+                  <button data-copy="pnpm run dev&#10;docs-ssh status --json">Copy</button>
+                </div>
+                <pre><code>pnpm run dev
+docs-ssh status --json</code></pre>
+              </div>
+            </div>
+            <p class="note">
+              By default the SSH server listens on <code>127.0.0.1:2222</code> and the
+              viewer listens on <code>127.0.0.1:3000</code>.
+            </p>
+          </section>
+
+          <section class="doc-section" id="web-login" data-section>
+            <p class="eyebrow">Session flow</p>
+            <h2>Web login creates SSH access</h2>
+            <p>
+              <code>docs-ssh config init</code> creates local configuration first.
+              Then <code>docs-ssh login</code> opens the viewer for authorization
+              and writes a temporary SSH identity under
+              <code>~/.docs-ssh/sessions</code>.
+            </p>
+            <div class="steps">
+              <div>
+                <strong>1. Configure the directory</strong>
+                <p>Save the SSH config host alias and viewer origin in <code>.docs-ssh.toml</code>.</p>
+              </div>
+              <div>
+                <strong>2. Authorize in the browser</strong>
+                <p>The viewer approves the generated public key for the signed-in user.</p>
+              </div>
+              <div>
+                <strong>3. Select the project</strong>
+                <p>Run <code>config init</code> again to choose from projects exposed by the session.</p>
+              </div>
+            </div>
+            <div class="command-block">
+              <div class="command-header">
+                <span>Web-authenticated session</span>
+                <button data-copy="docs-ssh config init&#10;docs-ssh login --json&#10;docs-ssh config init&#10;docs-ssh status&#10;ssh docs-ssh bootstrap --json">Copy</button>
+              </div>
+              <pre><code>docs-ssh config init
+docs-ssh login --json
+docs-ssh config init
+docs-ssh status
+ssh docs-ssh bootstrap --json</code></pre>
+            </div>
+          </section>
+
+          <section class="doc-section" id="projects" data-section>
+            <p class="eyebrow">Workspace model</p>
+            <h2>Projects are server-managed</h2>
+            <p>
+              Local config selects an existing project. It does not create projects.
+              The viewer and operator CLI manage project creation, display names, and archival.
+            </p>
+            <div class="split-panel">
+              <div>
+                <h3>Directory config</h3>
+                <p>
+                  Run <code>docs-ssh config init</code> before login to create the
+                  connection config, then run it again after login to select a project.
+                </p>
+                <div class="command-block">
+                  <div class="command-header">
+                    <span>.docs-ssh.toml</span>
+                    <button data-copy="host = &quot;docs-ssh&quot;&#10;viewer_origin = &quot;https://docs.example.com&quot;&#10;project = &quot;default&quot;">Copy</button>
+                  </div>
+                  <pre><code>host = "docs-ssh"
+viewer_origin = "https://docs.example.com"
+project = "default"</code></pre>
+                </div>
+              </div>
+              <div>
+                <h3>Filesystem layout</h3>
+                <pre class="tree"><code>/
+  README.md
+  home/
+  projects/
+    &lt;project&gt;/
+      README.md
+      issues/
+      tasks/
+  tmp/</code></pre>
+              </div>
+            </div>
+          </section>
+
+          <section class="doc-section" id="tokens" data-section>
+            <p class="eyebrow">Automation</p>
+            <h2>API tokens mint scoped SSH sessions</h2>
+            <p>
+              Owners and admins create project-scoped tokens from the viewer. Tokens can
+              read project data, write project data, and create SSH sessions depending on
+              their selected scopes.
+            </p>
+            <div class="command-block">
+              <div class="command-header">
+                <span>Token-backed session</span>
+                <button data-copy="docs-ssh token login --token dssh_... --host docs-ssh --project default --viewer-origin https://docs.example.com --json">Copy</button>
+              </div>
+              <pre><code>docs-ssh token login \
+  --token dssh_... \
+  --host docs-ssh \
+  --project default \
+  --viewer-origin https://docs.example.com \
+  --json</code></pre>
+            </div>
+            <p class="note">
+              Token secrets are shown once. Revoke tokens from the viewer when the
+              workflow no longer needs access.
+            </p>
+          </section>
+
+          <section class="doc-section" id="self-hosting" data-section>
+            <p class="eyebrow">Deployment</p>
+            <h2>Self-host with Docker Compose</h2>
+            <p>
+              The self-hosting compose file keeps docs, auth state, and workspace data on
+              separate host paths. Put the viewer behind HTTPS when using OIDC.
+            </p>
+            <div class="command-block">
+              <div class="command-header">
+                <span>Server setup</span>
+                <button data-copy="mkdir -p /srv/docs-ssh&#10;cd /srv/docs-ssh&#10;curl -fsSLO https://raw.githubusercontent.com/trknhr/docs-ssh/v0.1.0/docker-compose.selfhost.yml&#10;curl -fsSLO https://raw.githubusercontent.com/trknhr/docs-ssh/v0.1.0/.env.selfhost.example">Copy</button>
+              </div>
+              <pre><code>mkdir -p /srv/docs-ssh
+cd /srv/docs-ssh
+curl -fsSLO https://raw.githubusercontent.com/trknhr/docs-ssh/v0.1.0/docker-compose.selfhost.yml
+curl -fsSLO https://raw.githubusercontent.com/trknhr/docs-ssh/v0.1.0/.env.selfhost.example</code></pre>
+            </div>
+          </section>
+
+          <section class="doc-section" id="agent-workflow" data-section>
+            <p class="eyebrow">Agent workflow</p>
+            <h2>Agents start with bootstrap</h2>
+            <p>
+              Agent sessions should call <code>bootstrap --json</code> first. The response
+              includes the current project, accessible projects, principal, paths, and scopes.
+            </p>
+            <div class="command-block">
+              <div class="command-header">
+                <span>Bootstrap manifest</span>
+                <button data-copy="ssh docs-ssh bootstrap --json | jq .">Copy</button>
+              </div>
+              <pre><code>ssh docs-ssh bootstrap --json | jq .</code></pre>
+            </div>
+            <p>
+              Use the generated <code>AGENTS.md</code> and <code>SKILL.md</code> helpers
+              when you want agents to discover the project filesystem and access rules quickly.
+            </p>
+          </section>
+
+          <section class="doc-section" id="reference" data-section>
+            <p class="eyebrow">Configuration</p>
+            <h2>Common environment variables</h2>
+            <div class="reference-table">
+              <div><code>DOCS_SSH_STATE_DIR</code><span>Auth database, registry state, and host key state.</span></div>
+              <div><code>WORKSPACE_DIR</code><span>Persistent filesystem backing <code>/home</code> and <code>/projects</code>.</span></div>
+              <div><code>VIEWER_PUBLIC_ORIGIN</code><span>Public HTTPS origin used for OIDC callback URLs.</span></div>
+              <div><code>SSH_PORT</code><span>SSH listener port. Defaults to <code>2222</code>.</span></div>
+              <div><code>VIEWER_PORT</code><span>HTTP viewer port. Defaults to <code>3000</code>.</span></div>
+            </div>
+          </section>
+        </main>
+
+        <aside class="toc" aria-label="On this page">
+          <strong>On this page</strong>
+          <nav>
+            <a href="#overview">Overview</a>
+            <a href="#quick-start">Quick start</a>
+            <a href="#web-login">Web login</a>
+            <a href="#self-hosting">Self-hosting</a>
+          </nav>
+        </aside>
+      </div>
+    </div>
+  </body>
+</html>
