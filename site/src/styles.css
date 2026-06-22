@@ -192,6 +192,12 @@ pre {
   padding: 4rem 3rem 6rem;
 }
 
+.content::after {
+  content: "";
+  display: block;
+  height: 52vh;
+}
+
 .doc-section {
   display: grid;
   gap: 1.1rem;
@@ -200,10 +206,6 @@ pre {
 
 .doc-section[hidden] {
   display: none;
-}
-
-.doc-section:last-child {
-  min-height: calc(100vh - 10rem);
 }
 
 .intro {
