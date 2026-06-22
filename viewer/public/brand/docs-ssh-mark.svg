@@ -1,9 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="docs-ssh">
-  <rect width="512" height="512" rx="112" fill="#202124"/>
-  <path d="M154 94h176l70 70v238a32 32 0 0 1-32 32H154a32 32 0 0 1-32-32V126a32 32 0 0 1 32-32Z" fill="#f8fafc"/>
-  <path d="M330 96v72h70" fill="#dbe4ee"/>
-  <rect x="104" y="238" width="304" height="154" rx="34" fill="#111418"/>
-  <path d="m174 290 40 31-40 31" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-linejoin="round" stroke-width="28"/>
-  <path d="M250 346h86" fill="none" stroke="#45d7ff" stroke-linecap="round" stroke-width="28"/>
-  <path d="M202 184c30-28 78-28 108 0" fill="none" stroke="#45d7ff" stroke-linecap="round" stroke-width="24"/>
+  <rect width="512" height="512" rx="92" fill="#e7f5ff"/>
+  <rect x="56" y="86" width="400" height="340" rx="36" fill="#f8fafc" stroke="#0b0f14" stroke-width="22"/>
+  <path d="M66 146h380" stroke="#0b0f14" stroke-width="22"/>
+  <circle cx="116" cy="116" r="13" fill="#ff5f57"/>
+  <circle cx="158" cy="116" r="13" fill="#ffbd2e"/>
+  <circle cx="200" cy="116" r="13" fill="#28c840"/>
+  <path d="m128 196 64 52-64 52" fill="none" stroke="#0b0f14" stroke-linecap="round" stroke-linejoin="round" stroke-width="34"/>
+  <path d="M224 298h88" fill="none" stroke="#0b0f14" stroke-linecap="round" stroke-width="34"/>
+  <text x="292" y="398" text-anchor="middle" font-family="SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace" font-size="78" font-weight="900" fill="#0b0f14" letter-spacing="5">SSH</text>
 </svg>
