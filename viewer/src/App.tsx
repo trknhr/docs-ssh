@@ -1725,7 +1725,10 @@ export function App() {
       <header className="topbar">
         <div className="topbar__brand">
           <p className="eyebrow">Viewer</p>
-          <h1>DOCS-SSH</h1>
+          <div className="topbar__brand-heading">
+            <img className="topbar__brand-mark" src="/brand/docs-ssh-mark.svg" alt="" />
+            <h1>DOCS-SSH</h1>
+          </div>
           {currentProject ? (
             <p className="topbar__subtitle">
               <span>{currentProject.displayName}</span>

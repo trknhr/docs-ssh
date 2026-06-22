@@ -93,6 +93,25 @@ textarea {
   min-width: 0;
 }
 
+.topbar__brand-heading {
+  align-items: center;
+  display: flex;
+  gap: 0.62rem;
+  min-width: 0;
+}
+
+.topbar__brand-heading h1 {
+  margin: 0;
+}
+
+.topbar__brand-mark {
+  border-radius: 8px;
+  display: block;
+  flex: 0 0 auto;
+  height: 2rem;
+  width: 2rem;
+}
+
 .topbar__subtitle {
   align-items: center;
   color: var(--text-muted);

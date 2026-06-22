@@ -75,13 +75,10 @@ pre {
 }
 
 .brand-mark {
-  background: var(--text);
   border-radius: 8px;
-  color: #ffffff;
-  display: grid;
-  font-weight: 800;
+  display: block;
+  flex: 0 0 auto;
   height: 2rem;
-  place-items: center;
   width: 2rem;
 }
 

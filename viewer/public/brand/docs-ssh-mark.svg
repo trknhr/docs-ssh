@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="docs-ssh">
+  <rect width="512" height="512" rx="112" fill="#202124"/>
+  <path d="M154 94h176l70 70v238a32 32 0 0 1-32 32H154a32 32 0 0 1-32-32V126a32 32 0 0 1 32-32Z" fill="#f8fafc"/>
+  <path d="M330 96v72h70" fill="#dbe4ee"/>
+  <rect x="104" y="238" width="304" height="154" rx="34" fill="#111418"/>
+  <path d="m174 290 40 31-40 31" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-linejoin="round" stroke-width="28"/>
+  <path d="M250 346h86" fill="none" stroke="#45d7ff" stroke-linecap="round" stroke-width="28"/>
+  <path d="M202 184c30-28 78-28 108 0" fill="none" stroke="#45d7ff" stroke-linecap="round" stroke-width="24"/>
+</svg>
