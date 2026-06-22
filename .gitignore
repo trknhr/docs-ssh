@@ -9,3 +9,5 @@ ssh_host_key
 .env.selfhost
 .DS_Store
 var
+.superpowers/
+.worktrees/
