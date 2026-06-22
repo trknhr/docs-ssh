@@ -28,7 +28,21 @@
             <span class="sr-only">Search documentation</span>
             <input id="site-search" type="search" placeholder="Search docs" autocomplete="off" />
           </label>
-          <a class="topbar-link" href="https://github.com/trknhr/docs-ssh">GitHub</a>
+          <a
+            class="topbar-link topbar-link--icon"
+            href="https://github.com/trknhr/docs-ssh"
+            aria-label="GitHub repository"
+            title="GitHub repository"
+          >
+            <svg class="github-mark" viewBox="0 0 98 96" aria-hidden="true" focusable="false">
+              <path
+                fill="currentColor"
+                fill-rule="evenodd"
+                clip-rule="evenodd"
+                d="M48.854 0C21.839 0 0 22 0 49.217c0 21.756 13.993 40.172 33.405 46.69 2.427.49 3.316-1.059 3.316-2.362 0-1.141-.08-5.052-.08-9.127-13.59 2.934-16.42-5.867-16.42-5.867-2.184-5.704-5.42-7.17-5.42-7.17-4.448-3.015.324-3.015.324-3.015 4.934.326 7.523 5.052 7.523 5.052 4.367 7.496 11.404 5.378 14.235 4.074.404-3.178 1.699-5.378 3.074-6.6-10.839-1.141-22.243-5.378-22.243-24.283 0-5.378 1.94-9.778 5.014-13.2-.485-1.222-2.184-6.275.486-13.038 0 0 4.125-1.304 13.426 5.052a46.97 46.97 0 0 1 12.214-1.63c4.125 0 8.33.571 12.213 1.63 9.302-6.356 13.427-5.052 13.427-5.052 2.67 6.763.97 11.816.485 13.038 3.155 3.422 5.015 7.822 5.015 13.2 0 18.905-11.404 23.06-22.324 24.283 1.78 1.548 3.316 4.481 3.316 9.126 0 6.6-.08 11.897-.08 13.526 0 1.304.89 2.853 3.316 2.364 19.412-6.52 33.405-24.935 33.405-46.691C97.707 22 75.788 0 48.854 0z"
+              />
+            </svg>
+          </a>
         </div>
       </header>
 
@@ -37,11 +51,13 @@
           <nav class="sidebar-nav">
             <a href="#overview">Overview</a>
             <a href="#quick-start">Quick start</a>
+            <a href="#oidc">OIDC setup</a>
             <a href="#web-login">Web login</a>
             <a href="#projects">Projects</a>
             <a href="#tokens">API tokens</a>
             <a href="#self-hosting">Self-hosting</a>
             <a href="#agent-workflow">Agent workflow</a>
+            <a href="#skill-distribution">Skill distribution</a>
             <a href="#reference">Reference</a>
           </nav>
         </aside>
@@ -128,6 +144,52 @@ docs-ssh status --json</code></pre>
             <p class="note">
               By default the SSH server listens on <code>127.0.0.1:2222</code> and the
               viewer listens on <code>127.0.0.1:3000</code>.
+              OIDC is optional for server startup. Add it when the browser needs a
+              signed-in user or when <code>docs-ssh login</code> should mint SSH access.
+            </p>
+          </section>
+
+          <section class="doc-section" id="oidc" data-section>
+            <p class="eyebrow">Authentication</p>
+            <h2>OIDC identifies the browser user</h2>
+            <p>
+              OIDC is the web identity layer. It creates the viewer session cookie,
+              resolves the browser user through <code>auth_identities</code>, and lets
+              <code>docs-ssh login</code> bind a generated SSH public key to that
+              signed-in user. It is not required to start the SSH server or to issue
+              operator-created SSH sessions.
+            </p>
+            <div class="steps">
+              <div>
+                <strong>1. Configure the provider</strong>
+                <p>Set the OIDC issuer, client ID, optional client secret, and public viewer origin.</p>
+              </div>
+              <div>
+                <strong>2. Sign in once</strong>
+                <p>The first successful sign-in on an empty auth database creates the owner account.</p>
+              </div>
+              <div>
+                <strong>3. Use web login</strong>
+                <p>The CLI opens the viewer, the user approves access, and the server writes a short-lived SSH grant.</p>
+              </div>
+            </div>
+            <div class="command-block">
+              <div class="command-header">
+                <span>OIDC environment</span>
+                <button data-copy="export DOCS_SSH_OIDC_ISSUER=https://accounts.google.com&#10;export DOCS_SSH_OIDC_CLIENT_ID=&lt;client-id&gt;&#10;export DOCS_SSH_OIDC_CLIENT_SECRET=&lt;client-secret&gt;&#10;export VIEWER_PUBLIC_ORIGIN=https://docs.example.com">Copy</button>
+              </div>
+              <pre><code>export DOCS_SSH_OIDC_ISSUER=https://accounts.google.com
+export DOCS_SSH_OIDC_CLIENT_ID=&lt;client-id&gt;
+export DOCS_SSH_OIDC_CLIENT_SECRET=&lt;client-secret&gt;
+export VIEWER_PUBLIC_ORIGIN=https://docs.example.com</code></pre>
+            </div>
+            <p class="note">
+              Without OIDC, <code>docs-ssh login</code> cannot create a browser-approved
+              user session. Use <code>docs-ssh auth create-ssh-session</code>, pre-created
+              SSH keys, or an existing API token flow instead, and keep the viewer private
+              or behind external auth.
+              After the owner exists, add more web users from the viewer Account panel or
+              prelink their OIDC identity from the operator CLI.
             </p>
           </section>
 
@@ -136,9 +198,11 @@ docs-ssh status --json</code></pre>
             <h2>Web login creates SSH access</h2>
             <p>
               <code>docs-ssh config init</code> creates local configuration first.
-              Then <code>docs-ssh login</code> opens the viewer for authorization
-              and writes a temporary SSH identity under
+              Configure OIDC before this flow: <code>docs-ssh login</code> opens
+              the viewer for browser authorization and writes a temporary SSH identity under
               <code>~/.docs-ssh/sessions</code>.
+              This is the path that binds a generated SSH key to a signed-in web user;
+              operator-issued sessions do not create a viewer user session.
             </p>
             <div class="steps">
               <div>
@@ -271,6 +335,45 @@ curl -fsSLO https://raw.githubusercontent.com/trknhr/docs-ssh/v0.1.0/.env.selfho
             </p>
           </section>
 
+          <section class="doc-section" id="skill-distribution" data-section>
+            <p class="eyebrow">Skill distribution</p>
+            <h2>Distribute agent helper files</h2>
+            <p>
+              The CLI can print agent instructions and a reusable
+              <code>docs-ssh</code> skill. Configure a stable SSH alias such as
+              <code>docs-ssh</code> first so generated helper files point at the same
+              target agents will use, then run these commands from a directory with
+              <code>.docs-ssh.toml</code>.
+            </p>
+            <div class="command-grid">
+              <div class="command-block">
+                <div class="command-header">
+                  <span>Append project instructions</span>
+                  <button data-copy="docs-ssh agents --output AGENTS.md --append">Copy</button>
+                </div>
+                <pre><code>docs-ssh agents --output AGENTS.md --append</code></pre>
+              </div>
+              <div class="command-block">
+                <div class="command-header">
+                  <span>Install reusable skill</span>
+                  <button data-copy="docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md">Copy</button>
+                </div>
+                <pre><code>docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md</code></pre>
+              </div>
+            </div>
+            <p>
+              Use <code>docs-ssh setup</code> to preview the full setup guide, or run
+              <code>docs-ssh agents</code> and <code>docs-ssh skill</code> without
+              <code>--output</code> to inspect each generated file before distributing it.
+            </p>
+            <div class="reference-table">
+              <div><code>Claude Code</code><span><code>CLAUDE.md</code> plus <code>.claude/skills/docs-ssh/SKILL.md</code>.</span></div>
+              <div><code>Codex / Cursor</code><span><code>AGENTS.md</code> plus <code>.agents/skills/docs-ssh/SKILL.md</code>.</span></div>
+              <div><code>Gemini CLI</code><span><code>GEMINI.md</code> plus <code>.agents/skills/docs-ssh/SKILL.md</code>.</span></div>
+              <div><code>GitHub Copilot</code><span><code>AGENTS.md</code> plus <code>.github/skills/docs-ssh/SKILL.md</code>.</span></div>
+            </div>
+          </section>
+
           <section class="doc-section" id="reference" data-section>
             <p class="eyebrow">Configuration</p>
             <h2>Common environment variables</h2>
@@ -289,8 +392,10 @@ curl -fsSLO https://raw.githubusercontent.com/trknhr/docs-ssh/v0.1.0/.env.selfho
           <nav>
             <a href="#overview">Overview</a>
             <a href="#quick-start">Quick start</a>
+            <a href="#oidc">OIDC setup</a>
             <a href="#web-login">Web login</a>
             <a href="#self-hosting">Self-hosting</a>
+            <a href="#skill-distribution">Skill distribution</a>
           </nav>
         </aside>
       </div>

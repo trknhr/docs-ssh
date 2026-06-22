@@ -116,12 +116,29 @@ pre {
 }
 
 .topbar-link {
+  align-items: center;
   background: var(--text);
   border-radius: 999px;
   color: #ffffff;
+  display: inline-flex;
   font-weight: 700;
+  justify-content: center;
   padding: 0.68rem 1rem;
   text-decoration: none;
+}
+
+.topbar-link--icon {
+  background: transparent;
+  color: var(--text);
+  min-height: 2.45rem;
+  padding: 0;
+  width: 2.45rem;
+}
+
+.github-mark {
+  display: block;
+  height: 1.8rem;
+  width: 1.8rem;
 }
 
 .docs-layout {
@@ -207,10 +224,10 @@ p {
 }
 
 h1 {
-  font-size: clamp(2.7rem, 7vw, 5.4rem);
+  font-size: 4.65rem;
   letter-spacing: 0;
-  line-height: 0.98;
-  max-width: 12ch;
+  line-height: 1.04;
+  max-width: 16.5ch;
 }
 
 h2 {
@@ -232,8 +249,9 @@ p {
 
 .lead {
   color: var(--muted);
-  font-size: 1.18rem;
-  max-width: 50rem;
+  font-size: 1.12rem;
+  line-height: 1.65;
+  max-width: 46rem;
 }
 
 .hero-tags {
@@ -531,6 +549,11 @@ p code,
     grid-template-columns: 14rem minmax(0, 1fr);
   }
 
+  h1 {
+    font-size: 3.75rem;
+    max-width: 14.5ch;
+  }
+
   .toc {
     display: none;
   }
@@ -573,6 +596,11 @@ p code,
   .content {
     gap: 3rem;
     padding: 2.2rem 1rem 4rem;
+  }
+
+  h1 {
+    font-size: 2.85rem;
+    max-width: 12.5ch;
   }
 
   .intro-grid,

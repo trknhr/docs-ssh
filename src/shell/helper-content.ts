@@ -11,6 +11,10 @@ function formatSshPrefix(host: string, port: number): string {
   return port === 22 ? `ssh ${host}` : `ssh ${host} -p ${port}`
 }
 
+function formatHelperFlags(host: string, port: number): string {
+  return port === 22 ? `--ssh-host ${host}` : `--ssh-host ${host} --ssh-port ${port}`
+}
+
 function createWorkspaceList(sourceStore: SourceStore): string[] {
   return [
     '- `/README.md` -> root guide and writing rules',
@@ -118,6 +122,7 @@ export function createSkillMarkdown(opts: HelperContentOptions): string {
 
 export function createSetupMarkdown(opts: HelperContentOptions): string {
   const sshPrefix = formatSshPrefix(opts.sshHost, opts.sshPort)
+  const helperFlags = formatHelperFlags(opts.sshHost, opts.sshPort)
 
   return [
     '# docs-ssh Setup',
@@ -146,19 +151,21 @@ export function createSetupMarkdown(opts: HelperContentOptions): string {
     'Append to instructions:',
     '',
     '```bash',
-    `${sshPrefix} agents >> AGENTS.md`,
+    `docs-ssh agents --output AGENTS.md --append ${helperFlags}`,
     '```',
     '',
     'Install the skill:',
     '',
     '```bash',
-    'mkdir -p .agents/skills/docs-ssh',
-    `${sshPrefix} skill > .agents/skills/docs-ssh/SKILL.md`,
+    `docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md ${helperFlags}`,
     '```',
     '',
-    'Preview the generated helper files:',
+    'Preview the generated helper files from the local CLI or running server:',
     '',
     '```bash',
+    `docs-ssh agents ${helperFlags}`,
+    `docs-ssh skill ${helperFlags}`,
+    `docs-ssh setup ${helperFlags}`,
     `${sshPrefix} agents`,
     `${sshPrefix} skill`,
     `${sshPrefix} setup`,

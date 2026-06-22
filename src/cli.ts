@@ -124,6 +124,9 @@ Usage:
   docs-ssh auth list-ssh-sessions [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all] [--include-expired] [--include-revoked]
   docs-ssh auth revoke-ssh-session <session-id-or-username> [--db-path <path>] [--user <login>]
   docs-ssh auth add-web-identity --issuer <issuer> --subject <subject> [--provider <provider>] [--email <email>] [--user <login>] [--db-path <path>]
+  docs-ssh agents [--output <path>] [--append]
+  docs-ssh skill [--output <path>]
+  docs-ssh setup [--output <path>]
   docs-ssh helper agents [--output <path>] [--append]
   docs-ssh helper skill [--output <path>]
   docs-ssh helper setup [--output <path>]
@@ -1468,6 +1471,7 @@ async function authAddWebIdentity(args: ParsedArgs): Promise<void> {
 type HelperTarget = 'agents' | 'setup' | 'skill'
 
 async function loadHelperOptions(args: ParsedArgs) {
+  const projectConfig = await findProjectConfig()
   const instanceConfig = loadInstanceConfig({
     docsDir: getFlagString(args, 'docs-dir'),
     docsName: getFlagString(args, 'docs-name'),
@@ -1479,14 +1483,14 @@ async function loadHelperOptions(args: ParsedArgs) {
   const sourceStore = await loadSourceStore({
     registryPath: instanceConfig.statePaths.registryPath,
     fallbackDocsDir: instanceConfig.docsDir,
-    projectSlug: (await findProjectConfig())?.project,
+    projectSlug: projectConfig?.project,
     workspaceDir: instanceConfig.workspaceDir,
   })
 
   return {
     docsName: instanceConfig.docsName,
     sourceStore,
-    sshHost: instanceConfig.ssh.connectHost,
+    sshHost: getFlagString(args, 'ssh-host') ?? projectConfig?.server ?? instanceConfig.ssh.connectHost,
     sshPort: instanceConfig.ssh.connectPort,
   }
 }
@@ -1541,6 +1545,11 @@ async function main() {
   }
 
   const [command, subcommand] = args.positionals
+
+  if (command === 'agents' || command === 'setup' || command === 'skill') {
+    await outputHelper(command, args)
+    return
+  }
 
   if (command === 'ingest') {
     if (!subcommand) {
