@@ -1,6 +1,6 @@
 services:
   docs-ssh:
-    image: ${DOCS_SSH_IMAGE:-ghcr.io/trknhr/docs-ssh:v0.1.0}
+    image: ${DOCS_SSH_IMAGE:-ghcr.io/trknhr/docs-ssh:v0.2.0}
     container_name: docs-ssh
     init: true
     ports:
