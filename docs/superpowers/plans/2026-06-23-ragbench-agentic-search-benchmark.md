@@ -21,7 +21,7 @@
 - Create `bench/ragbench/retrieval/vector-baseline.ts`: simple local vector-space top-k baseline.
 - Create `bench/ragbench/retrieval/docs-ssh-runner.ts`: docs-ssh over SSH runner using `find`, `rg`, and `cat`.
 - Create `bench/ragbench/score.ts`: evidence-document scoring and summary output.
-- Modify `package.json`: add `bench:ragbench:*` scripts.
+- Modify `package.json`: add each `bench:ragbench:*` script when its target file is created.
 - Optional later: Create `bench/ragbench/answer.ts` for answer generation and faithfulness scoring after retrieval metrics are useful.
 
 The benchmark intentionally writes generated data under `.bench/ragbench/`, which stays untracked.
@@ -265,11 +265,7 @@ console.log(JSON.stringify({
 Modify `package.json` scripts:
 
 ```json
-"bench:ragbench:fetch": "tsx bench/ragbench/fetch.ts",
-"bench:ragbench:score": "tsx bench/ragbench/score.ts",
-"bench:ragbench:vector": "tsx bench/ragbench/retrieval/vector-baseline.ts",
-"bench:ragbench:docs-ssh": "tsx bench/ragbench/retrieval/docs-ssh-runner.ts",
-"bench:ragbench:materialize": "tsx bench/ragbench/materialize.ts"
+"bench:ragbench:fetch": "tsx bench/ragbench/fetch.ts"
 ```
 
 - [ ] **Step 4: Run fetch smoke**
@@ -296,6 +292,7 @@ git commit -m "bench: Fetch RAGBench samples" -m "Co-Authored-By: Codex <codex@o
 **Files:**
 - Create: `bench/ragbench/materialize.ts`
 - Create: `bench/ragbench/README.md`
+- Modify: `package.json`
 
 - [ ] **Step 1: Add materialization CLI**
 
@@ -419,7 +416,15 @@ pnpm bench:ragbench:score -- --runs .bench/ragbench/runs/docs-ssh.jsonl
 ```
 ```
 
-- [ ] **Step 3: Run local materialization smoke**
+- [ ] **Step 3: Add the materialize pnpm script**
+
+Modify `package.json` scripts:
+
+```json
+"bench:ragbench:materialize": "tsx bench/ragbench/materialize.ts"
+```
+
+- [ ] **Step 4: Run local materialization smoke**
 
 Run:
 
@@ -430,10 +435,10 @@ find .bench/ragbench/tree/cases -maxdepth 3 -type f | head
 
 Expected: `question.md` and `documents/doc-*.md` files are listed.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add bench/ragbench/materialize.ts bench/ragbench/README.md
+git add package.json bench/ragbench/materialize.ts bench/ragbench/README.md
 git commit -m "bench: Materialize RAGBench cases" -m "Co-Authored-By: Codex <codex@openai.com>"
 ```
 
@@ -444,6 +449,7 @@ git commit -m "bench: Materialize RAGBench cases" -m "Co-Authored-By: Codex <cod
 **Files:**
 - Create: `bench/ragbench/retrieval/text.ts`
 - Create: `bench/ragbench/retrieval/vector-baseline.ts`
+- Modify: `package.json`
 
 - [ ] **Step 1: Add lexical vector helpers**
 
@@ -533,7 +539,15 @@ await writeFile(output, runs.map((entry) => JSON.stringify(entry)).join('\n') + 
 console.log(JSON.stringify({ cases: runs.length, output }, null, 2))
 ```
 
-- [ ] **Step 3: Run vector baseline smoke**
+- [ ] **Step 3: Add the vector pnpm script**
+
+Modify `package.json` scripts:
+
+```json
+"bench:ragbench:vector": "tsx bench/ragbench/retrieval/vector-baseline.ts"
+```
+
+- [ ] **Step 4: Run vector baseline smoke**
 
 Run:
 
@@ -544,10 +558,10 @@ head -n 1 .bench/ragbench/runs/vector.jsonl
 
 Expected: first JSONL row has `mode: "vector"` and at least one candidate.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add bench/ragbench/retrieval/text.ts bench/ragbench/retrieval/vector-baseline.ts
+git add package.json bench/ragbench/retrieval/text.ts bench/ragbench/retrieval/vector-baseline.ts
 git commit -m "bench: Add vector retrieval baseline" -m "Co-Authored-By: Codex <codex@openai.com>"
 ```
 
@@ -557,6 +571,7 @@ git commit -m "bench: Add vector retrieval baseline" -m "Co-Authored-By: Codex <
 
 **Files:**
 - Create: `bench/ragbench/retrieval/docs-ssh-runner.ts`
+- Modify: `package.json`
 
 - [ ] **Step 1: Add SSH command runner**
 
@@ -662,7 +677,15 @@ await writeFile(output, runs.map((entry) => JSON.stringify(entry)).join('\n') + 
 console.log(JSON.stringify({ cases: runs.length, output }, null, 2))
 ```
 
-- [ ] **Step 2: Run docs-ssh runner smoke**
+- [ ] **Step 2: Add the docs-ssh pnpm script**
+
+Modify `package.json` scripts:
+
+```json
+"bench:ragbench:docs-ssh": "tsx bench/ragbench/retrieval/docs-ssh-runner.ts"
+```
+
+- [ ] **Step 3: Run docs-ssh runner smoke**
 
 Create a `ragbench` project and token through the viewer or CLI, then run:
 
@@ -676,10 +699,10 @@ head -n 1 .bench/ragbench/runs/docs-ssh.jsonl
 
 Expected: first JSONL row has `mode: "docs-ssh"` and at least one candidate.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add bench/ragbench/retrieval/docs-ssh-runner.ts
+git add package.json bench/ragbench/retrieval/docs-ssh-runner.ts
 git commit -m "bench: Add docs-ssh retrieval runner" -m "Co-Authored-By: Codex <codex@openai.com>"
 ```
 
@@ -689,6 +712,7 @@ git commit -m "bench: Add docs-ssh retrieval runner" -m "Co-Authored-By: Codex <
 
 **Files:**
 - Create: `bench/ragbench/score.ts`
+- Modify: `package.json`
 
 - [ ] **Step 1: Add scoring CLI**
 
@@ -755,7 +779,15 @@ await writeFile(output, JSON.stringify({ summary, scores }, null, 2) + '\n')
 console.log(JSON.stringify(summary, null, 2))
 ```
 
-- [ ] **Step 2: Score vector and docs-ssh runs**
+- [ ] **Step 2: Add the score pnpm script**
+
+Modify `package.json` scripts:
+
+```json
+"bench:ragbench:score": "tsx bench/ragbench/score.ts"
+```
+
+- [ ] **Step 3: Score vector and docs-ssh runs**
 
 Run:
 
@@ -766,10 +798,10 @@ pnpm bench:ragbench:score -- --runs .bench/ragbench/runs/docs-ssh.jsonl --output
 
 Expected: both commands print `hitAt1`, `hitAt3`, `hitAt5`, `mrr`, and operational averages.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add bench/ragbench/score.ts
+git add package.json bench/ragbench/score.ts
 git commit -m "bench: Score RAGBench evidence retrieval" -m "Co-Authored-By: Codex <codex@openai.com>"
 ```
 
