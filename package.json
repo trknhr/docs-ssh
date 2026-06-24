@@ -15,6 +15,7 @@
     "build:server": "tsc",
     "build:viewer": "vite build",
     "bench:ragbench:fetch": "tsx bench/ragbench/fetch.ts",
+    "bench:ragbench:materialize": "tsx bench/ragbench/materialize.ts",
     "cli": "pnpm run build:server && node dist/src/cli.js",
     "dev": "tsx src/server.ts",
     "dev:viewer": "vite",

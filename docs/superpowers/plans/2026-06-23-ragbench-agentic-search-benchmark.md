@@ -390,30 +390,44 @@ Create `bench/ragbench/README.md`:
 ```md
 # RAGBench docs-ssh Benchmark
 
-This benchmark compares two retrieval paths on the same RAGBench samples:
+This benchmark builds a retrieval-only comparison for RAGBench samples. Phase 1 stores the same cases as local files and, when requested, as docs-ssh task files so later runners can compare evidence-document retrieval on the same inputs.
 
-1. `docs-ssh`: documents are placed in a docs-ssh project workspace and retrieved through SSH commands such as `find`, `rg`, and `cat`.
-2. `vector`: documents are read locally and ranked with a simple vector-space top-k baseline.
-
-Phase 1 evaluates evidence-document retrieval, not generated answer quality.
+Generated benchmark data is written under `.bench/ragbench/` and should remain untracked.
 
 ## Quick Run
 
+Fetch a small sample:
+
 ```bash
 pnpm bench:ragbench:fetch -- --config emanual --split test --limit 50
-pnpm bench:ragbench:materialize
-pnpm bench:ragbench:vector
-pnpm bench:ragbench:score -- --runs .bench/ragbench/runs/vector.jsonl
 ```
 
-To run the docs-ssh path, first create a project-scoped SSH session and export the returned command:
+Materialize it locally:
+
+```bash
+pnpm bench:ragbench:materialize
+```
+
+This writes:
+
+- `.bench/ragbench/cases.jsonl`
+- `.bench/ragbench/tree/cases/<caseId>/question.md`
+- `.bench/ragbench/tree/cases/<caseId>/documents/doc-<document.id>.md`
+
+To also write the same tree through docs-ssh, export a project-scoped SSH command first:
 
 ```bash
 export DOCS_SSH_BENCH_SSH_COMMAND='ssh -i /path/to/id_ed25519 sess_xxx@docs-ssh'
 pnpm bench:ragbench:materialize
-pnpm bench:ragbench:docs-ssh
-pnpm bench:ragbench:score -- --runs .bench/ragbench/runs/docs-ssh.jsonl
 ```
+
+The default remote root is `/projects/ragbench/tasks/ragbench-cases`. Override paths with:
+
+```bash
+pnpm bench:ragbench:materialize -- --cases .bench/ragbench/cases.jsonl --local-root .bench/ragbench/tree/cases --remote-root /projects/ragbench/tasks/ragbench-cases
+```
+
+Later tasks add the vector baseline, docs-ssh retrieval runner, and scoring commands.
 ```
 
 - [ ] **Step 3: Add the materialize pnpm script**
