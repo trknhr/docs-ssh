@@ -16,6 +16,7 @@
     "build:viewer": "vite build",
     "bench:ragbench:fetch": "tsx bench/ragbench/fetch.ts",
     "bench:ragbench:materialize": "tsx bench/ragbench/materialize.ts",
+    "bench:ragbench:vector": "tsx bench/ragbench/retrieval/vector-baseline.ts",
     "cli": "pnpm run build:server && node dist/src/cli.js",
     "dev": "tsx src/server.ts",
     "dev:viewer": "vite",
