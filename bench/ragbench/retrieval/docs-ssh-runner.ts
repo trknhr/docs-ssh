@@ -181,6 +181,19 @@ function failureMessage(action: string, result: RemoteCommandResult): string {
   return `${action} failed with exit ${result.status ?? 'unknown'}${stderr ? `: ${stderr}` : ''}`
 }
 
+function runPreflight(sshCommand: string, remoteRoot: string): void {
+  const context: RunContext = {
+    commandCount: 0,
+    errors: [],
+    sshCommand,
+  }
+  const remoteCommand = `command -v find rg cat >/dev/null && test -d ${shellQuote(remoteRoot)}`
+  const result = runRemoteCommand(context, remoteCommand)
+  if (result.error || result.status !== 0) {
+    throw new Error(failureMessage('docs-ssh preflight for required tools and remote root', result))
+  }
+}
+
 function splitNulList(output: string): string[] {
   return output.split('\0').filter((entry) => entry.length > 0)
 }
@@ -354,6 +367,7 @@ async function main(): Promise<void> {
   const remoteRoot = values['remote-root'] ?? DEFAULT_REMOTE_ROOT
   const topK = parsePositiveInteger('top-k', values['top-k'])
   validateRemoteRoot(remoteRoot)
+  runPreflight(sshCommand, remoteRoot)
 
   const cases = await readCases(casesPath)
   for (const entry of cases) {
@@ -365,6 +379,7 @@ async function main(): Promise<void> {
   await writeFile(output, runs.map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf8')
 
   console.log(JSON.stringify({
+    errorCount: runs.reduce((sum, entry) => sum + entry.errors.length, 0),
     cases: runs.length,
     output,
     remoteRoot,
