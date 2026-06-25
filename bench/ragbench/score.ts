@@ -10,6 +10,7 @@ type RetrievalMode = RetrievalRun['mode']
 
 interface CaseLabels {
   caseId: string
+  lineNumber: number
   supportingDocumentIds: string[]
 }
 
@@ -103,6 +104,7 @@ async function readJsonl<T>(
 function parseCase(record: Record<string, unknown>, lineNumber: number): CaseLabels {
   return {
     caseId: expectString(record, 'caseId', 'case', lineNumber),
+    lineNumber,
     supportingDocumentIds: expectStringArray(record, 'supportingDocumentIds', 'case', lineNumber),
   }
 }
@@ -132,13 +134,26 @@ function parseCandidates(record: Record<string, unknown>, lineNumber: number): R
       throw new Error(`Invalid run JSONL line ${lineNumber}: candidates[${index}].documentId must be a string`)
     }
 
+    const path = candidateRecord.path
+    if (typeof path !== 'string') {
+      throw new Error(`Invalid run JSONL line ${lineNumber}: candidates[${index}].path must be a string`)
+    }
+
+    const score = candidateRecord.score
+    if (typeof score !== 'number' || !Number.isFinite(score)) {
+      throw new Error(`Invalid run JSONL line ${lineNumber}: candidates[${index}].score must be a finite number`)
+    }
+
+    const textPreview = candidateRecord.textPreview
+    if (typeof textPreview !== 'string') {
+      throw new Error(`Invalid run JSONL line ${lineNumber}: candidates[${index}].textPreview must be a string`)
+    }
+
     return {
       documentId,
-      path: typeof candidateRecord.path === 'string' ? candidateRecord.path : '',
-      score: typeof candidateRecord.score === 'number' && Number.isFinite(candidateRecord.score)
-        ? candidateRecord.score
-        : 0,
-      textPreview: typeof candidateRecord.textPreview === 'string' ? candidateRecord.textPreview : '',
+      path,
+      score,
+      textPreview,
     }
   })
 }
@@ -167,12 +182,28 @@ function makeOutputPath(runsPath: string): string {
 function indexCases(cases: CaseLabels[]): Map<string, CaseLabels> {
   const byCaseId = new Map<string, CaseLabels>()
   for (const entry of cases) {
-    if (byCaseId.has(entry.caseId)) {
-      throw new Error(`Invalid case JSONL: duplicate caseId ${JSON.stringify(entry.caseId)}`)
+    const existing = byCaseId.get(entry.caseId)
+    if (existing) {
+      throw new Error(
+        `Invalid case JSONL line ${entry.lineNumber}: duplicate caseId ${JSON.stringify(entry.caseId)}; first seen on line ${existing.lineNumber}`,
+      )
     }
     byCaseId.set(entry.caseId, entry)
   }
   return byCaseId
+}
+
+function assertUniqueRuns(runs: ParsedRun[]): void {
+  const firstLineByCaseId = new Map<string, number>()
+  for (const entry of runs) {
+    const firstLine = firstLineByCaseId.get(entry.run.caseId)
+    if (firstLine !== undefined) {
+      throw new Error(
+        `Invalid run JSONL line ${entry.lineNumber}: duplicate caseId ${JSON.stringify(entry.run.caseId)}; first seen on line ${firstLine}`,
+      )
+    }
+    firstLineByCaseId.set(entry.run.caseId, entry.lineNumber)
+  }
 }
 
 function assertKnownCase(run: ParsedRun, casesById: Map<string, CaseLabels>): CaseLabels {
@@ -270,6 +301,7 @@ async function main(): Promise<void> {
 
   const casesById = indexCases(await readJsonl(casesPath, 'case', parseCase))
   const runs = await readJsonl(runsPath, 'run', parseRun)
+  assertUniqueRuns(runs)
   const mode = detectMode(runs)
   const scores = runs.map((run) => scoreRun(run.run, assertKnownCase(run, casesById)))
   const summary = summarize(mode, scores)
