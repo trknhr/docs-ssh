@@ -187,7 +187,14 @@ function runPreflight(sshCommand: string, remoteRoot: string): void {
     errors: [],
     sshCommand,
   }
-  const remoteCommand = `command -v find rg cat >/dev/null && test -d ${shellQuote(remoteRoot)}`
+  const requiredTool = (name: string): string =>
+    `command -v ${name} >/dev/null || { printf '%s\\n' ${shellQuote(`missing required tool: ${name}`)} >&2; exit 127; }`
+  const remoteCommand = [
+    requiredTool('find'),
+    requiredTool('rg'),
+    requiredTool('cat'),
+    `test -d ${shellQuote(remoteRoot)} || { printf '%s\\n' ${shellQuote(`missing remote root: ${remoteRoot}`)} >&2; exit 1; }`,
+  ].join(' && ')
   const result = runRemoteCommand(context, remoteCommand)
   if (result.error || result.status !== 0) {
     throw new Error(failureMessage('docs-ssh preflight for required tools and remote root', result))
