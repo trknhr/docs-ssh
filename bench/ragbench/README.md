@@ -46,7 +46,9 @@ summary to stdout.
 
 The docs-ssh runner needs a project-scoped SSH command in
 `DOCS_SSH_BENCH_SSH_COMMAND`. Create a token session for the `ragbench` project
-and export the returned `sshCommand` value:
+and export the returned `sshCommand` value. `$DOCS_SSH_TOKEN` must be valid for
+that project and include `ssh-session:create`, `project:read`, and
+`project:write`.
 
 ```bash
 export DOCS_SSH_BENCH_SSH_COMMAND="$(
