@@ -45,12 +45,13 @@ summary to stdout.
 ## Optional docs-ssh Run
 
 The docs-ssh runner needs a project-scoped SSH command in
-`DOCS_SSH_BENCH_SSH_COMMAND`. Get one from docs-ssh, then export the returned
-`sshCommand` value:
+`DOCS_SSH_BENCH_SSH_COMMAND`. Create a token session for the `ragbench` project
+and export the returned `sshCommand` value:
 
 ```bash
-docs-ssh login --json
-export DOCS_SSH_BENCH_SSH_COMMAND='ssh -i /path/to/id_ed25519 sess_xxx@docs-ssh'
+export DOCS_SSH_BENCH_SSH_COMMAND="$(
+  docs-ssh token login --token "$DOCS_SSH_TOKEN" --host docs-ssh --project ragbench --json | jq -r .sshCommand
+)"
 ```
 
 With that variable set, materialize again so the same cases are written to the
@@ -63,7 +64,9 @@ pnpm bench:ragbench:score -- --runs .bench/ragbench/runs/docs-ssh.jsonl --output
 ```
 
 The default remote root is `/projects/ragbench/tasks/ragbench-cases`. If you use a
-different root, pass the same value to both materialization and retrieval:
+different project or remote root, the token/session project must match the
+`/projects/<project>/...` remote root, and the root must be passed to both
+materialization and retrieval:
 
 ```bash
 pnpm bench:ragbench:materialize -- --remote-root /projects/ragbench/tasks/ragbench-cases
