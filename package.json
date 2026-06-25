@@ -18,6 +18,7 @@
     "bench:ragbench:materialize": "tsx bench/ragbench/materialize.ts",
     "bench:ragbench:docs-ssh": "tsx bench/ragbench/retrieval/docs-ssh-runner.ts",
     "bench:ragbench:vector": "tsx bench/ragbench/retrieval/vector-baseline.ts",
+    "bench:ragbench:score": "tsx bench/ragbench/score.ts",
     "cli": "pnpm run build:server && node dist/src/cli.js",
     "dev": "tsx src/server.ts",
     "dev:viewer": "vite",
