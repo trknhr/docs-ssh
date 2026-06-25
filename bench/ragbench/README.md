@@ -86,7 +86,7 @@ These runs do not evaluate answer quality. They only score retrieval against the
 available support-document labels. If those labels are absent or incomplete, cases
 may be skipped or hit rates may understate useful retrieval.
 
-## First Local Smoke
+## First Local Smokes
 
 On 2026-06-25, the 50-case `emanual` test workflow completed locally:
 
@@ -108,5 +108,45 @@ On 2026-06-25, the 50-case `emanual` test workflow completed locally:
 }
 ```
 
-The docs-ssh run was skipped for that smoke because
-`DOCS_SSH_BENCH_SSH_COMMAND` was not set in the shell.
+The same day, a 10-case `emanual` test comparison completed with real docs-ssh
+retrieval against `/projects/default/tasks/ragbench-cases-10`.
+
+Vector baseline:
+
+```json
+{
+  "mode": "vector",
+  "cases": 10,
+  "skippedCases": 0,
+  "scoredCases": 10,
+  "hitAt1": 0.4,
+  "hitAt3": 1,
+  "hitAt5": 1,
+  "mrr": 0.6666666666666666,
+  "avgElapsedMs": 0.3,
+  "avgCommandCount": 0,
+  "avgFilesRead": 3,
+  "avgBytesRead": 3078.7,
+  "errorCases": 0
+}
+```
+
+docs-ssh:
+
+```json
+{
+  "mode": "docs-ssh",
+  "cases": 10,
+  "skippedCases": 0,
+  "scoredCases": 10,
+  "hitAt1": 0.6,
+  "hitAt3": 1,
+  "hitAt5": 1,
+  "mrr": 0.7666666666666666,
+  "avgElapsedMs": 6242.7,
+  "avgCommandCount": 5,
+  "avgFilesRead": 3,
+  "avgBytesRead": 3123.7,
+  "errorCases": 0
+}
+```

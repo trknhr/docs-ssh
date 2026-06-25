@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, posix, relative, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import type { RagbenchCase, RagbenchDocument } from './types.js'
 
@@ -216,10 +217,14 @@ function runRemoteCommand(opts: {
   return result.stdout
 }
 
+export function formatRemoteWriteCommand(remotePath: string, content: string): string {
+  const encoded = Buffer.from(content, 'utf8').toString('base64')
+  return `printf %s ${shellQuote(encoded)} | base64 -d > ${shellQuote(remotePath)}`
+}
+
 function writeRemoteFile(sshCommand: string, remotePath: string, content: string): void {
   runRemoteCommand({
-    input: content,
-    remoteCommand: `cat > ${shellQuote(remotePath)}`,
+    remoteCommand: formatRemoteWriteCommand(remotePath, content),
     sshCommand,
   })
 
@@ -252,48 +257,61 @@ function writeRemoteCase(sshCommand: string, remoteRoot: string, entry: Ragbench
   return entry.documents.length
 }
 
-const args = process.argv.slice(2)
-const { values } = parseArgs({
-  args: args[0] === '--' ? args.slice(1) : args,
-  options: {
-    cases: { type: 'string', default: DEFAULT_CASES },
-    'local-root': { type: 'string', default: DEFAULT_LOCAL_ROOT },
-    'remote-root': { type: 'string', default: DEFAULT_REMOTE_ROOT },
-  },
-})
-
-const casesPath = resolve(values.cases ?? DEFAULT_CASES)
-const localRoot = resolve(values['local-root'] ?? DEFAULT_LOCAL_ROOT)
-const remoteRoot = values['remote-root'] ?? DEFAULT_REMOTE_ROOT
-const sshCommand = process.env.DOCS_SSH_BENCH_SSH_COMMAND?.trim()
-const cases = await readCases(casesPath)
-let documentCount = 0
-
-for (const entry of cases) {
-  validateCasePathSegments(entry)
+function isMainModule(): boolean {
+  return Boolean(process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url)
 }
 
-validateLocalRootForCleanup(localRoot, process.cwd())
-await rm(localRoot, { force: true, recursive: true })
-await mkdir(localRoot, { recursive: true })
-for (const entry of cases) {
-  documentCount += await writeLocalCase(localRoot, entry)
-}
-
-if (sshCommand) {
-  validateRemoteRoot(remoteRoot)
-  runRemoteCommand({
-    remoteCommand: `rm -rf ${shellQuote(remoteRoot)} && mkdir -p ${shellQuote(remoteRoot)}`,
-    sshCommand,
+async function main(): Promise<void> {
+  const args = process.argv.slice(2)
+  const { values } = parseArgs({
+    args: args[0] === '--' ? args.slice(1) : args,
+    options: {
+      cases: { type: 'string', default: DEFAULT_CASES },
+      'local-root': { type: 'string', default: DEFAULT_LOCAL_ROOT },
+      'remote-root': { type: 'string', default: DEFAULT_REMOTE_ROOT },
+    },
   })
+
+  const casesPath = resolve(values.cases ?? DEFAULT_CASES)
+  const localRoot = resolve(values['local-root'] ?? DEFAULT_LOCAL_ROOT)
+  const remoteRoot = values['remote-root'] ?? DEFAULT_REMOTE_ROOT
+  const sshCommand = process.env.DOCS_SSH_BENCH_SSH_COMMAND?.trim()
+  const cases = await readCases(casesPath)
+  let documentCount = 0
+
   for (const entry of cases) {
-    writeRemoteCase(sshCommand, remoteRoot, entry)
+    validateCasePathSegments(entry)
   }
+
+  validateLocalRootForCleanup(localRoot, process.cwd())
+  await rm(localRoot, { force: true, recursive: true })
+  await mkdir(localRoot, { recursive: true })
+  for (const entry of cases) {
+    documentCount += await writeLocalCase(localRoot, entry)
+  }
+
+  if (sshCommand) {
+    validateRemoteRoot(remoteRoot)
+    runRemoteCommand({
+      remoteCommand: `rm -rf ${shellQuote(remoteRoot)} && mkdir -p ${shellQuote(remoteRoot)}`,
+      sshCommand,
+    })
+    for (const entry of cases) {
+      writeRemoteCase(sshCommand, remoteRoot, entry)
+    }
+  }
+
+  console.log(JSON.stringify({
+    cases: cases.length,
+    documents: documentCount,
+    localRoot,
+    remoteRoot: sshCommand ? remoteRoot : null,
+  }, null, 2))
 }
 
-console.log(JSON.stringify({
-  cases: cases.length,
-  documents: documentCount,
-  localRoot,
-  remoteRoot: sshCommand ? remoteRoot : null,
-}, null, 2))
+if (isMainModule()) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+}
