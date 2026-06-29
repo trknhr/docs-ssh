@@ -156,4 +156,95 @@ describe('createBash', () => {
     expect(deniedBootstrap.exitCode).toBe(126)
     expect(deniedBootstrap.stderr).toContain('bootstrap:read')
   })
+
+  it('runs multiple commands through batch', async () => {
+    const tempDir = await createTempDir()
+    const docsDir = resolve(tempDir, 'docs')
+    const workspaceDir = resolve(tempDir, 'workspace')
+    vi.stubEnv('DOCS_SSH_STATE_DIR', resolve(tempDir, 'state'))
+    vi.stubEnv('WORKSPACE_DIR', workspaceDir)
+    await mkdir(docsDir, { recursive: true })
+    await writeFile(resolve(docsDir, 'README.md'), '# Product Docs\n')
+
+    const { bash } = await createBash({
+      docsDir,
+      docsName: 'Product Docs',
+      workspaceDir,
+    })
+
+    const result = await bash.exec('batch', {
+      cwd: '/',
+      stdin: [
+        'printf first',
+        'cat /README.md',
+        '',
+      ].join('\n'),
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    const rows = result.stdout.trim().split('\n').map((line) => JSON.parse(line) as {
+      command: string
+      exitCode: number
+      stdout: string
+    })
+    expect(rows).toEqual([
+      {
+        command: 'printf first',
+        exitCode: 0,
+        index: 0,
+        stderr: '',
+        stdout: 'first',
+      },
+      {
+        command: 'cat /README.md',
+        exitCode: 0,
+        index: 1,
+        stderr: '',
+        stdout: expect.stringContaining('# docs-ssh'),
+      },
+    ])
+  })
+
+  it('reads bounded file ranges with optional line metadata', async () => {
+    const tempDir = await createTempDir()
+    const docsDir = resolve(tempDir, 'docs')
+    const workspaceDir = resolve(tempDir, 'workspace')
+    vi.stubEnv('DOCS_SSH_STATE_DIR', resolve(tempDir, 'state'))
+    vi.stubEnv('WORKSPACE_DIR', workspaceDir)
+    await mkdir(docsDir, { recursive: true })
+
+    const { bash, fs } = await createBash({
+      docsDir,
+      docsName: 'Project Docs',
+      workspaceDir,
+    })
+    await fs.writeFile('/projects/default/tasks/example.md', [
+      'one',
+      'two',
+      'three',
+      'four',
+      'five',
+      '',
+    ].join('\n'))
+
+    const numbered = await bash.exec('read-range -n /projects/default/tasks/example.md 2 4')
+    expect(numbered.exitCode).toBe(0)
+    expect(numbered.stdout).toBe('2:two\n3:three\n4:four\n')
+
+    const json = await bash.exec('read-range --json /projects/default/tasks/example.md --start 3 --end 3')
+    expect(JSON.parse(json.stdout)).toEqual({
+      path: '/projects/default/tasks/example.md',
+      startLine: 3,
+      endLine: 3,
+      totalLines: 5,
+      truncated: false,
+      lines: [
+        {
+          lineNumber: 3,
+          text: 'three',
+        },
+      ],
+    })
+  })
 })

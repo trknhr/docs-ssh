@@ -5,7 +5,7 @@
 
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { Bash, defineCommand, InMemoryFs, ReadWriteFs } from 'just-bash'
+import { Bash, defineCommand, InMemoryFs, ReadWriteFs, type ExecResult } from 'just-bash'
 import { loadInstanceConfig, type InstanceConfig } from '../instance-config.js'
 import { loadSourceStore } from '../sources/source-store.js'
 import type { SourceStore } from '../sources/types.js'
@@ -39,6 +39,13 @@ export const EXECUTION_LIMITS = {
   maxHeredocSize: 1024 * 1024,
 }
 
+const BATCH_COMMAND_MAX_COUNT = 50
+const BATCH_COMMAND_MAX_LENGTH = 8192
+const BATCH_OUTPUT_MAX_BYTES = 1024 * 1024
+const READ_RANGE_DEFAULT_LINES = 200
+const READ_RANGE_MAX_LINES = 1000
+const READ_RANGE_MAX_BYTES = 512 * 1024
+
 const sshCommand = defineCommand('ssh', async (args) => {
   const command = args.join(' ')
   return {
@@ -57,6 +64,312 @@ function createTextCommand(name: string, content: string) {
     stderr: '',
     exitCode: 0,
   }))
+}
+
+function createUsageResult(commandName: string): ExecResult {
+  return {
+    stdout: [
+      `Usage: ${commandName} [command ... [-- command ...]]`,
+      `       printf '%s\\n' 'find /projects/default/tasks' 'cat /README.md' | ${commandName}`,
+      '',
+      'Runs multiple commands in one SSH exec and returns one JSON object per line:',
+      '{"index":0,"command":"...","exitCode":0,"stdout":"...","stderr":"..."}',
+      '',
+    ].join('\n'),
+    stderr: '',
+    exitCode: 0,
+  }
+}
+
+function parseBatchCommands(args: string[], stdin: string): string[] {
+  if (args.includes('--help') || args.includes('-h')) return []
+
+  if (args.length === 0) {
+    return stdin
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'))
+  }
+
+  const commands: string[] = []
+  let current: string[] = []
+  for (const arg of args) {
+    if (arg === '--') {
+      const command = current.join(' ').trim()
+      if (command) commands.push(command)
+      current = []
+    } else {
+      current.push(arg)
+    }
+  }
+
+  const command = current.join(' ').trim()
+  if (command) commands.push(command)
+  return commands
+}
+
+function validateBatchCommands(commandName: string, commands: string[]): ExecResult | null {
+  if (commands.length === 0) {
+    return {
+      stdout: '',
+      stderr: `${commandName}: no commands provided.\n`,
+      exitCode: 2,
+    }
+  }
+
+  if (commands.length > BATCH_COMMAND_MAX_COUNT) {
+    return {
+      stdout: '',
+      stderr: `${commandName}: at most ${BATCH_COMMAND_MAX_COUNT} commands are allowed.\n`,
+      exitCode: 2,
+    }
+  }
+
+  for (const [index, command] of commands.entries()) {
+    if (command.length > BATCH_COMMAND_MAX_LENGTH) {
+      return {
+        stdout: '',
+        stderr: `${commandName}: command ${index} exceeds ${BATCH_COMMAND_MAX_LENGTH} characters.\n`,
+        exitCode: 2,
+      }
+    }
+
+    if (/^\s*(?:batch|docs-ssh-batch|ssh-batch)(?:\s|$)/u.test(command)) {
+      return {
+        stdout: '',
+        stderr: `${commandName}: nested batch commands are not allowed.\n`,
+        exitCode: 2,
+      }
+    }
+  }
+
+  return null
+}
+
+function createBatchCommand(commandName: string) {
+  return defineCommand(commandName, async (args, ctx) => {
+    if (args.includes('--help') || args.includes('-h')) return createUsageResult(commandName)
+
+    if (!ctx.exec) {
+      return {
+        stdout: '',
+        stderr: `${commandName}: internal exec function is not available.\n`,
+        exitCode: 1,
+      }
+    }
+
+    const commands = parseBatchCommands(args, ctx.stdin)
+    const invalid = validateBatchCommands(commandName, commands)
+    if (invalid) return invalid
+
+    const lines: string[] = []
+    let exitCode = 0
+    let outputBytes = 0
+    for (const [index, command] of commands.entries()) {
+      const result = await ctx.exec(command, {
+        cwd: ctx.cwd,
+        signal: ctx.signal,
+        stdin: '',
+      })
+      if (result.exitCode !== 0 && exitCode === 0) exitCode = result.exitCode
+
+      const line = `${JSON.stringify({
+        command,
+        exitCode: result.exitCode,
+        index,
+        stderr: result.stderr,
+        stdout: result.stdout,
+      })}\n`
+      outputBytes += Buffer.byteLength(line, 'utf8')
+      if (outputBytes > BATCH_OUTPUT_MAX_BYTES) {
+        return {
+          stdout: lines.join(''),
+          stderr: `${commandName}: output exceeded ${BATCH_OUTPUT_MAX_BYTES} bytes.\n`,
+          exitCode: exitCode || 1,
+        }
+      }
+      lines.push(line)
+    }
+
+    return {
+      stdout: lines.join(''),
+      stderr: '',
+      exitCode,
+    }
+  })
+}
+
+interface ReadRangeOptions {
+  endLine: number | null
+  json: boolean
+  lineNumbers: boolean
+  path: string
+  startLine: number
+}
+
+function parsePositiveLine(value: string, name: string): number | string {
+  if (!/^\d+$/u.test(value)) return `${name} must be a positive integer`
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return `${name} must be a positive integer`
+  return parsed
+}
+
+function parseReadRangeArgs(args: string[]): ReadRangeOptions | string {
+  let json = false
+  let lineNumbers = false
+  let startLine: number | null = null
+  let endLine: number | null = null
+  const positional: string[] = []
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === '--json') {
+      json = true
+    } else if (arg === '-n' || arg === '--line-numbers') {
+      lineNumbers = true
+    } else if (arg === '--start') {
+      const value = args[index + 1]
+      if (!value) return '--start requires a value'
+      const parsed = parsePositiveLine(value, '--start')
+      if (typeof parsed === 'string') return parsed
+      startLine = parsed
+      index += 1
+    } else if (arg === '--end') {
+      const value = args[index + 1]
+      if (!value) return '--end requires a value'
+      const parsed = parsePositiveLine(value, '--end')
+      if (typeof parsed === 'string') return parsed
+      endLine = parsed
+      index += 1
+    } else if (arg.startsWith('-')) {
+      return `unknown option: ${arg}`
+    } else {
+      positional.push(arg)
+    }
+  }
+
+  const path = positional[0]
+  if (!path) return 'missing path'
+  if (positional.length > 3) return 'too many positional arguments'
+
+  if (positional[1] !== undefined) {
+    const parsed = parsePositiveLine(positional[1], 'start line')
+    if (typeof parsed === 'string') return parsed
+    startLine = parsed
+  }
+  if (positional[2] !== undefined) {
+    const parsed = parsePositiveLine(positional[2], 'end line')
+    if (typeof parsed === 'string') return parsed
+    endLine = parsed
+  }
+
+  return {
+    endLine,
+    json,
+    lineNumbers,
+    path,
+    startLine: startLine ?? 1,
+  }
+}
+
+function createReadRangeCommand() {
+  return defineCommand('read-range', async (args, ctx) => {
+    if (args.includes('--help') || args.includes('-h')) {
+      return {
+        stdout: [
+          'Usage: read-range [--json] [-n|--line-numbers] PATH [START [END]]',
+          '       read-range [--json] PATH --start START --end END',
+          '',
+          `Reads at most ${READ_RANGE_MAX_LINES} lines and ${READ_RANGE_MAX_BYTES} bytes from a text file.`,
+          '',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+      }
+    }
+
+    const parsed = parseReadRangeArgs(args)
+    if (typeof parsed === 'string') {
+      return {
+        stdout: '',
+        stderr: `read-range: ${parsed}.\n`,
+        exitCode: 2,
+      }
+    }
+
+    const resolvedPath = ctx.fs.resolvePath(ctx.cwd, parsed.path)
+    let content: string
+    try {
+      content = await ctx.fs.readFile(resolvedPath, 'utf8')
+    } catch (error) {
+      return {
+        stdout: '',
+        stderr: `read-range: ${parsed.path}: ${error instanceof Error ? error.message : String(error)}\n`,
+        exitCode: 1,
+      }
+    }
+
+    const lines = content.split(/\r?\n/u)
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+    const requestedEndLine = parsed.endLine ?? parsed.startLine + READ_RANGE_DEFAULT_LINES - 1
+    const endLine = Math.min(requestedEndLine, parsed.startLine + READ_RANGE_MAX_LINES - 1, lines.length)
+    if (parsed.startLine > lines.length || endLine < parsed.startLine) {
+      const emptyPayload = {
+        path: resolvedPath,
+        startLine: parsed.startLine,
+        endLine: parsed.startLine - 1,
+        totalLines: lines.length,
+        truncated: false,
+        lines: [] as Array<{ lineNumber: number, text: string }>,
+      }
+      return {
+        stdout: parsed.json ? `${JSON.stringify(emptyPayload)}\n` : '',
+        stderr: '',
+        exitCode: 0,
+      }
+    }
+
+    const selected = lines.slice(parsed.startLine - 1, endLine)
+    const outputLines: string[] = []
+    let outputBytes = 0
+    let truncated = requestedEndLine > endLine
+    for (const [index, text] of selected.entries()) {
+      const lineNumber = parsed.startLine + index
+      const outputLine = parsed.lineNumbers ? `${lineNumber}:${text}\n` : `${text}\n`
+      const nextBytes = outputBytes + Buffer.byteLength(outputLine, 'utf8')
+      if (nextBytes > READ_RANGE_MAX_BYTES) {
+        truncated = true
+        break
+      }
+      outputBytes = nextBytes
+      outputLines.push(outputLine)
+    }
+
+    if (parsed.json) {
+      const jsonLines = outputLines.map((line, index) => ({
+        lineNumber: parsed.startLine + index,
+        text: parsed.lineNumbers ? line.replace(/^\d+:/u, '').replace(/\n$/u, '') : line.replace(/\n$/u, ''),
+      }))
+      return {
+        stdout: `${JSON.stringify({
+          path: resolvedPath,
+          startLine: parsed.startLine,
+          endLine: jsonLines.length === 0 ? parsed.startLine - 1 : parsed.startLine + jsonLines.length - 1,
+          totalLines: lines.length,
+          truncated,
+          lines: jsonLines,
+        })}\n`,
+        stderr: '',
+        exitCode: 0,
+      }
+    }
+
+    return {
+      stdout: outputLines.join(''),
+      stderr: '',
+      exitCode: 0,
+    }
+  })
 }
 
 function hasScope(scopes: Set<string>, scope: string): boolean {
@@ -342,6 +655,10 @@ export async function createBash(opts: CreateBashOptions = {}) {
       createTextCommand('skill', skillMarkdown),
       createTextCommand('setup', setupMarkdown),
       createBootstrapCommand(bootstrapPayload, canReadBootstrap),
+      createBatchCommand('batch'),
+      createBatchCommand('docs-ssh-batch'),
+      createBatchCommand('ssh-batch'),
+      createReadRangeCommand(),
     ],
     defenseInDepth: true,
     executionLimits: EXECUTION_LIMITS,

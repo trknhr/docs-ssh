@@ -194,6 +194,45 @@ function execCommand(client: ssh2.Client, command: string): Promise<{
   })
 }
 
+function execCommandWithInput(client: ssh2.Client, command: string, input: string | Buffer): Promise<{
+  exitCode: number | null
+  stderr: string
+  stdout: string
+}> {
+  return new Promise((resolve, reject) => {
+    client.exec(command, (error, stream) => {
+      if (error) {
+        reject(error)
+        return
+      }
+
+      let stdout = ''
+      let stderr = ''
+      let exitCode: number | null = null
+
+      stream.on('data', (chunk: Buffer | string) => {
+        stdout += chunk.toString()
+      })
+      stream.stderr.on('data', (chunk: Buffer | string) => {
+        stderr += chunk.toString()
+      })
+      stream.on('exit', (code?: number | null) => {
+        exitCode = code ?? null
+      })
+      stream.on('close', () => {
+        resolve({
+          exitCode,
+          stderr,
+          stdout,
+        })
+      })
+
+      stream.write(input)
+      stream.end()
+    })
+  })
+}
+
 afterEach(async () => {
   for (const client of activeClients.splice(0)) {
     client.removeAllListeners()
@@ -374,5 +413,51 @@ describe('createSSHServer', () => {
 
     expect(passwordError.message).toMatch(/authentication|configured authentication methods failed/i)
     expect(noneError.message).toMatch(/authentication|configured authentication methods failed/i)
+  })
+
+  it('runs multiple commands through batch over one SSH exec', async () => {
+    const { allowedKey, port } = await createTestServer()
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: allowedKey.private,
+      username: 'workstation-user',
+    })
+
+    const result = await execCommandWithInput(
+      client,
+      'batch',
+      [
+        'printf one',
+        'read-range -n /README.md 1 2',
+        'find /projects/default -maxdepth 1 -type d | sort',
+        '',
+      ].join('\n'),
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    const rows = result.stdout.trim().split('\n').map((line) => JSON.parse(line) as {
+      command: string
+      exitCode: number
+      stderr: string
+      stdout: string
+    })
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toMatchObject({
+      command: 'printf one',
+      exitCode: 0,
+      stdout: 'one',
+    })
+    expect(rows[1]).toMatchObject({
+      command: 'read-range -n /README.md 1 2',
+      exitCode: 0,
+      stdout: expect.stringContaining('1:# docs-ssh'),
+    })
+    expect(rows[2]).toMatchObject({
+      command: 'find /projects/default -maxdepth 1 -type d | sort',
+      exitCode: 0,
+      stdout: expect.stringContaining('/projects/default/tasks'),
+    })
   })
 })

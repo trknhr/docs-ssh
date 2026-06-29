@@ -94,7 +94,9 @@ async function collectExecStdin(
   const graceMs = opts.graceMs ?? getExecStdinGraceMs()
   const maxBytes = opts.maxBytes ?? getMaxExecStdinBytes()
   const waitForEndMs = opts.waitForEndMs ?? 10_000
-  const input = channel.stdin ?? channel
+  const inputs = channel.stdin && channel.stdin !== channel
+    ? [channel.stdin, channel]
+    : [channel]
 
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -113,10 +115,12 @@ async function collectExecStdin(
 
     const cleanup = () => {
       clearTimers()
-      input.off('data', onData)
-      input.off('end', onEnd)
-      input.off('eof', onEnd)
-      input.off('close', onClose)
+      for (const input of inputs) {
+        input.off('data', onData)
+        input.off('end', onEnd)
+        input.off('eof', onEnd)
+        input.off('close', onClose)
+      }
     }
 
     const finish = () => {
@@ -156,10 +160,12 @@ async function collectExecStdin(
     const onEnd = () => finish()
     const onClose = () => finish()
 
-    input.on('data', onData)
-    input.on('end', onEnd)
-    input.on('eof', onEnd)
-    input.on('close', onClose)
+    for (const input of inputs) {
+      input.on('data', onData)
+      input.on('end', onEnd)
+      input.on('eof', onEnd)
+      input.on('close', onClose)
+    }
   })
 }
 
@@ -367,6 +373,9 @@ export function createSSHServer(opts: SSHServerOptions) {
             channels.add(channel)
             channel.on('close', () => channels.delete(channel))
             channel.stdin.on('data', () => resetIdle())
+            const stdinPromise = collectExecStdin(channel, {
+              waitForEndMs: execTimeout,
+            })
 
             try {
               const { bash } = await createBash({
@@ -380,9 +389,7 @@ export function createSSHServer(opts: SSHServerOptions) {
                 sshPort: sshConnectPort,
                 workspaceDir,
               })
-              const stdin = await collectExecStdin(channel, {
-                waitForEndMs: execTimeout,
-              })
+              const stdin = await stdinPromise
               const result = await bash.exec(execInfo.command, {
                 cwd: '/',
                 stdin,
