@@ -11,3 +11,4 @@ ssh_host_key
 var
 .superpowers/
 .worktrees/
+.bench/

@@ -9,6 +9,7 @@
     "skipLibCheck": true
   },
   "include": [
+    "bench",
     "src",
     "scripts"
   ]
