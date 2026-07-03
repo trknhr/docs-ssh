@@ -1,6 +1,6 @@
 {
   "name": "docs-ssh",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "bin": {
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "pnpm run build:server && pnpm run build:viewer",
-    "build:server": "tsc",
+    "build:server": "tsc -p tsconfig.build.json",
     "build:viewer": "vite build",
     "cli": "pnpm run build:server && node dist/src/cli.js",
     "dev": "tsx src/server.ts",

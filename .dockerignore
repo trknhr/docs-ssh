@@ -1,7 +1,13 @@
 .git
 .docs-ssh
 .tmux-orchestrator-export
+.bench
+.superpowers
+.tmp
+.worktrees
 dist
 node_modules
+site-dist
 ssh_host_key
+viewer-dist
 .DS_Store

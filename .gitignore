@@ -12,3 +12,4 @@ var
 .superpowers/
 .worktrees/
 .bench/
+.tmp/
