@@ -315,6 +315,35 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })))
 })
 
+describe('createViewerServer health check', () => {
+  it('reports readiness without authentication', async () => {
+    const viewer = await createViewerFixture({
+      clientId: 'docs-ssh-viewer',
+      issuer: 'https://accounts.example.com',
+    })
+
+    const response = await fetch(`${viewer.baseUrl}/healthz`)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    await expect(response.json()).resolves.toEqual({ status: 'ok' })
+  })
+
+  it('supports HEAD and rejects mutating methods', async () => {
+    const viewer = await createViewerFixture({
+      clientId: 'docs-ssh-viewer',
+      issuer: 'https://accounts.example.com',
+    })
+
+    const headResponse = await fetch(`${viewer.baseUrl}/healthz`, { method: 'HEAD' })
+    const postResponse = await fetch(`${viewer.baseUrl}/healthz`, { method: 'POST' })
+
+    expect(headResponse.status).toBe(200)
+    expect(await headResponse.text()).toBe('')
+    expect(postResponse.status).toBe(405)
+  })
+})
+
 describe('createViewerServer OIDC session flow', () => {
   it('reports OIDC readiness before login', async () => {
     const clientId = 'docs-ssh-viewer'

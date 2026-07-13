@@ -1000,6 +1000,15 @@ export function createViewerServer(opts: ViewerServerOptions) {
       const cliLoginViewMatch = /^\/cli-login\/([^/]+)$/u.exec(url.pathname)
       const cliLoginApproveMatch = /^\/cli-login\/([^/]+)\/approve$/u.exec(url.pathname)
 
+      if (url.pathname === '/healthz') {
+        if (method !== 'GET' && method !== 'HEAD') {
+          sendMethodNotAllowed(response)
+          return
+        }
+        sendJson(response, 200, { status: 'ok' }, headOnly)
+        return
+      }
+
       if (
         method !== 'GET'
         && method !== 'HEAD'
