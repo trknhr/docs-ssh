@@ -1,10 +1,35 @@
 {
   "name": "docs-ssh",
-  "version": "0.2.2",
-  "private": true,
+  "version": "0.3.0",
+  "description": "A shell-native workspace over SSH for AI-agent work notes.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trknhr/docs-ssh.git"
+  },
+  "homepage": "https://github.com/trknhr/docs-ssh#readme",
+  "bugs": {
+    "url": "https://github.com/trknhr/docs-ssh/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "ssh",
+    "documentation",
+    "workspace",
+    "cli"
+  ],
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
-    "docs-ssh": "./dist/src/cli.js"
+    "docs-ssh": "dist/src/cli.js"
   },
   "packageManager": "pnpm@10.24.0",
   "engines": {
@@ -12,8 +37,10 @@
   },
   "scripts": {
     "build": "pnpm run build:server && pnpm run build:viewer",
-    "build:server": "tsc -p tsconfig.build.json",
+    "clean:server": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build:server": "pnpm run clean:server && tsc -p tsconfig.build.json",
     "build:viewer": "vite build",
+    "prepack": "pnpm run build:server",
     "cli": "pnpm run build:server && node dist/src/cli.js",
     "dev": "tsx src/server.ts",
     "dev:viewer": "vite",

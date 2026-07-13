@@ -1,7 +1,6 @@
 # docs-ssh
 
-Use SSH to expose project docs and agent workspaces through a shell-native
-filesystem, with a browser viewer for humans.
+Use SSH to expose project docs and agent workspaces through a shell-native filesystem, with a browser viewer for humans.
 
 Docs: https://trknhr.github.io/docs-ssh/
 
@@ -24,7 +23,16 @@ docs-ssh is a workspace between chat history and Git: persistent enough for agen
 - [MultiHop-RAG benchmark design and results](./bench/multihop-rag/README.md#2026-06-30-100-case-result)
 - [Documentation](https://trknhr.github.io/docs-ssh/)
 
-## Quick Start
+## Install the CLI
+
+Node.js 24 is required.
+
+```bash
+npm install --global docs-ssh
+docs-ssh --help
+```
+
+## Run Locally
 
 ```bash
 pnpm install
