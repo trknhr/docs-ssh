@@ -22,6 +22,7 @@ import {
   revokeApiToken,
   updateProject,
 } from './api'
+import { resolveProjectSelection } from './project-selection'
 import type {
   FilePayload,
   RootSummary,
@@ -1356,7 +1357,7 @@ function InvitationPanel(props: {
 }
 
 export function App() {
-  const initialLocation = readLocationState()
+  const [initialLocation] = useState(readLocationState)
   const treeRef = useRef<TreeApi<TreeNodeData> | null>(null)
   const [oidc, setOidc] = useState<ViewerOidcState>({ enabled: false })
   const [session, setSession] = useState<ViewerSessionUser | null>(null)
@@ -1382,6 +1383,7 @@ export function App() {
   const [selectedProject, setSelectedProject] = useState<string | null>(
     initialLocation.projectPublicId ? null : window.localStorage.getItem('docs-ssh:selected-project'),
   )
+  const selectedProjectRef = useRef(selectedProject)
   const [projectSlug, setProjectSlug] = useState('')
   const [projectDisplayName, setProjectDisplayName] = useState('')
   const [projectEditSlug, setProjectEditSlug] = useState('')
@@ -1479,7 +1481,7 @@ export function App() {
   }, [activeWorkspacePublicId, currentProject, hasWorkspace])
 
   useEffect(() => {
-    if (!session || !hasWorkspace) {
+    if (!hasWorkspace) {
       setProjects([])
       setProjectsLoading(false)
       return
@@ -1496,19 +1498,17 @@ export function App() {
         const routeProject = initialLocation.projectPublicId
           ? payload.projects.find((project) => project.publicId === initialLocation.projectPublicId)
           : null
-        if (routeProject) {
-          setSelectedProjectValue(routeProject.slug)
-          if (initialLocation.filePath) {
-            startTransition(() => setActivePath(`/projects/${routeProject.slug}/${initialLocation.filePath}`))
-          }
-          setProjectsLoading(false)
-          return
+        const currentSelection = selectedProjectRef.current
+        const nextProject = resolveProjectSelection(
+          payload.projects,
+          initialLocation.projectPublicId,
+          currentSelection,
+        )
+        if (nextProject && nextProject.slug !== currentSelection) {
+          setSelectedProjectValue(nextProject.slug)
         }
-        const selectedIsAvailable = selectedProject
-          ? payload.projects.some((project) => project.slug === selectedProject)
-          : false
-        if (!selectedIsAvailable && payload.projects[0]) {
-          selectProject(payload.projects[0].slug)
+        if (routeProject && initialLocation.filePath) {
+          startTransition(() => setActivePath(`/projects/${routeProject.slug}/${initialLocation.filePath}`))
         }
         setProjectsLoading(false)
       })
@@ -1520,7 +1520,7 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [activeWorkspacePublicId, hasWorkspace, session, selectedProject])
+  }, [activeWorkspacePublicId, hasWorkspace])
 
   useEffect(() => {
     if (!session || workspaceName || session.accessRequest) return
@@ -1690,6 +1690,7 @@ export function App() {
   }, [activePath, tree])
 
   const setSelectedProjectValue = (slug: string | null) => {
+    selectedProjectRef.current = slug
     setSelectedProject(slug)
     if (slug) {
       window.localStorage.setItem('docs-ssh:selected-project', slug)
