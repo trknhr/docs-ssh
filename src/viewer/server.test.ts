@@ -173,6 +173,7 @@ async function createFakeOidcProvider(config: {
 
       const idToken = await new SignJWT({
         email: config.email,
+        email_verified: true,
         nonce: authorization.nonce,
       })
         .setProtectedHeader({ alg: 'RS256', kid: 'viewer-test' })
@@ -230,13 +231,17 @@ async function createViewerFixture(config: {
     provider: string
     subject: string
   }
+  onboardingMode?: 'approval' | 'closed'
 }) {
   const tempDir = await createTempDir()
   const docsDir = resolve(tempDir, 'docs')
   const authDbPath = resolve(tempDir, 'state', 'auth.sqlite')
   const workspaceDir = resolve(tempDir, 'workspace')
+  const staticDir = resolve(tempDir, 'viewer-dist')
   await mkdir(docsDir, { recursive: true })
+  await mkdir(staticDir, { recursive: true })
   await writeFile(resolve(docsDir, 'README.md'), '# Viewer Docs\n')
+  await writeFile(resolve(staticDir, 'index.html'), '<!doctype html><title>fixture viewer</title>')
 
   const authStore = createAuthStore({ dbPath: authDbPath })
   const owner = config.bootstrapOwner === false
@@ -274,9 +279,10 @@ async function createViewerFixture(config: {
       provider: 'oidc',
       scope: 'openid email profile',
     },
+    onboardingMode: config.onboardingMode,
     port: 0,
     sessionSecret: 'viewer-test-secret',
-    staticDir: resolve(tempDir, 'viewer-dist'),
+    staticDir,
     workspaceDir,
   })
   const port = await viewer.listen()
@@ -330,6 +336,7 @@ describe('createViewerServer OIDC session flow', () => {
     expect(payload.oidc).toEqual({
       enabled: true,
       issuer: provider.issuer,
+      onboardingMode: 'closed',
       provider: 'oidc',
       signupAvailable: false,
     })
@@ -508,8 +515,8 @@ describe('createViewerServer OIDC session flow', () => {
 
     expect(callbackResponse.status).toBe(403)
     const callbackHtml = await callbackResponse.text()
-    expect(callbackHtml).toContain('Access request needed')
-    expect(callbackHtml).toContain('new accounts must be added by an owner')
+    expect(callbackHtml).toContain('Registration closed')
+    expect(callbackHtml).toContain('New account registration is currently closed')
     expect(callbackHtml).toContain('If you already have access')
     expect(callbackHtml).toContain('If you are a new user')
     expect(callbackHtml).toContain('Try another Google account')
@@ -521,6 +528,198 @@ describe('createViewerServer OIDC session flow', () => {
     const sessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
     const sessionPayload = await sessionResponse.json() as { session: null }
     expect(sessionPayload.session).toBeNull()
+  })
+
+  it('registers a new account and accepts a workspace request in approval mode', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'new.user@example.com',
+      subject: 'new-user',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      onboardingMode: 'approval',
+    })
+    const jar = new CookieJar()
+
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    const callbackResponse = await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+    expect(callbackResponse.status).toBe(302)
+
+    const beforeRequestResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
+    const beforeRequest = await beforeRequestResponse.json() as {
+      session: {
+        accessRequest: null
+        instanceOperator: boolean
+        workspaces: unknown[]
+      }
+    }
+    expect(beforeRequest.session).toMatchObject({
+      accessRequest: null,
+      instanceOperator: false,
+      workspaces: [],
+    })
+
+    const requestResponse = await fetchWithCookies(`${viewer.baseUrl}/api/onboarding/request`, jar, {
+      body: JSON.stringify({
+        intendedUse: 'Temporary notes for coding agents',
+        workspaceName: 'New User Docs',
+      }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+    })
+    expect(requestResponse.status).toBe(200)
+    const requestPayload = await requestResponse.json() as {
+      accessRequest: { publicId: string; status: string }
+    }
+    expect(requestPayload.accessRequest).toMatchObject({
+      status: 'pending',
+    })
+    expect(requestPayload.accessRequest.publicId).toMatch(/^[23456789abcdefghjkmnpqrstuvwxyz]{16}$/)
+
+    const afterRequestResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
+    const afterRequest = await afterRequestResponse.json() as {
+      session: { accessRequest: { status: string; workspaceName: string } }
+    }
+    expect(afterRequest.session.accessRequest).toMatchObject({
+      status: 'pending',
+      workspaceName: 'New User Docs',
+    })
+  })
+
+  it('lets the instance operator review pending workspace requests through the API', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'owner@example.com',
+      subject: 'operator-subject',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      linkedIdentity: {
+        issuer: provider.issuer,
+        provider: 'oidc',
+        subject: 'operator-subject',
+      },
+      onboardingMode: 'approval',
+    })
+    const authStore = createAuthStore({ dbPath: viewer.authDbPath })
+    authStore.registerUserWithAuthIdentity({
+      displayName: 'Requester',
+      email: 'requester@example.com',
+      issuer: provider.issuer,
+      login: 'requester',
+      provider: 'oidc',
+      subject: 'requester-subject',
+    })
+    const request = authStore.createWorkspaceAccessRequest({
+      intendedUse: 'Agent handoffs',
+      userLogin: 'requester',
+      workspaceName: 'Requester Docs',
+    })
+    authStore.close()
+
+    const jar = new CookieJar()
+    const loginResponse = await fetchWithCookies(`${viewer.baseUrl}/auth/login`, jar)
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+
+    const listResponse = await fetchWithCookies(`${viewer.baseUrl}/api/operator/workspace-requests`, jar)
+    expect(listResponse.status).toBe(200)
+    const list = await listResponse.json() as {
+      requests: Array<{ publicId: string; status: string }>
+    }
+    expect(list.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ publicId: request.publicId, status: 'pending' }),
+    ]))
+
+    const reviewResponse = await fetchWithCookies(`${viewer.baseUrl}/api/operator/workspace-requests`, jar, {
+      body: JSON.stringify({ decision: 'approved', publicId: request.publicId }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'PATCH',
+    })
+    expect(reviewResponse.status).toBe(200)
+    const reviewed = await reviewResponse.json() as {
+      accessRequest: { status: string; workspace: { publicId: string } }
+    }
+    expect(reviewed.accessRequest.status).toBe('approved')
+    expect(reviewed.accessRequest.workspace.publicId).toMatch(/^[23456789abcdefghjkmnpqrstuvwxyz]{16}$/)
+    await expect(
+      stat(resolve(viewer.workspaceDir, 'tenants', `w-${reviewed.accessRequest.workspace.publicId}`, 'projects', 'default', 'README.md')),
+    ).resolves.toBeTruthy()
+  })
+
+  it('lets an invited Google account join an existing workspace while public registration is closed', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'invitee@example.com',
+      subject: 'invitee-subject',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      onboardingMode: 'closed',
+    })
+    const authStore = createAuthStore({ dbPath: viewer.authDbPath })
+    const invitation = authStore.createTenantInvitation({
+      email: 'invitee@example.com',
+      inviterLogin: 'owner',
+      role: 'member',
+    })
+    authStore.close()
+
+    const previewResponse = await fetch(
+      `${viewer.baseUrl}/api/invitations/accept?token=${encodeURIComponent(invitation.token)}`,
+    )
+    expect(previewResponse.status).toBe(200)
+    const preview = await previewResponse.json() as {
+      invitation: { email: string; status: string; workspace: { publicId: string } }
+    }
+    expect(preview.invitation).toMatchObject({
+      email: 'invitee@example.com',
+      status: 'pending',
+      workspace: { publicId: invitation.tenant.publicId },
+    })
+
+    const jar = new CookieJar()
+    const returnTo = `/invite/${encodeURIComponent(invitation.token)}`
+    const loginResponse = await fetchWithCookies(
+      `${viewer.baseUrl}/auth/login?returnTo=${encodeURIComponent(returnTo)}`,
+      jar,
+    )
+    const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+    const callbackResponse = await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+    expect(callbackResponse.status).toBe(302)
+    expect(callbackResponse.headers.get('location')).toBe(returnTo)
+
+    const acceptResponse = await fetchWithCookies(
+      `${viewer.baseUrl}/api/invitations/accept?token=${encodeURIComponent(invitation.token)}`,
+      jar,
+      { method: 'POST' },
+    )
+    expect(acceptResponse.status).toBe(200)
+    const accepted = await acceptResponse.json() as {
+      invitation: { status: string }
+      workspace: { projectPublicId: string; publicId: string }
+    }
+    expect(accepted.invitation.status).toBe('accepted')
+    expect(accepted.workspace.publicId).toBe(invitation.tenant.publicId)
+    expect(accepted.workspace.projectPublicId).toMatch(/^[23456789abcdefghjkmnpqrstuvwxyz]{16}$/)
+
+    const sessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
+    const session = await sessionResponse.json() as {
+      session: { role: string; tenantPublicId: string; workspaces: unknown[] }
+    }
+    expect(session.session).toMatchObject({
+      role: 'member',
+      tenantPublicId: invitation.tenant.publicId,
+    })
+    expect(session.session.workspaces).toHaveLength(1)
   })
 
   it('lists and adds SSH keys for the signed-in user', async () => {
@@ -616,9 +815,10 @@ describe('createViewerServer OIDC session flow', () => {
 
     const initialProjectsResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar)
     const initialProjects = await initialProjectsResponse.json() as {
-      projects: Array<{ slug: string }>
+      projects: Array<{ publicId: string; slug: string }>
     }
     expect(initialProjects.projects.map((project) => project.slug)).toEqual(['default'])
+    expect(initialProjects.projects[0]?.publicId).toMatch(/^[23456789abcdefghjkmnpqrstuvwxyz]{16}$/)
 
     const createProjectResponse = await fetchWithCookies(`${viewer.baseUrl}/api/projects`, jar, {
       body: JSON.stringify({
@@ -633,6 +833,7 @@ describe('createViewerServer OIDC session flow', () => {
     const createProjectPayload = await createProjectResponse.json() as {
       project: {
         displayName: string
+        publicId: string
         slug: string
       }
     }
@@ -641,6 +842,7 @@ describe('createViewerServer OIDC session flow', () => {
       displayName: 'Product Docs',
       slug: 'product-docs',
     })
+    expect(createProjectPayload.project.publicId).toMatch(/^[23456789abcdefghjkmnpqrstuvwxyz]{16}$/)
     await expect(
       stat(resolve(viewer.workspaceDir, 'tenants', 'default', 'projects', 'product-docs', 'README.md')),
     ).resolves.toBeTruthy()
@@ -666,6 +868,30 @@ describe('createViewerServer OIDC session flow', () => {
     expect(treePayload.tree.map((node) => node.path)).toEqual(
       expect.arrayContaining(['/projects/default', '/projects/product-docs']),
     )
+
+    const sessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/session`, jar)
+    const sessionPayload = await sessionResponse.json() as {
+      session: { tenantPublicId: string }
+    }
+    const publicIdTreeResponse = await fetchWithCookies(
+      `${viewer.baseUrl}/api/tree?workspaceId=${sessionPayload.session.tenantPublicId}&projectId=${createProjectPayload.project.publicId}`,
+      jar,
+    )
+    const publicIdTreePayload = await publicIdTreeResponse.json() as {
+      mounts: Array<{ mountPath: string }>
+    }
+    expect(publicIdTreeResponse.status).toBe(200)
+    expect(publicIdTreePayload.mounts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ mountPath: '/projects/product-docs' }),
+    ]))
+    expect(publicIdTreePayload.mounts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ mountPath: '/projects/default' }),
+    ]))
+    const canonicalViewerResponse = await fetch(
+      `${viewer.baseUrl}/w/${sessionPayload.session.tenantPublicId}/p/${createProjectPayload.project.publicId}/files/README.md`,
+    )
+    expect(canonicalViewerResponse.status).toBe(200)
+    expect(await canonicalViewerResponse.text()).toContain('fixture viewer')
 
     const missingTreeResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tree?project=missing-project`, jar)
     expect(missingTreeResponse.status).toBe(404)

@@ -193,6 +193,46 @@ textarea {
   text-align: center;
 }
 
+.onboarding-shell {
+  align-content: center;
+  display: grid;
+  min-height: 100%;
+  padding: 2rem;
+  place-items: center;
+}
+
+.onboarding-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 1rem;
+  max-width: 42rem;
+  padding: clamp(1.4rem, 4vw, 2.5rem);
+  width: 100%;
+}
+
+.onboarding-card h2,
+.onboarding-card p {
+  margin: 0;
+}
+
+.onboarding-card p {
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+.onboarding-card__note {
+  background: #f7f7f8;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem;
+}
+
+.onboarding-form {
+  margin-top: 0.5rem;
+}
+
 .hero-button {
   background: #202020;
   border: 1px solid #202020;
@@ -762,6 +802,43 @@ textarea {
 .user-list {
   display: grid;
   gap: 0.65rem;
+}
+
+.request-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.request-item {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1rem;
+}
+
+.request-item > div:first-child {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.request-item h4,
+.request-item p {
+  margin: 0;
+}
+
+.request-item p,
+.request-item code {
+  color: var(--text-muted);
+}
+
+.request-item__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .user-item {

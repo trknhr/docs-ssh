@@ -1,9 +1,12 @@
 import { resolve } from 'node:path'
 import { resolveStatePaths, type StatePaths } from './sources/source-store.js'
 
+export type OnboardingMode = 'approval' | 'closed'
+
 export interface InstanceConfig {
   auth: {
     dbPath: string
+    onboardingMode: OnboardingMode
     oidc: {
       clientId?: string
       clientSecret?: string
@@ -43,6 +46,7 @@ export interface LoadInstanceConfigOptions {
   authOidcClientId?: string
   authOidcClientSecret?: string
   authOidcIssuer?: string
+  authOnboardingMode?: OnboardingMode
   authOidcProvider?: string
   authOidcScope?: string
   docsDir?: string
@@ -91,6 +95,12 @@ function getIntegerValue(
   return parsed
 }
 
+function getOnboardingMode(value: string | undefined): OnboardingMode {
+  const mode = value?.trim().toLowerCase() || 'closed'
+  if (mode === 'approval' || mode === 'closed') return mode
+  throw new Error(`Invalid DOCS_SSH_ONBOARDING_MODE: ${value}`)
+}
+
 export function loadInstanceConfig(opts: LoadInstanceConfigOptions = {}): InstanceConfig {
   const env = opts.env ?? process.env
   const statePaths = resolveStatePaths({
@@ -103,6 +113,7 @@ export function loadInstanceConfig(opts: LoadInstanceConfigOptions = {}): Instan
       dbPath: resolve(
         getStringValue(opts.authDbPath, env.DOCS_SSH_AUTH_DB_PATH, `${statePaths.stateDir}/auth.sqlite`),
       ),
+      onboardingMode: getOnboardingMode(opts.authOnboardingMode ?? env.DOCS_SSH_ONBOARDING_MODE),
       oidc: {
         clientId: opts.authOidcClientId ?? env.DOCS_SSH_OIDC_CLIENT_ID,
         clientSecret: opts.authOidcClientSecret ?? env.DOCS_SSH_OIDC_CLIENT_SECRET,

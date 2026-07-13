@@ -20,6 +20,7 @@ export interface OidcAuthConfig {
 
 export interface OidcIdentityClaims {
   email?: string
+  emailVerified: boolean
   issuer: string
   subject: string
 }
@@ -185,6 +186,7 @@ export class OidcClient {
 
     return {
       email: typeof verified.payload.email === 'string' ? verified.payload.email : undefined,
+      emailVerified: verified.payload.email_verified === true,
       issuer: metadata.issuer,
       subject: verified.payload.sub,
     }

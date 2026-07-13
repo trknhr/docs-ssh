@@ -7,8 +7,11 @@ import type {
   ViewerProjectListResponse,
   ViewerProjectMutationResponse,
   ViewerSessionResponse,
+  ViewerTenantInvitationResponse,
   ViewerUserListResponse,
   ViewerUserMutationResponse,
+  ViewerWorkspaceAccessRequestListResponse,
+  ViewerWorkspaceAccessRequestMutationResponse,
 } from './types'
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -22,14 +25,37 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload
 }
 
-export async function getTree(project?: string) {
-  const suffix = project ? `?project=${encodeURIComponent(project)}` : ''
-  return fetchJson<TreeResponse>(`/api/tree${suffix}`)
+function getProjectSearch(project?: { publicId: string; workspacePublicId: string }) {
+  if (!project) return ''
+  const search = new URLSearchParams({
+    projectId: project.publicId,
+    workspaceId: project.workspacePublicId,
+  })
+  return `?${search.toString()}`
 }
 
-export async function getFile(path: string): Promise<FileResponse> {
-  const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`)
+export async function getTree(project?: { publicId: string; workspacePublicId: string }) {
+  return fetchJson<TreeResponse>(`/api/tree${getProjectSearch(project)}`)
+}
+
+export async function getFile(
+  path: string,
+  project?: { publicId: string; workspacePublicId: string },
+): Promise<FileResponse> {
+  const search = new URLSearchParams({ path })
+  if (project) {
+    search.set('projectId', project.publicId)
+    search.set('workspaceId', project.workspacePublicId)
+  }
+  const response = await fetch(`/api/file?${search.toString()}`)
   const payload = (await response.json()) as FileResponse['payload']
+
+  if (project && payload.rawUrl) {
+    const rawSearch = new URLSearchParams(payload.rawUrl.split('?', 2)[1] ?? '')
+    rawSearch.set('projectId', project.publicId)
+    rawSearch.set('workspaceId', project.workspacePublicId)
+    payload.rawUrl = `/api/raw?${rawSearch.toString()}`
+  }
 
   return {
     ok: response.ok,
@@ -42,8 +68,63 @@ export async function getSession() {
   return fetchJson<ViewerSessionResponse>('/api/auth/session')
 }
 
-export async function getProjects() {
-  return fetchJson<ViewerProjectListResponse>('/api/projects')
+export async function createWorkspaceAccessRequest(input: {
+  intendedUse?: string
+  workspaceName: string
+}) {
+  return fetchJson<ViewerWorkspaceAccessRequestMutationResponse>('/api/onboarding/request', {
+    body: JSON.stringify(input),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    method: 'POST',
+  })
+}
+
+export async function getWorkspaceAccessRequests() {
+  return fetchJson<ViewerWorkspaceAccessRequestListResponse>('/api/operator/workspace-requests')
+}
+
+export async function reviewWorkspaceAccessRequest(input: {
+  decision: 'approved' | 'rejected'
+  publicId: string
+  reviewNote?: string
+}) {
+  return fetchJson<ViewerWorkspaceAccessRequestMutationResponse>('/api/operator/workspace-requests', {
+    body: JSON.stringify(input),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    method: 'PATCH',
+  })
+}
+
+export async function createTenantInvitation(input: {
+  email: string
+  role: 'owner' | 'admin' | 'member'
+}) {
+  return fetchJson<ViewerTenantInvitationResponse>('/api/invitations', {
+    body: JSON.stringify(input),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    method: 'POST',
+  })
+}
+
+export async function getTenantInvitation(token: string) {
+  return fetchJson<ViewerTenantInvitationResponse>(`/api/invitations/accept?token=${encodeURIComponent(token)}`)
+}
+
+export async function acceptTenantInvitation(token: string) {
+  return fetchJson<ViewerTenantInvitationResponse>(`/api/invitations/accept?token=${encodeURIComponent(token)}`, {
+    method: 'POST',
+  })
+}
+
+export async function getProjects(workspacePublicId?: string) {
+  const suffix = workspacePublicId ? `?workspaceId=${encodeURIComponent(workspacePublicId)}` : ''
+  return fetchJson<ViewerProjectListResponse>(`/api/projects${suffix}`)
 }
 
 export async function createProject(input: {

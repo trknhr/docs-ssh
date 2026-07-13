@@ -3,7 +3,25 @@ import { Allotment } from 'allotment'
 import DOMPurify from 'dompurify'
 import { Renderer, marked } from 'marked'
 import { Tree, type NodeApi, type NodeRendererProps, type TreeApi } from 'react-arborist'
-import { archiveProject, createApiToken, createProject, createUser, getApiTokens, getFile, getProjects, getSession, getTree, getUsers, revokeApiToken, updateProject } from './api'
+import {
+  archiveProject,
+  acceptTenantInvitation,
+  createApiToken,
+  createProject,
+  createTenantInvitation,
+  createWorkspaceAccessRequest,
+  getApiTokens,
+  getFile,
+  getProjects,
+  getSession,
+  getTenantInvitation,
+  getTree,
+  getUsers,
+  getWorkspaceAccessRequests,
+  reviewWorkspaceAccessRequest,
+  revokeApiToken,
+  updateProject,
+} from './api'
 import type {
   FilePayload,
   RootSummary,
@@ -14,7 +32,9 @@ import type {
   ViewerOidcState,
   ViewerProject,
   ViewerSessionUser,
+  ViewerTenantInvitation,
   ViewerUser,
+  ViewerWorkspaceAccessRequest,
 } from './types'
 
 const API_TOKEN_SCOPE_OPTIONS: Array<{ label: string; value: ViewerApiTokenCreateScope }> = [
@@ -87,7 +107,13 @@ function splitHref(href: string) {
 }
 
 function toRawUrl(path: string) {
-  return `/api/raw?path=${encodeURIComponent(path)}`
+  const search = new URLSearchParams({ path })
+  const location = readLocationState()
+  if (location.projectPublicId && location.workspacePublicId) {
+    search.set('projectId', location.projectPublicId)
+    search.set('workspaceId', location.workspacePublicId)
+  }
+  return `/api/raw?${search.toString()}`
 }
 
 function formatTokenDate(value: string | null) {
@@ -219,13 +245,47 @@ function getShikiLanguage(path: string) {
 
 function readLocationState() {
   const url = new URL(window.location.href)
+  const routeMatch = /^\/w\/([^/]+)\/p\/([^/]+)(?:\/files(?:\/(.*))?)?$/u.exec(url.pathname)
+  const inviteMatch = /^\/invite\/([^/]+)$/u.exec(url.pathname)
+  let filePath: string | null = null
+  if (routeMatch?.[3]) {
+    try {
+      filePath = routeMatch[3].split('/').map((segment) => decodeURIComponent(segment)).join('/')
+    } catch {
+      filePath = null
+    }
+  }
   return {
+    filePath,
+    inviteToken: inviteMatch?.[1] ? decodeURIComponent(inviteMatch[1]) : null,
     path: url.searchParams.get('path'),
+    projectPublicId: routeMatch?.[2] ?? null,
+    workspacePublicId: routeMatch?.[1] ?? null,
   }
 }
 
-function writeLocationState(path: string | null) {
+function writeLocationState(
+  path: string | null,
+  workspacePublicId: string | null,
+  project: ViewerProject | null,
+) {
   const url = new URL(window.location.href)
+
+  if (workspacePublicId && project) {
+    const mountPath = `/projects/${project.slug}`
+    const relativePath = path === mountPath
+      ? ''
+      : path?.startsWith(`${mountPath}/`)
+        ? path.slice(mountPath.length + 1)
+        : ''
+    const encodedPath = relativePath
+      ? `/${relativePath.split('/').map((segment) => encodeURIComponent(segment)).join('/')}`
+      : ''
+    url.pathname = `/w/${encodeURIComponent(workspacePublicId)}/p/${encodeURIComponent(project.publicId)}${encodedPath ? `/files${encodedPath}` : ''}`
+    url.searchParams.delete('path')
+    window.history.replaceState(null, '', url)
+    return
+  }
 
   if (path) {
     url.searchParams.set('path', path)
@@ -411,7 +471,7 @@ function EmptyInline(props: {
   )
 }
 
-type WorkspaceTab = 'access' | 'projects' | 'setup' | 'tokens' | 'users'
+type WorkspaceTab = 'access' | 'projects' | 'requests' | 'setup' | 'tokens' | 'users'
 
 function AccountPanel(props: {
   apiTokenCreateError: string | null
@@ -425,26 +485,27 @@ function AccountPanel(props: {
   apiTokens: ViewerApiToken[]
   apiTokensLoading: boolean
   canManageUsers: boolean
+  inviteEmail: string
+  inviteError: string | null
+  inviteRole: 'owner' | 'admin' | 'member'
+  inviteSubmitting: boolean
+  inviteUrl: string | null
   onArchiveProject: () => void
   onApiTokenExpirationDaysChange: (value: string) => void
   onApiTokenLabelChange: (value: string) => void
   onApiTokenScopeChange: (scope: ViewerApiTokenCreateScope, checked: boolean) => void
   onCreateApiToken: () => void
   onCreateProject: () => void
-  onCreateUser: () => void
+  onCreateInvitation: () => void
+  onInviteEmailChange: (value: string) => void
+  onInviteRoleChange: (value: 'owner' | 'admin' | 'member') => void
   onProjectEditDisplayNameChange: (value: string) => void
   onProjectDisplayNameChange: (value: string) => void
   onProjectSlugChange: (value: string) => void
+  onReviewWorkspaceRequest: (publicId: string, decision: 'approved' | 'rejected') => void
   onRevokeApiToken: (id: string) => void
   onSelectProject: (slug: string) => void
   onUpdateProject: () => void
-  onUserDisplayNameChange: (value: string) => void
-  onUserEmailChange: (value: string) => void
-  onUserIssuerChange: (value: string) => void
-  onUserLoginChange: (value: string) => void
-  onUserProviderChange: (value: string) => void
-  onUserRoleChange: (value: 'owner' | 'admin' | 'member') => void
-  onUserSubjectChange: (value: string) => void
   projectCreateError: string | null
   projectCreateStatus: string | null
   projectDisplayName: string
@@ -458,18 +519,12 @@ function AccountPanel(props: {
   projectUpdating: boolean
   projects: ViewerProject[]
   projectsLoading: boolean
+  requestMutationId: string | null
+  requests: ViewerWorkspaceAccessRequest[]
+  requestsError: string | null
+  requestsLoading: boolean
   selectedProject: string | null
   session: ViewerSessionUser
-  userCreateError: string | null
-  userCreateStatus: string | null
-  userDisplayName: string
-  userEmail: string
-  userIssuer: string
-  userLogin: string
-  userProvider: string
-  userRole: 'owner' | 'admin' | 'member'
-  userSubject: string
-  userSubmitting: boolean
   users: ViewerUser[]
   usersLoading: boolean
 }) {
@@ -506,6 +561,13 @@ function AccountPanel(props: {
           label: 'Users',
         }]
       : [{ id: 'access' as const, label: 'Access' }]),
+    ...(props.session.instanceOperator
+      ? [{
+          count: props.requestsLoading ? '...' : String(props.requests.filter((request) => request.status === 'pending').length),
+          id: 'requests' as const,
+          label: 'Requests',
+        }]
+      : []),
   ]
   const visibleActiveTab = workspaceTabs.some((tab) => tab.id === activeTab)
     ? activeTab
@@ -825,49 +887,27 @@ function AccountPanel(props: {
             <div className="create-panel">
               <div className="section-heading section-heading--compact">
                 <div>
-                  <p className="eyebrow">New user</p>
-                  <h3>Add web user</h3>
+                  <p className="eyebrow">Invitation</p>
+                  <h3>Invite by email</h3>
                 </div>
               </div>
               <div className="account-form">
                 <div className="form-grid">
                   <label className="field field--stacked">
-                    <span>Login</span>
+                    <span>Email</span>
                     <input
-                      maxLength={120}
-                      onChange={(event) => props.onUserLoginChange(event.target.value)}
-                      placeholder="bob"
-                      type="text"
-                      value={props.userLogin}
-                    />
-                  </label>
-                  <label className="field field--stacked">
-                    <span>Display name</span>
-                    <input
-                      maxLength={160}
-                      onChange={(event) => props.onUserDisplayNameChange(event.target.value)}
-                      placeholder="Bob Member"
-                      type="text"
-                      value={props.userDisplayName}
-                    />
-                  </label>
-                </div>
-                <div className="form-grid">
-                  <label className="field field--stacked">
-                    <span>Provider</span>
-                    <input
-                      maxLength={80}
-                      onChange={(event) => props.onUserProviderChange(event.target.value)}
-                      placeholder="google"
-                      type="text"
-                      value={props.userProvider}
+                      maxLength={240}
+                      onChange={(event) => props.onInviteEmailChange(event.target.value)}
+                      placeholder="bob@example.com"
+                      type="email"
+                      value={props.inviteEmail}
                     />
                   </label>
                   <label className="field field--stacked">
                     <span>Role</span>
                     <select
-                      onChange={(event) => props.onUserRoleChange(event.target.value as 'owner' | 'admin' | 'member')}
-                      value={props.userRole}
+                      onChange={(event) => props.onInviteRoleChange(event.target.value as 'owner' | 'admin' | 'member')}
+                      value={props.inviteRole}
                     >
                       <option value="member">member</option>
                       <option value="admin">admin</option>
@@ -875,47 +915,18 @@ function AccountPanel(props: {
                     </select>
                   </label>
                 </div>
-                <label className="field field--stacked">
-                  <span>Issuer</span>
-                  <input
-                    maxLength={240}
-                    onChange={(event) => props.onUserIssuerChange(event.target.value)}
-                    placeholder="https://accounts.google.com"
-                    type="text"
-                    value={props.userIssuer}
-                  />
-                </label>
-                <label className="field field--stacked">
-                  <span>Subject</span>
-                  <input
-                    maxLength={240}
-                    onChange={(event) => props.onUserSubjectChange(event.target.value)}
-                    placeholder="Google subject"
-                    type="text"
-                    value={props.userSubject}
-                  />
-                </label>
-                <label className="field field--stacked">
-                  <span>Email</span>
-                  <input
-                    maxLength={240}
-                    onChange={(event) => props.onUserEmailChange(event.target.value)}
-                    placeholder="bob@example.com"
-                    type="email"
-                    value={props.userEmail}
-                  />
-                </label>
                 <div className="account-form__footer">
                   <button
                     className="action-button"
-                    disabled={props.userSubmitting}
-                    onClick={props.onCreateUser}
+                    disabled={props.inviteSubmitting || !props.inviteEmail.trim()}
+                    onClick={props.onCreateInvitation}
                     type="button"
                   >
-                    {props.userSubmitting ? 'Adding user...' : 'Add user'}
+                    {props.inviteSubmitting ? 'Creating invite...' : 'Create invite link'}
                   </button>
-                  <StatusMessages error={props.userCreateError} success={props.userCreateStatus} />
+                  <StatusMessages error={props.inviteError} success={null} />
                 </div>
+                {props.inviteUrl ? <CopyBlock label="Invite link" value={props.inviteUrl} /> : null}
               </div>
             </div>
           </div>
@@ -958,6 +969,64 @@ function AccountPanel(props: {
             <span className="meta-pill">{roleLabel}</span>
           </div>
           <CopyBlock label="Directory project" value={projectConfig} />
+        </section>
+      ) : null}
+
+      {visibleActiveTab === 'requests' && props.session.instanceOperator ? (
+        <section
+          aria-labelledby="workspace-tab-requests"
+          className="docs-section"
+          id="workspace-panel-requests"
+          role="tabpanel"
+        >
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Instance operator</p>
+              <h3>Workspace requests</h3>
+            </div>
+          </div>
+          {props.requestsError ? <p className="status-message status-message--error">{props.requestsError}</p> : null}
+          {props.requestsLoading ? (
+            <EmptyInline>Loading requests...</EmptyInline>
+          ) : props.requests.length === 0 ? (
+            <EmptyInline>No workspace requests yet.</EmptyInline>
+          ) : (
+            <div className="request-list">
+              {props.requests.map((request) => (
+                <article className="request-item" key={request.publicId}>
+                  <div>
+                    <p className="eyebrow">{request.status}</p>
+                    <h4>{request.workspaceName}</h4>
+                    <p>{request.requester.displayName} · {request.requester.email ?? request.requester.login}</p>
+                    {request.intendedUse ? <p>{request.intendedUse}</p> : null}
+                    <code>{request.publicId}</code>
+                  </div>
+                  {request.status === 'pending' ? (
+                    <div className="request-item__actions">
+                      <button
+                        className="hero-button"
+                        disabled={props.requestMutationId === request.publicId}
+                        onClick={() => props.onReviewWorkspaceRequest(request.publicId, 'approved')}
+                        type="button"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        className="meta-link meta-button"
+                        disabled={props.requestMutationId === request.publicId}
+                        onClick={() => props.onReviewWorkspaceRequest(request.publicId, 'rejected')}
+                        type="button"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  ) : request.workspace ? (
+                    <span className="meta-pill">{request.workspace.publicId}</span>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       ) : null}
     </section>
@@ -1131,12 +1200,175 @@ function LoggedOutLanding(props: {
   )
 }
 
+function OnboardingPanel(props: {
+  error: string | null
+  intendedUse: string
+  onIntendedUseChange: (value: string) => void
+  onSubmit: () => void
+  onWorkspaceNameChange: (value: string) => void
+  session: ViewerSessionUser
+  submitting: boolean
+  workspaceName: string
+}) {
+  const request = props.session.accessRequest
+
+  return (
+    <section className="onboarding-shell">
+      <div className="onboarding-card">
+        <p className="eyebrow">docs-ssh onboarding</p>
+        {request?.status === 'pending' ? (
+          <>
+            <h2>Your workspace request is pending</h2>
+            <p>
+              The instance operator will review <strong>{request.workspaceName}</strong>. You can return to this page later;
+              the status stays attached to your account.
+            </p>
+            {request.intendedUse ? <p className="onboarding-card__note">{request.intendedUse}</p> : null}
+            <span className="meta-pill">Request {request.publicId}</span>
+          </>
+        ) : request?.status === 'approved' ? (
+          <>
+            <h2>Your workspace is ready</h2>
+            <p>Reload once to open the workspace and finish SSH setup.</p>
+            <button className="hero-button" onClick={() => window.location.reload()} type="button">Open workspace</button>
+          </>
+        ) : (
+          <>
+            <h2>{request?.status === 'rejected' ? 'Request another workspace review' : 'Request a workspace'}</h2>
+            <p>
+              Sign-in created your docs-ssh account. Workspace creation needs operator approval during the hosted beta.
+            </p>
+            {request?.status === 'rejected' ? (
+              <p className="status-message status-message--error">
+                {request.reviewNote || 'The previous request was not approved.'}
+              </p>
+            ) : null}
+            <div className="account-form onboarding-form">
+              <label className="field field--stacked">
+                <span>Workspace name</span>
+                <input
+                  maxLength={160}
+                  onChange={(event) => props.onWorkspaceNameChange(event.target.value)}
+                  placeholder="My agent workspace"
+                  type="text"
+                  value={props.workspaceName}
+                />
+              </label>
+              <label className="field field--stacked">
+                <span>What will you use it for?</span>
+                <textarea
+                  maxLength={4000}
+                  onChange={(event) => props.onIntendedUseChange(event.target.value)}
+                  placeholder="Implementation plans, investigation notes, and agent handoffs..."
+                  rows={5}
+                  value={props.intendedUse}
+                />
+              </label>
+              {props.error ? <p className="status-message status-message--error">{props.error}</p> : null}
+              <button
+                className="hero-button"
+                disabled={props.submitting || !props.workspaceName.trim()}
+                onClick={props.onSubmit}
+                type="button"
+              >
+                {props.submitting ? 'Sending...' : 'Send request'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function InvitationPanel(props: {
+  session: ViewerSessionUser | null
+  token: string
+}) {
+  const [invitation, setInvitation] = useState<ViewerTenantInvitation | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [accepting, setAccepting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getTenantInvitation(props.token)
+      .then((payload) => {
+        if (cancelled) return
+        setInvitation(payload.invitation)
+        setLoading(false)
+      })
+      .catch((nextError) => {
+        if (cancelled) return
+        setError(nextError instanceof Error ? nextError.message : String(nextError))
+        setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [props.token])
+
+  const accept = async () => {
+    setAccepting(true)
+    setError(null)
+    try {
+      const payload = await acceptTenantInvitation(props.token)
+      setInvitation(payload.invitation)
+      window.location.assign(payload.workspace
+        ? `/w/${encodeURIComponent(payload.workspace.publicId)}/p/${encodeURIComponent(payload.workspace.projectPublicId)}`
+        : '/')
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : String(nextError))
+      setAccepting(false)
+    }
+  }
+
+  return (
+    <section className="onboarding-shell">
+      <div className="onboarding-card">
+        <p className="eyebrow">Workspace invitation</p>
+        {loading ? (
+          <p>Loading invitation...</p>
+        ) : invitation ? (
+          <>
+            <h2>Join {invitation.workspace.displayName}</h2>
+            <p>
+              This invite grants <strong>{invitation.role}</strong> access to {invitation.email}.
+            </p>
+            <span className="meta-pill">{invitation.status}</span>
+            {error ? <p className="status-message status-message--error">{error}</p> : null}
+            {!props.session ? (
+              <a className="hero-button" href={`/auth/login?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}>
+                Continue with Google
+              </a>
+            ) : invitation.status === 'pending' ? (
+              <button className="hero-button" disabled={accepting} onClick={accept} type="button">
+                {accepting ? 'Joining...' : 'Accept invitation'}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <p className="status-message status-message--error">{error || 'Invitation was not found.'}</p>
+        )}
+      </div>
+    </section>
+  )
+}
+
 export function App() {
   const initialLocation = readLocationState()
   const treeRef = useRef<TreeApi<TreeNodeData> | null>(null)
   const [oidc, setOidc] = useState<ViewerOidcState>({ enabled: false })
   const [session, setSession] = useState<ViewerSessionUser | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
+  const [workspaceName, setWorkspaceName] = useState('')
+  const [workspaceIntendedUse, setWorkspaceIntendedUse] = useState('')
+  const [workspaceRequestError, setWorkspaceRequestError] = useState<string | null>(null)
+  const [workspaceRequestSubmitting, setWorkspaceRequestSubmitting] = useState(false)
+  const [workspaceRequests, setWorkspaceRequests] = useState<ViewerWorkspaceAccessRequest[]>([])
+  const [workspaceRequestsLoading, setWorkspaceRequestsLoading] = useState(false)
+  const [workspaceRequestsError, setWorkspaceRequestsError] = useState<string | null>(null)
+  const [workspaceRequestMutationId, setWorkspaceRequestMutationId] = useState<string | null>(null)
   const [mounts, setMounts] = useState<RootSummary[]>([])
   const [activePath, setActivePath] = useState<string | null>(initialLocation.path)
   const [tree, setTree] = useState<TreeNodeData[]>([])
@@ -1148,7 +1380,7 @@ export function App() {
   const [projects, setProjects] = useState<ViewerProject[]>([])
   const [projectsLoading, setProjectsLoading] = useState(false)
   const [selectedProject, setSelectedProject] = useState<string | null>(
-    window.localStorage.getItem('docs-ssh:selected-project'),
+    initialLocation.projectPublicId ? null : window.localStorage.getItem('docs-ssh:selected-project'),
   )
   const [projectSlug, setProjectSlug] = useState('')
   const [projectDisplayName, setProjectDisplayName] = useState('')
@@ -1163,16 +1395,11 @@ export function App() {
   const [projectUpdating, setProjectUpdating] = useState(false)
   const [users, setUsers] = useState<ViewerUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
-  const [userLogin, setUserLogin] = useState('')
-  const [userDisplayName, setUserDisplayName] = useState('')
-  const [userProvider, setUserProvider] = useState('')
-  const [userIssuer, setUserIssuer] = useState('')
-  const [userSubject, setUserSubject] = useState('')
-  const [userEmail, setUserEmail] = useState('')
-  const [userRole, setUserRole] = useState<'owner' | 'admin' | 'member'>('member')
-  const [userCreateError, setUserCreateError] = useState<string | null>(null)
-  const [userCreateStatus, setUserCreateStatus] = useState<string | null>(null)
-  const [userSubmitting, setUserSubmitting] = useState(false)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<'owner' | 'admin' | 'member'>('member')
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [inviteSubmitting, setInviteSubmitting] = useState(false)
   const [apiTokens, setApiTokens] = useState<ViewerApiToken[]>([])
   const [apiTokensLoading, setApiTokensLoading] = useState(false)
   const [apiTokenLabel, setApiTokenLabel] = useState('')
@@ -1189,9 +1416,14 @@ export function App() {
   const activeMount = findMountForPath(mounts, activePath)
   const treeHeight = Math.max(1, explorerViewport.size.height)
   const canManageUsers = session?.role === 'owner' || session?.role === 'admin'
+  const hasWorkspace = Boolean(session?.workspaces.length)
+  const activeWorkspacePublicId = initialLocation.workspacePublicId ?? session?.tenantPublicId ?? null
+  const currentProject = selectedProject
+    ? projects.find((project) => project.slug === selectedProject) ?? null
+    : projects[0] ?? null
   const showSessionGate = sessionLoading && !session
   const showLoggedOutLanding = !session && !sessionLoading
-  const showAccountPanel = Boolean(session) && !activePath
+  const showAccountPanel = Boolean(session) && hasWorkspace && !activePath
 
   useEffect(() => {
     let cancelled = false
@@ -1214,16 +1446,19 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (oidc.provider && !userProvider) setUserProvider(oidc.provider)
-    if (oidc.issuer && !userIssuer) setUserIssuer(oidc.issuer)
-  }, [oidc.issuer, oidc.provider, userIssuer, userProvider])
+    if (!hasWorkspace || !currentProject || !activeWorkspacePublicId) {
+      setMounts([])
+      setTree([])
+      setTreeError(null)
+      setTreeLoading(hasWorkspace)
+      return
+    }
 
-  useEffect(() => {
     let cancelled = false
     setTreeLoading(true)
     setTreeError(null)
 
-    getTree(selectedProject ?? undefined)
+    getTree({ publicId: currentProject.publicId, workspacePublicId: activeWorkspacePublicId })
       .then((payload) => {
         if (cancelled) return
 
@@ -1241,10 +1476,10 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [selectedProject])
+  }, [activeWorkspacePublicId, currentProject, hasWorkspace])
 
   useEffect(() => {
-    if (!session) {
+    if (!session || !hasWorkspace) {
       setProjects([])
       setProjectsLoading(false)
       return
@@ -1253,11 +1488,22 @@ export function App() {
     let cancelled = false
     setProjectsLoading(true)
 
-    getProjects()
+    getProjects(activeWorkspacePublicId ?? undefined)
       .then((payload) => {
         if (cancelled) return
 
         setProjects(payload.projects)
+        const routeProject = initialLocation.projectPublicId
+          ? payload.projects.find((project) => project.publicId === initialLocation.projectPublicId)
+          : null
+        if (routeProject) {
+          setSelectedProjectValue(routeProject.slug)
+          if (initialLocation.filePath) {
+            startTransition(() => setActivePath(`/projects/${routeProject.slug}/${initialLocation.filePath}`))
+          }
+          setProjectsLoading(false)
+          return
+        }
         const selectedIsAvailable = selectedProject
           ? payload.projects.some((project) => project.slug === selectedProject)
           : false
@@ -1274,7 +1520,39 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [session, selectedProject])
+  }, [activeWorkspacePublicId, hasWorkspace, session, selectedProject])
+
+  useEffect(() => {
+    if (!session || workspaceName || session.accessRequest) return
+    setWorkspaceName(`${session.userDisplayName}'s workspace`)
+  }, [session, workspaceName])
+
+  useEffect(() => {
+    if (!session?.instanceOperator) {
+      setWorkspaceRequests([])
+      setWorkspaceRequestsLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setWorkspaceRequestsLoading(true)
+    setWorkspaceRequestsError(null)
+    getWorkspaceAccessRequests()
+      .then((payload) => {
+        if (cancelled) return
+        setWorkspaceRequests(payload.requests)
+        setWorkspaceRequestsLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setWorkspaceRequestsError(error instanceof Error ? error.message : String(error))
+        setWorkspaceRequestsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [session?.instanceOperator])
 
   useEffect(() => {
     const project = selectedProject
@@ -1352,8 +1630,9 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    writeLocationState(activePath)
-  }, [activePath])
+    if (initialLocation.inviteToken) return
+    writeLocationState(activePath, activeWorkspacePublicId, currentProject)
+  }, [activePath, activeWorkspacePublicId, currentProject, initialLocation.inviteToken])
 
   useEffect(() => {
     if (!tree.length) return
@@ -1373,7 +1652,12 @@ export function App() {
     let cancelled = false
     setFileLoading(true)
 
-    getFile(activePath)
+    getFile(
+      activePath,
+      currentProject && activeWorkspacePublicId
+        ? { publicId: currentProject.publicId, workspacePublicId: activeWorkspacePublicId }
+        : undefined,
+    )
       .then((response) => {
         if (cancelled) return
         setFileLoading(false)
@@ -1397,7 +1681,7 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [activeMount, activePath])
+  }, [activeMount, activePath, activeWorkspacePublicId, currentProject])
 
   useEffect(() => {
     if (!activePath || !treeRef.current) return
@@ -1530,50 +1814,22 @@ export function App() {
     }
   }
 
-  const submitUser = async () => {
-    const login = userLogin.trim()
-    const displayName = userDisplayName.trim()
-    const provider = userProvider.trim()
-    const issuer = userIssuer.trim()
-    const subject = userSubject.trim()
-    const email = userEmail.trim()
-    if (!login) {
-      setUserCreateError('Enter a user login first.')
-      setUserCreateStatus(null)
-      return
-    }
-    if (!issuer || !subject) {
-      setUserCreateError('Enter the identity issuer and subject from the access request.')
-      setUserCreateStatus(null)
-      return
-    }
-
-    setUserSubmitting(true)
-    setUserCreateError(null)
-    setUserCreateStatus(null)
-
+  const submitInvitation = async () => {
+    if (!inviteEmail.trim()) return
+    setInviteSubmitting(true)
+    setInviteError(null)
+    setInviteUrl(null)
     try {
-      const payload = await createUser({
-        displayName: displayName || undefined,
-        email: email || undefined,
-        issuer,
-        login,
-        provider: provider || undefined,
-        role: userRole,
-        subject,
+      const payload = await createTenantInvitation({
+        email: inviteEmail.trim(),
+        role: inviteRole,
       })
-
-      setUsers(payload.users)
-      setUserLogin('')
-      setUserDisplayName('')
-      setUserSubject('')
-      setUserEmail('')
-      setUserRole('member')
-      setUserCreateStatus(`Added ${payload.user.login}`)
+      setInviteUrl(payload.inviteUrl ?? null)
+      setInviteEmail('')
     } catch (error) {
-      setUserCreateError(error instanceof Error ? error.message : String(error))
+      setInviteError(error instanceof Error ? error.message : String(error))
     } finally {
-      setUserSubmitting(false)
+      setInviteSubmitting(false)
     }
   }
 
@@ -1650,9 +1906,41 @@ export function App() {
     }
   }
 
-  const currentProject = selectedProject
-    ? projects.find((project) => project.slug === selectedProject) ?? null
-    : projects[0] ?? null
+  const submitWorkspaceRequest = async () => {
+    if (!session || !workspaceName.trim()) return
+    setWorkspaceRequestSubmitting(true)
+    setWorkspaceRequestError(null)
+    try {
+      const payload = await createWorkspaceAccessRequest({
+        intendedUse: workspaceIntendedUse.trim() || undefined,
+        workspaceName: workspaceName.trim(),
+      })
+      setSession({
+        ...session,
+        accessRequest: payload.accessRequest,
+      })
+    } catch (error) {
+      setWorkspaceRequestError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorkspaceRequestSubmitting(false)
+    }
+  }
+
+  const reviewWorkspaceRequest = async (publicId: string, decision: 'approved' | 'rejected') => {
+    setWorkspaceRequestMutationId(publicId)
+    setWorkspaceRequestsError(null)
+    try {
+      const payload = await reviewWorkspaceAccessRequest({ decision, publicId })
+      setWorkspaceRequests((current) => current.map((request) => (
+        request.publicId === publicId ? payload.accessRequest : request
+      )))
+    } catch (error) {
+      setWorkspaceRequestsError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorkspaceRequestMutationId(null)
+    }
+  }
+
   const firstFilePath = findFirstFile(tree)
   const workspacePanel = session ? (
     <AccountPanel
@@ -1667,6 +1955,11 @@ export function App() {
       apiTokens={apiTokens}
       apiTokensLoading={apiTokensLoading}
       canManageUsers={canManageUsers}
+      inviteEmail={inviteEmail}
+      inviteError={inviteError}
+      inviteRole={inviteRole}
+      inviteSubmitting={inviteSubmitting}
+      inviteUrl={inviteUrl}
       onArchiveProject={submitProjectArchive}
       onApiTokenExpirationDaysChange={(value) => {
         setApiTokenExpirationDays(value)
@@ -1676,20 +1969,22 @@ export function App() {
       onApiTokenScopeChange={setApiTokenScope}
       onCreateApiToken={submitApiToken}
       onCreateProject={submitProject}
-      onCreateUser={submitUser}
+      onCreateInvitation={submitInvitation}
+      onInviteEmailChange={(value) => {
+        setInviteEmail(value)
+        setInviteUrl(null)
+      }}
+      onInviteRoleChange={(value) => {
+        setInviteRole(value)
+        setInviteUrl(null)
+      }}
       onProjectEditDisplayNameChange={setProjectEditDisplayName}
       onProjectDisplayNameChange={setProjectDisplayName}
       onProjectSlugChange={setProjectSlug}
+      onReviewWorkspaceRequest={reviewWorkspaceRequest}
       onRevokeApiToken={revokeSelectedApiToken}
       onSelectProject={selectProject}
       onUpdateProject={submitProjectUpdate}
-      onUserDisplayNameChange={setUserDisplayName}
-      onUserEmailChange={setUserEmail}
-      onUserIssuerChange={setUserIssuer}
-      onUserLoginChange={setUserLogin}
-      onUserProviderChange={setUserProvider}
-      onUserRoleChange={setUserRole}
-      onUserSubjectChange={setUserSubject}
       projectCreateError={projectCreateError}
       projectCreateStatus={projectCreateStatus}
       projectDisplayName={projectDisplayName}
@@ -1703,18 +1998,12 @@ export function App() {
       projectUpdating={projectUpdating}
       projects={projects}
       projectsLoading={projectsLoading}
+      requestMutationId={workspaceRequestMutationId}
+      requests={workspaceRequests}
+      requestsError={workspaceRequestsError}
+      requestsLoading={workspaceRequestsLoading}
       selectedProject={selectedProject}
       session={session}
-      userCreateError={userCreateError}
-      userCreateStatus={userCreateStatus}
-      userDisplayName={userDisplayName}
-      userEmail={userEmail}
-      userIssuer={userIssuer}
-      userLogin={userLogin}
-      userProvider={userProvider}
-      userRole={userRole}
-      userSubject={userSubject}
-      userSubmitting={userSubmitting}
       users={users}
       usersLoading={usersLoading}
     />
@@ -1738,7 +2027,7 @@ export function App() {
         </div>
         {session ? (
           <div className="topbar__actions">
-            <label className="project-switcher">
+            {hasWorkspace ? <label className="project-switcher">
               <span>Project</span>
               <select
                 disabled={projectsLoading || projects.length === 0}
@@ -1756,24 +2045,24 @@ export function App() {
                   </option>
                 ))}
               </select>
-            </label>
+            </label> : null}
             <div className="auth-panel">
               <div className="auth-panel__body">
-                <button
+                {hasWorkspace ? <button
                   className={`meta-link meta-button ${showAccountPanel ? 'selected' : ''}`}
                   onClick={() => startTransition(() => setActivePath(null))}
                   type="button"
                 >
                   Workspace
-                </button>
-                <button
+                </button> : null}
+                {hasWorkspace ? <button
                   className={`meta-link meta-button ${activePath ? 'selected' : ''}`}
                   disabled={!activePath && !firstFilePath}
                   onClick={() => startTransition(() => setActivePath(activePath ?? firstFilePath))}
                   type="button"
                 >
                   Files
-                </button>
+                </button> : null}
                 <span className="meta-pill">
                   {session.userDisplayName} ({session.login})
                 </span>
@@ -1796,9 +2085,22 @@ export function App() {
             <div className="preview-skeleton preview-skeleton--wide" />
             <div className="preview-skeleton" />
           </section>
+        ) : initialLocation.inviteToken ? (
+          <InvitationPanel session={session} token={initialLocation.inviteToken} />
         ) : showLoggedOutLanding ? (
           <LoggedOutLanding
             oidc={oidc}
+          />
+        ) : session && !hasWorkspace ? (
+          <OnboardingPanel
+            error={workspaceRequestError}
+            intendedUse={workspaceIntendedUse}
+            onIntendedUseChange={setWorkspaceIntendedUse}
+            onSubmit={submitWorkspaceRequest}
+            onWorkspaceNameChange={setWorkspaceName}
+            session={session}
+            submitting={workspaceRequestSubmitting}
+            workspaceName={workspaceName}
           />
         ) : (
           <Allotment className="workspace-split" defaultSizes={[28, 72]}>

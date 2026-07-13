@@ -4,7 +4,20 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { basename, extname, posix, resolve, sep } from 'node:path'
-import { createAuthStore, type AuthApiToken, type AuthApiTokenScope, type AuthApiTokenSession, type AuthMembershipRole, type AuthPrincipalSession, type AuthProject, type AuthSshKey, type AuthSshSession, type AuthStore, type AuthTenantUser } from '../auth/store.js'
+import {
+  createAuthStore,
+  type AuthApiToken,
+  type AuthApiTokenScope,
+  type AuthApiTokenSession,
+  type AuthMembershipRole,
+  type AuthPrincipalSession,
+  type AuthProject,
+  type AuthSshKey,
+  type AuthSshSession,
+  type AuthStore,
+  type AuthTenantUser,
+  type AuthWorkspaceAccessRequest,
+} from '../auth/store.js'
 import { OidcClient, createPendingOidcLogin, getViewerOrigin, type OidcAuthConfig } from '../auth/oidc.js'
 import {
   clearPendingOidcCookie,
@@ -105,6 +118,7 @@ interface ViewerServerOptions {
   docsName?: string
   host?: string
   oidc?: OidcAuthConfig
+  onboardingMode?: 'approval' | 'closed'
   port?: number
   publicOrigin?: string
   registryPath?: string
@@ -259,7 +273,49 @@ function toViewerProjectPayload(project: AuthProject) {
     archivedAt: project.archivedAt,
     createdAt: project.createdAt,
     displayName: project.displayName,
+    publicId: project.publicId,
     slug: project.slug,
+  }
+}
+
+function toViewerWorkspaceAccessRequestPayload(request: AuthWorkspaceAccessRequest) {
+  return {
+    createdAt: request.createdAt,
+    intendedUse: request.intendedUse,
+    publicId: request.publicId,
+    requester: {
+      displayName: request.requesterDisplayName,
+      email: request.requesterEmail,
+      login: request.requesterLogin,
+    },
+    reviewNote: request.reviewNote,
+    reviewedAt: request.reviewedAt,
+    status: request.status,
+    updatedAt: request.updatedAt,
+    workspace: request.tenant
+      ? {
+          displayName: request.tenant.displayName,
+          publicId: request.tenant.publicId,
+        }
+      : null,
+    workspaceName: request.workspaceName,
+  }
+}
+
+function toViewerTenantInvitationPayload(invitation: ReturnType<AuthStore['getTenantInvitation']>) {
+  if (!invitation) return null
+  return {
+    acceptedAt: invitation.acceptedAt,
+    createdAt: invitation.createdAt,
+    email: invitation.email,
+    expiresAt: invitation.expiresAt,
+    publicId: invitation.publicId,
+    role: invitation.role,
+    status: invitation.status,
+    workspace: {
+      displayName: invitation.tenant.displayName,
+      publicId: invitation.tenant.publicId,
+    },
   }
 }
 
@@ -369,6 +425,16 @@ function getRequestedProjectSlug(url: URL): string | undefined {
   const normalizedPath = normalizeVirtualPath(requestedPath)
   const [, root, slug] = normalizedPath.split('/')
   return root === 'projects' && slug ? slug : undefined
+}
+
+function getRequestedPublicProject(url: URL): { projectPublicId: string; tenantPublicId: string } | null {
+  const projectPublicId = url.searchParams.get('projectId')?.trim()
+  const tenantPublicId = url.searchParams.get('workspaceId')?.trim()
+  if (!projectPublicId && !tenantPublicId) return null
+  if (!projectPublicId || !tenantPublicId) {
+    throw new Error('workspaceId and projectId must be provided together.')
+  }
+  return { projectPublicId, tenantPublicId }
 }
 
 function isProtectedViewerDataRoute(pathname: string): boolean {
@@ -925,6 +991,10 @@ export function createViewerServer(opts: ViewerServerOptions) {
       const isApiTokenRoute = url.pathname === '/api/tokens'
       const isProjectRoute = url.pathname === '/api/projects'
       const isUserRoute = url.pathname === '/api/users'
+      const isOnboardingRequestRoute = url.pathname === '/api/onboarding/request'
+      const isOperatorWorkspaceRequestsRoute = url.pathname === '/api/operator/workspace-requests'
+      const isInvitationRoute = url.pathname === '/api/invitations'
+      const isInvitationAcceptRoute = url.pathname === '/api/invitations/accept'
       const isCliLoginRequestRoute = url.pathname === '/api/cli-login/requests'
       const isCliLoginExchangeRoute = url.pathname === '/api/cli-login/exchange'
       const cliLoginViewMatch = /^\/cli-login\/([^/]+)$/u.exec(url.pathname)
@@ -941,6 +1011,10 @@ export function createViewerServer(opts: ViewerServerOptions) {
         && !(isProjectRoute && method === 'PATCH')
         && !(isProjectRoute && method === 'DELETE')
         && !(isUserRoute && method === 'POST')
+        && !(isOnboardingRequestRoute && method === 'POST')
+        && !(isOperatorWorkspaceRequestsRoute && method === 'PATCH')
+        && !(isInvitationRoute && method === 'POST')
+        && !(isInvitationAcceptRoute && method === 'POST')
         && !(isCliLoginRequestRoute && method === 'POST')
         && !(isCliLoginExchangeRoute && method === 'POST')
         && !(cliLoginApproveMatch && method === 'POST')
@@ -954,6 +1028,9 @@ export function createViewerServer(opts: ViewerServerOptions) {
         const principalSession = session && authStore
           ? authStore.findUserProjectSession(session.login)
           : null
+        const onboarding = session && authStore
+          ? authStore.getUserOnboardingState(session.login)
+          : null
         sendJson(
           response,
           200,
@@ -962,6 +1039,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
               ? {
                   enabled: true,
                   issuer: opts.oidc.issuer,
+                  onboardingMode: opts.onboardingMode ?? 'closed',
                   provider: opts.oidc.provider,
                   signupAvailable: Boolean(authStore && !authStore.hasUsers()),
                 }
@@ -975,16 +1053,258 @@ export function createViewerServer(opts: ViewerServerOptions) {
                   issuer: session.issuer,
                   login: session.login,
                   provider: session.provider,
+                  accessRequest: onboarding?.accessRequest
+                    ? toViewerWorkspaceAccessRequestPayload(onboarding.accessRequest)
+                    : null,
+                  instanceOperator: onboarding?.instanceOperator ?? false,
+                  projectPublicId: principalSession?.project.publicId,
                   role: principalSession?.membership.role,
                   subject: session.subject,
                   tenant: principalSession?.tenant.slug,
+                  tenantPublicId: principalSession?.tenant.publicId,
                   userDisplayName: session.userDisplayName,
                   userId: session.userId,
+                  workspaces: onboarding?.memberships.map((membership) => ({
+                    displayName: membership.tenant.displayName,
+                    publicId: membership.tenant.publicId,
+                    role: membership.role,
+                  })) ?? [],
                 }
               : null,
           },
           headOnly,
         )
+        return
+      }
+
+      if (isOnboardingRequestRoute) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in to request a workspace.' }, headOnly)
+          return
+        }
+        if ((opts.onboardingMode ?? 'closed') === 'closed') {
+          sendJson(response, 403, { error: 'New workspace requests are currently closed.' }, headOnly)
+          return
+        }
+        if (method !== 'POST') {
+          sendMethodNotAllowed(response)
+          return
+        }
+
+        let payload
+        try {
+          payload = await readJsonBody(request) as {
+            intendedUse?: unknown
+            workspaceName?: unknown
+          }
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+          return
+        }
+        if (typeof payload.workspaceName !== 'string' || payload.workspaceName.trim().length === 0) {
+          sendJson(response, 400, { error: 'Enter a workspace name.' })
+          return
+        }
+        if (payload.workspaceName.trim().length > 160) {
+          sendJson(response, 400, { error: 'Workspace name must be 160 characters or fewer.' })
+          return
+        }
+        if (payload.intendedUse !== undefined && payload.intendedUse !== null && typeof payload.intendedUse !== 'string') {
+          sendJson(response, 400, { error: 'Intended use must be a string.' })
+          return
+        }
+        if (typeof payload.intendedUse === 'string' && payload.intendedUse.trim().length > 4_000) {
+          sendJson(response, 400, { error: 'Intended use must be 4,000 characters or fewer.' })
+          return
+        }
+
+        try {
+          const accessRequest = authStore.createWorkspaceAccessRequest({
+            intendedUse: typeof payload.intendedUse === 'string' ? payload.intendedUse : undefined,
+            userLogin: session.login,
+            workspaceName: payload.workspaceName,
+          })
+          sendJson(response, 200, {
+            accessRequest: toViewerWorkspaceAccessRequestPayload(accessRequest),
+          })
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
+
+      if (isInvitationAcceptRoute) {
+        if (!authStore) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+        const token = url.searchParams.get('token')?.trim()
+        if (!token) {
+          sendJson(response, 400, { error: 'Missing invitation token.' }, headOnly)
+          return
+        }
+        const invitation = authStore.getTenantInvitation(token)
+        if (!invitation) {
+          sendJson(response, 404, { error: 'Invitation was not found.' }, headOnly)
+          return
+        }
+        if (method === 'GET' || method === 'HEAD') {
+          sendJson(response, 200, { invitation: toViewerTenantInvitationPayload(invitation) }, headOnly)
+          return
+        }
+
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in to accept this invitation.' })
+          return
+        }
+        try {
+          const principalSession = authStore.acceptTenantInvitation({ token, userLogin: session.login })
+          await ensureViewerProjectWorkspace(opts, authStore, session.login, principalSession.project.slug)
+          sendJson(response, 200, {
+            invitation: toViewerTenantInvitationPayload(authStore.getTenantInvitation(token)),
+            workspace: {
+              displayName: principalSession.tenant.displayName,
+              projectPublicId: principalSession.project.publicId,
+              publicId: principalSession.tenant.publicId,
+            },
+          })
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
+
+      if (isInvitationRoute) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in to invite workspace members.' }, headOnly)
+          return
+        }
+        if (method !== 'POST') {
+          sendMethodNotAllowed(response)
+          return
+        }
+        let payload
+        try {
+          payload = await readJsonBody(request) as { email?: unknown; role?: unknown }
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+          return
+        }
+        if (typeof payload.email !== 'string' || !payload.email.trim()) {
+          sendJson(response, 400, { error: 'Enter an email address.' })
+          return
+        }
+        let role: AuthMembershipRole
+        try {
+          role = parseMembershipRole(payload.role)
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+          return
+        }
+        try {
+          const invitation = authStore.createTenantInvitation({
+            email: payload.email,
+            inviterLogin: session.login,
+            role,
+          })
+          const origin = getViewerRequestOrigin(request, opts.publicOrigin)
+          sendJson(response, 200, {
+            invitation: toViewerTenantInvitationPayload(invitation),
+            inviteUrl: `${origin}/invite/${encodeURIComponent(invitation.token)}`,
+          })
+        } catch (error) {
+          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
+
+      if (isOperatorWorkspaceRequestsRoute) {
+        if (!authStore || !sessionSecret) {
+          sendJson(response, 501, { error: 'Viewer auth is not configured.' }, headOnly)
+          return
+        }
+        const session = getActiveSession(request)
+        if (!session) {
+          sendJson(response, 401, { error: 'Sign in as an instance operator.' }, headOnly)
+          return
+        }
+
+        if (method === 'GET' || method === 'HEAD') {
+          const requestedStatus = url.searchParams.get('status')?.trim()
+          if (requestedStatus && requestedStatus !== 'pending' && requestedStatus !== 'approved' && requestedStatus !== 'rejected') {
+            sendJson(response, 400, { error: 'Unsupported workspace request status.' }, headOnly)
+            return
+          }
+          try {
+            const requests = authStore.listWorkspaceAccessRequests({
+              reviewerLogin: session.login,
+              status: requestedStatus as 'approved' | 'pending' | 'rejected' | undefined,
+            })
+            sendJson(response, 200, {
+              requests: requests.map(toViewerWorkspaceAccessRequestPayload),
+            }, headOnly)
+          } catch (error) {
+            sendJson(response, 403, { error: error instanceof Error ? error.message : String(error) }, headOnly)
+          }
+          return
+        }
+
+        if (method === 'PATCH') {
+          let payload
+          try {
+            payload = await readJsonBody(request) as {
+              decision?: unknown
+              publicId?: unknown
+              reviewNote?: unknown
+            }
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+            return
+          }
+          if (payload.decision !== 'approved' && payload.decision !== 'rejected') {
+            sendJson(response, 400, { error: 'Decision must be approved or rejected.' })
+            return
+          }
+          if (typeof payload.publicId !== 'string' || payload.publicId.trim().length === 0) {
+            sendJson(response, 400, { error: 'Missing workspace request id.' })
+            return
+          }
+          if (payload.reviewNote !== undefined && payload.reviewNote !== null && typeof payload.reviewNote !== 'string') {
+            sendJson(response, 400, { error: 'Review note must be a string.' })
+            return
+          }
+
+          try {
+            const accessRequest = authStore.reviewWorkspaceAccessRequest({
+              decision: payload.decision,
+              publicId: payload.publicId,
+              reviewerLogin: session.login,
+              reviewNote: typeof payload.reviewNote === 'string' ? payload.reviewNote : undefined,
+            })
+            if (accessRequest.status === 'approved') {
+              await ensureViewerProjectWorkspace(opts, authStore, accessRequest.requesterLogin, 'default')
+            }
+            sendJson(response, 200, {
+              accessRequest: toViewerWorkspaceAccessRequestPayload(accessRequest),
+            })
+          } catch (error) {
+            sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+          }
+          return
+        }
+
+        sendMethodNotAllowed(response)
         return
       }
 
@@ -1483,11 +1803,27 @@ export function createViewerServer(opts: ViewerServerOptions) {
         }
 
         if (method === 'GET' || method === 'HEAD') {
+          const principalSession = authStore.findUserProjectSession(session.login)
+          const requestedWorkspacePublicId = url.searchParams.get('workspaceId')?.trim()
+          const requestedTenant = requestedWorkspacePublicId
+            ? authStore.getTenantByPublicId(requestedWorkspacePublicId)
+            : principalSession?.tenant ?? null
+          const onboarding = authStore.getUserOnboardingState(session.login)
+          if (
+            !requestedTenant
+            || !onboarding?.memberships.some((membership) => membership.tenant.id === requestedTenant.id)
+          ) {
+            sendJson(response, 404, { error: 'Workspace was not found or is not accessible.' }, headOnly)
+            return
+          }
           sendJson(
             response,
             200,
             {
-              projects: authStore.listProjects({ userLogin: session.login }).map(toViewerProjectPayload),
+              projects: authStore.listProjects({
+                tenantSlug: requestedTenant.slug,
+                userLogin: session.login,
+              }).map(toViewerProjectPayload),
             },
             headOnly,
           )
@@ -1802,6 +2138,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
             nonce: pendingLogin.nonce,
             redirectUri,
           })
+          const verifiedEmail = identity.emailVerified ? identity.email : undefined
           const user = authStore.findUserByAuthIdentity({
             issuer: identity.issuer,
             provider: opts.oidc.provider,
@@ -1810,22 +2147,46 @@ export function createViewerServer(opts: ViewerServerOptions) {
 
           const signedUpUser = !user
             ? authStore.signUpFirstUserWithAuthIdentity({
-                email: identity.email,
+                email: verifiedEmail,
                 issuer: identity.issuer,
-                ownerLogin: deriveFirstOwnerLogin(identity.email),
-                ownerName: deriveFirstOwnerName(identity.email),
+                ownerLogin: deriveFirstOwnerLogin(verifiedEmail),
+                ownerName: deriveFirstOwnerName(verifiedEmail),
                 provider: opts.oidc.provider,
                 subject: identity.subject,
               })?.owner.user
             : null
 
-          const resolvedUser = user ?? signedUpUser
+          const invitationToken = /^\/invite\/([^/]+)$/u.exec(pendingLogin.returnTo)?.[1]
+          const invitation = invitationToken
+            ? authStore.getTenantInvitation(decodeURIComponent(invitationToken))
+            : null
+          const invitationRegistrationAllowed = Boolean(
+            invitation
+            && invitation.status === 'pending'
+            && verifiedEmail
+            && invitation.email === verifiedEmail.trim().toLowerCase(),
+          )
+
+          const registeredUser = !user
+            && !signedUpUser
+            && (opts.onboardingMode === 'approval' || invitationRegistrationAllowed)
+            ? authStore.registerUserWithAuthIdentity({
+                displayName: deriveFirstOwnerName(verifiedEmail) ?? 'User',
+                email: verifiedEmail,
+                issuer: identity.issuer,
+                login: deriveFirstOwnerLogin(verifiedEmail) ?? 'user',
+                provider: opts.oidc.provider,
+                subject: identity.subject,
+              }).user
+            : null
+
+          const resolvedUser = user ?? signedUpUser ?? registeredUser
 
           if (!resolvedUser) {
             sendAuthError(
               response,
               403,
-              'This server already has an owner, so new accounts must be added by an owner before they can sign in.',
+              'New account registration is currently closed on this server.',
               {
                 clearCookies: [clearPendingOidcCookie(secure), clearViewerSessionCookie(secure)],
                 details: [
@@ -1836,10 +2197,9 @@ export function createViewerServer(opts: ViewerServerOptions) {
                 headOnly,
                 nextSteps: [
                   'If you already have access, try again with the Google account that the owner linked.',
-                  'If you are a new user, send the identity details below to the server owner and ask them to add you.',
-                  'After the owner adds this identity, return here and sign in again.',
+                  'If you are a new user, ask the server operator when workspace requests will reopen.',
                 ],
-                title: 'Access request needed',
+                title: 'Registration closed',
               },
             )
             return
@@ -1851,7 +2211,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
               writeViewerSessionCookie(
                 sessionSecret,
                 {
-                  email: identity.email,
+                  email: verifiedEmail,
                   expiresAt: Date.now() + VIEWER_SESSION_TTL_MS,
                   issuer: identity.issuer,
                   login: resolvedUser.login,
@@ -1891,6 +2251,24 @@ export function createViewerServer(opts: ViewerServerOptions) {
 
       const session = getActiveSession(request)
       const requestedProjectSlug = getRequestedProjectSlug(url)
+      let requestedPublicProject: ReturnType<typeof getRequestedPublicProject>
+      try {
+        requestedPublicProject = getRequestedPublicProject(url)
+      } catch (error) {
+        sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) }, headOnly)
+        return
+      }
+      const requestedPrincipalSession = session && authStore && requestedPublicProject
+        ? authStore.findUserProjectSessionByPublicIds(
+            session.login,
+            requestedPublicProject.tenantPublicId,
+            requestedPublicProject.projectPublicId,
+          )
+        : null
+      if (session && requestedPublicProject && !requestedPrincipalSession) {
+        sendJson(response, 404, { error: 'Workspace or project was not found or is not accessible.' }, headOnly)
+        return
+      }
       let apiTokenSession: AuthApiTokenSession | null = null
       if (authStore && isProtectedViewerDataRoute(url.pathname) && !session) {
         const bearerToken = getBearerToken(request)
@@ -1930,10 +2308,10 @@ export function createViewerServer(opts: ViewerServerOptions) {
         context = await loadViewerContext(opts, {
           authStore,
           includeHome: !apiTokenSession,
-          principalSession: apiTokenSession?.principalSession,
+          principalSession: apiTokenSession?.principalSession ?? requestedPrincipalSession,
           projectSlug: apiTokenSession?.principalSession.project.slug ?? requestedProjectSlug,
           session,
-          scopedProjectOnly: Boolean(apiTokenSession),
+          scopedProjectOnly: Boolean(apiTokenSession || requestedPrincipalSession),
         })
       } catch (error) {
         sendJson(response, 404, {
@@ -2067,6 +2445,20 @@ export function createViewerServer(opts: ViewerServerOptions) {
         await serveStaticFile(staticDir, url.pathname, response, headOnly)
       } catch (error) {
         const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+        if (
+          code === 'ENOENT'
+          && (
+            /^\/w\/[^/]+\/p\/[^/]+(?:\/files(?:\/.*)?)?$/u.test(url.pathname)
+            || /^\/invite\/[^/]+$/u.test(url.pathname)
+          )
+        ) {
+          try {
+            await serveStaticFile(staticDir, '/', response, headOnly)
+            return
+          } catch {
+            // Fall through to the missing-assets page below.
+          }
+        }
         if (url.pathname !== '/' && code !== 'ENOENT') {
           sendJson(response, 404, { error: 'Not found.' }, headOnly)
           return

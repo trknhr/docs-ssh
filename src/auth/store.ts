@@ -4,8 +4,10 @@ import { dirname, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { normalizeSshPublicKey } from './ssh-key.js'
 
-const AUTH_SCHEMA_VERSION = 6
+const AUTH_SCHEMA_VERSION = 9
 const IDENTIFIER_PATTERN = /[^a-z0-9-]+/g
+const PUBLIC_ID_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'
+const PUBLIC_ID_LENGTH = 16
 const DEFAULT_TENANT_SLUG = 'default'
 const DEFAULT_TENANT_NAME = 'Personal docs-ssh'
 const DEFAULT_OWNER_LOGIN = 'owner'
@@ -38,6 +40,7 @@ export interface AuthTenant {
   createdAt: string
   displayName: string
   id: string
+  publicId: string
   slug: string
 }
 
@@ -107,6 +110,7 @@ export interface AuthProject {
   createdAt: string
   displayName: string
   id: string
+  publicId: string
   slug: string
   tenantId: string
 }
@@ -221,6 +225,91 @@ export interface SignUpFirstUserWithAuthIdentityInput {
   subject: string
 }
 
+export interface RegisterUserWithAuthIdentityInput {
+  displayName: string
+  email?: string
+  issuer: string
+  login: string
+  provider?: string
+  subject: string
+}
+
+export type WorkspaceAccessRequestStatus = 'pending' | 'approved' | 'rejected'
+
+export interface AuthWorkspaceAccessRequest {
+  createdAt: string
+  intendedUse: string | null
+  principalId: string
+  publicId: string
+  requesterDisplayName: string
+  requesterEmail: string | null
+  requesterLogin: string
+  reviewNote: string | null
+  reviewedAt: string | null
+  reviewedByPrincipalId: string | null
+  status: WorkspaceAccessRequestStatus
+  tenant: AuthTenant | null
+  updatedAt: string
+  workspaceName: string
+}
+
+export interface CreateWorkspaceAccessRequestInput {
+  intendedUse?: string
+  userLogin: string
+  workspaceName: string
+}
+
+export interface ReviewWorkspaceAccessRequestInput {
+  decision: 'approved' | 'rejected'
+  publicId: string
+  reviewNote?: string
+  reviewerLogin: string
+}
+
+export interface ListWorkspaceAccessRequestsOptions {
+  reviewerLogin: string
+  status?: WorkspaceAccessRequestStatus
+}
+
+export interface AuthUserOnboardingState {
+  accessRequest: AuthWorkspaceAccessRequest | null
+  instanceOperator: boolean
+  memberships: Array<{
+    role: AuthMembershipRole
+    tenant: AuthTenant
+  }>
+  user: AuthUser
+}
+
+export type TenantInvitationStatus = 'accepted' | 'expired' | 'pending' | 'revoked'
+
+export interface AuthTenantInvitation {
+  acceptedAt: string | null
+  createdAt: string
+  email: string
+  expiresAt: string
+  publicId: string
+  role: AuthMembershipRole
+  status: TenantInvitationStatus
+  tenant: AuthTenant
+}
+
+export interface CreatedTenantInvitation extends AuthTenantInvitation {
+  token: string
+}
+
+export interface CreateTenantInvitationInput {
+  email: string
+  expiresAt?: string
+  inviterLogin: string
+  role?: AuthMembershipRole
+}
+
+export interface AcceptTenantInvitationInput {
+  token: string
+  userLogin: string
+}
+
 export interface AddSshKeyInput {
   name?: string
   publicKey: string
@@ -312,6 +401,7 @@ interface TenantRow {
   createdAt: string
   displayName: string
   id: string
+  publicId: string
   slug: string
 }
 
@@ -365,9 +455,42 @@ interface AuthProjectRow {
   createdAt: string
   displayName: string
   id: string
+  publicId: string
   slug: string
   tenantId: string
 }
+
+interface WorkspaceAccessRequestRow {
+  createdAt: string
+  intendedUse: string | null
+  principalId: string
+  publicId: string
+  requesterDisplayName: string
+  requesterEmail: string | null
+  requesterLogin: string
+  reviewNote: string | null
+  reviewedAt: string | null
+  reviewedByPrincipalId: string | null
+  status: WorkspaceAccessRequestStatus
+  tenantId: string | null
+  updatedAt: string
+  workspaceName: string
+}
+
+interface TenantInvitationRow {
+  acceptedAt: string | null
+  createdAt: string
+  email: string
+  expiresAt: string
+  publicId: string
+  role: AuthMembershipRole
+  status: 'accepted' | 'pending' | 'revoked'
+  tenantId: string
+  tokenHash: string
+}
+
+type LegacyTenantRow = Omit<TenantRow, 'publicId'>
+type LegacyProjectRow = Omit<AuthProjectRow, 'publicId'>
 
 interface AuthProjectMembershipRow {
   createdAt: string
@@ -423,6 +546,21 @@ function createTimestamp(): string {
   return new Date().toISOString()
 }
 
+function createPublicId(): string {
+  let value = ''
+
+  while (value.length < PUBLIC_ID_LENGTH) {
+    for (const byte of randomBytes(PUBLIC_ID_LENGTH)) {
+      const unbiasedLimit = Math.floor(256 / PUBLIC_ID_ALPHABET.length) * PUBLIC_ID_ALPHABET.length
+      if (byte >= unbiasedLimit) continue
+      value += PUBLIC_ID_ALPHABET[byte % PUBLIC_ID_ALPHABET.length]
+      if (value.length === PUBLIC_ID_LENGTH) return value
+    }
+  }
+
+  return value
+}
+
 function normalizeProvider(value: string | undefined): string {
   return value?.trim().toLowerCase() || 'oidc'
 }
@@ -459,53 +597,22 @@ function migrateDatabase(database: Database.Database): void {
     return
   }
 
-  if (currentVersion === 1) {
-    migrateSchemaV1ToV2(database)
-    migrateSchemaV2ToV3(database)
-    migrateSchemaV3ToV4(database)
-    migrateSchemaV4ToV5(database)
-    migrateSchemaV5ToV6(database)
-    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
-    return
-  }
-
-  if (currentVersion === 2) {
-    migrateSchemaV2ToV3(database)
-    migrateSchemaV3ToV4(database)
-    migrateSchemaV4ToV5(database)
-    migrateSchemaV5ToV6(database)
-    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
-    return
-  }
-
-  if (currentVersion === 3) {
-    migrateSchemaV3ToV4(database)
-    migrateSchemaV4ToV5(database)
-    migrateSchemaV5ToV6(database)
-    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
-    return
-  }
-
-  if (currentVersion === 4) {
-    migrateSchemaV4ToV5(database)
-    migrateSchemaV5ToV6(database)
-    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
-    return
-  }
-
-  if (currentVersion === 5) {
-    migrateSchemaV5ToV6(database)
-    database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
-    return
-  }
-
-  throw new Error(`Unsupported auth schema version: ${currentVersion}`)
+  if (currentVersion <= 1) migrateSchemaV1ToV2(database)
+  if (currentVersion <= 2) migrateSchemaV2ToV3(database)
+  if (currentVersion <= 3) migrateSchemaV3ToV4(database)
+  if (currentVersion <= 4) migrateSchemaV4ToV5(database)
+  if (currentVersion <= 5) migrateSchemaV5ToV6(database)
+  if (currentVersion <= 6) migrateSchemaV6ToV7(database)
+  if (currentVersion <= 7) migrateSchemaV7ToV8(database)
+  if (currentVersion <= 8) migrateSchemaV8ToV9(database)
+  database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
 }
 
 function createSchemaV2(database: Database.Database): void {
   database.exec(`
     CREATE TABLE tenants (
       id TEXT PRIMARY KEY,
+      public_id TEXT NOT NULL UNIQUE,
       slug TEXT NOT NULL UNIQUE,
       display_name TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -532,6 +639,41 @@ function createSchemaV2(database: Database.Database): void {
       role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
       created_at TEXT NOT NULL,
       PRIMARY KEY (tenant_id, principal_id)
+    );
+
+    CREATE TABLE instance_operators (
+      principal_id TEXT PRIMARY KEY REFERENCES principals(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE workspace_access_requests (
+      id TEXT PRIMARY KEY,
+      public_id TEXT NOT NULL UNIQUE,
+      principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      workspace_name TEXT NOT NULL,
+      intended_use TEXT,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
+      tenant_id TEXT REFERENCES tenants(id) ON DELETE SET NULL,
+      reviewed_by_principal_id TEXT REFERENCES principals(id) ON DELETE SET NULL,
+      review_note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      reviewed_at TEXT
+    );
+
+    CREATE TABLE tenant_invitations (
+      id TEXT PRIMARY KEY,
+      public_id TEXT NOT NULL UNIQUE,
+      token_hash TEXT NOT NULL UNIQUE,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+      invited_by_principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'revoked')),
+      accepted_by_principal_id TEXT REFERENCES principals(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      accepted_at TEXT
     );
 
     CREATE TABLE auth_identities (
@@ -592,6 +734,7 @@ function createSchemaV2(database: Database.Database): void {
 
     CREATE TABLE projects (
       id TEXT PRIMARY KEY,
+      public_id TEXT NOT NULL UNIQUE,
       tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       slug TEXT NOT NULL,
       display_name TEXT NOT NULL,
@@ -643,6 +786,12 @@ function createSchemaV2(database: Database.Database): void {
     );
 
     CREATE INDEX idx_memberships_principal_id ON memberships(principal_id);
+    CREATE UNIQUE INDEX idx_workspace_access_requests_pending_principal
+      ON workspace_access_requests(principal_id) WHERE status = 'pending';
+    CREATE INDEX idx_workspace_access_requests_status_created
+      ON workspace_access_requests(status, created_at);
+    CREATE INDEX idx_tenant_invitations_tenant_status
+      ON tenant_invitations(tenant_id, status, created_at);
     CREATE INDEX idx_auth_identities_principal_id ON auth_identities(principal_id);
     CREATE INDEX idx_ssh_keys_principal_id ON ssh_keys(principal_id);
     CREATE INDEX idx_service_accounts_principal_id ON service_accounts(principal_id);
@@ -879,7 +1028,7 @@ function migrateSchemaV2ToV3(database: Database.Database): void {
         `SELECT id, slug, display_name AS displayName, created_at AS createdAt
          FROM tenants`,
       )
-      .all() as TenantRow[]
+      .all() as LegacyTenantRow[]
 
     const getProject = database.prepare(
       `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName, created_at AS createdAt, NULL AS archivedAt
@@ -901,7 +1050,7 @@ function migrateSchemaV2ToV3(database: Database.Database): void {
     )
 
     for (const tenant of tenants) {
-      let project = getProject.get(tenant.id, DEFAULT_PROJECT_SLUG) as AuthProjectRow | undefined
+      let project = getProject.get(tenant.id, DEFAULT_PROJECT_SLUG) as LegacyProjectRow | undefined
       if (!project) {
         project = {
           archivedAt: null,
@@ -956,11 +1105,120 @@ function migrateSchemaV5ToV6(database: Database.Database): void {
   }
 }
 
+function migrateSchemaV6ToV7(database: Database.Database): void {
+  const tx = database.transaction(() => {
+    const tenantColumns = database.pragma('table_info(tenants)') as Array<{ name: string }>
+    const projectColumns = database.pragma('table_info(projects)') as Array<{ name: string }>
+
+    if (!tenantColumns.some((column) => column.name === 'public_id')) {
+      database.exec('ALTER TABLE tenants ADD COLUMN public_id TEXT;')
+    }
+    if (!projectColumns.some((column) => column.name === 'public_id')) {
+      database.exec('ALTER TABLE projects ADD COLUMN public_id TEXT;')
+    }
+
+    const assignPublicIds = (table: 'projects' | 'tenants') => {
+      const rows = database.prepare(`SELECT id FROM ${table} WHERE public_id IS NULL`).all() as Array<{ id: string }>
+      const update = database.prepare(`UPDATE ${table} SET public_id = ? WHERE id = ?`)
+      const publicIdExists = database.prepare(
+        `SELECT 1 FROM tenants WHERE public_id = ? UNION ALL SELECT 1 FROM projects WHERE public_id = ? LIMIT 1`,
+      )
+
+      for (const row of rows) {
+        let publicId = createPublicId()
+        while (publicIdExists.get(publicId, publicId)) {
+          publicId = createPublicId()
+        }
+        update.run(publicId, row.id)
+      }
+    }
+
+    assignPublicIds('tenants')
+    assignPublicIds('projects')
+    database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_public_id ON tenants(public_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_public_id ON projects(public_id);
+    `)
+  })
+
+  tx()
+}
+
+function migrateSchemaV7ToV8(database: Database.Database): void {
+  const tx = database.transaction(() => {
+    database.exec(`
+      CREATE TABLE instance_operators (
+        principal_id TEXT PRIMARY KEY REFERENCES principals(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE workspace_access_requests (
+        id TEXT PRIMARY KEY,
+        public_id TEXT NOT NULL UNIQUE,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+        workspace_name TEXT NOT NULL,
+        intended_use TEXT,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
+        tenant_id TEXT REFERENCES tenants(id) ON DELETE SET NULL,
+        reviewed_by_principal_id TEXT REFERENCES principals(id) ON DELETE SET NULL,
+        review_note TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        reviewed_at TEXT
+      );
+
+      CREATE UNIQUE INDEX idx_workspace_access_requests_pending_principal
+        ON workspace_access_requests(principal_id) WHERE status = 'pending';
+      CREATE INDEX idx_workspace_access_requests_status_created
+        ON workspace_access_requests(status, created_at);
+    `)
+
+    database
+      .prepare(
+        `INSERT INTO instance_operators (principal_id, created_at)
+         SELECT m.principal_id, ?
+         FROM memberships m
+         WHERE m.role = 'owner'
+         ORDER BY m.created_at ASC
+         LIMIT 1`,
+      )
+      .run(createTimestamp())
+  })
+
+  tx()
+}
+
+function migrateSchemaV8ToV9(database: Database.Database): void {
+  const tx = database.transaction(() => {
+    database.exec(`
+      CREATE TABLE tenant_invitations (
+        id TEXT PRIMARY KEY,
+        public_id TEXT NOT NULL UNIQUE,
+        token_hash TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('owner', 'admin', 'member')),
+        invited_by_principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'revoked')),
+        accepted_by_principal_id TEXT REFERENCES principals(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        accepted_at TEXT
+      );
+
+      CREATE INDEX idx_tenant_invitations_tenant_status
+        ON tenant_invitations(tenant_id, status, created_at);
+    `)
+  })
+  tx()
+}
+
 function parseTenant(row: TenantRow): AuthTenant {
   return {
     createdAt: row.createdAt,
     displayName: row.displayName,
     id: row.id,
+    publicId: row.publicId,
     slug: row.slug,
   }
 }
@@ -1027,8 +1285,31 @@ function parseProject(row: AuthProjectRow): AuthProject {
     createdAt: row.createdAt,
     displayName: row.displayName,
     id: row.id,
+    publicId: row.publicId,
     slug: row.slug,
     tenantId: row.tenantId,
+  }
+}
+
+function parseWorkspaceAccessRequest(
+  database: Database.Database,
+  row: WorkspaceAccessRequestRow,
+): AuthWorkspaceAccessRequest {
+  return {
+    createdAt: row.createdAt,
+    intendedUse: row.intendedUse,
+    principalId: row.principalId,
+    publicId: row.publicId,
+    requesterDisplayName: row.requesterDisplayName,
+    requesterEmail: row.requesterEmail,
+    requesterLogin: row.requesterLogin,
+    reviewNote: row.reviewNote,
+    reviewedAt: row.reviewedAt,
+    reviewedByPrincipalId: row.reviewedByPrincipalId,
+    status: row.status,
+    tenant: row.tenantId ? getTenantById(database, row.tenantId) : null,
+    updatedAt: row.updatedAt,
+    workspaceName: row.workspaceName,
   }
 }
 
@@ -1112,6 +1393,47 @@ function hashApiToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
+function createInvitationToken(): string {
+  return `dssi_${randomBytes(24).toString('base64url')}`
+}
+
+function parseTenantInvitation(
+  database: Database.Database,
+  row: TenantInvitationRow,
+): AuthTenantInvitation {
+  const tenant = getTenantById(database, row.tenantId)
+  if (!tenant) throw new Error('Invitation tenant was not found.')
+  const status: TenantInvitationStatus = row.status === 'pending' && Date.parse(row.expiresAt) <= Date.now()
+    ? 'expired'
+    : row.status
+  return {
+    acceptedAt: row.acceptedAt,
+    createdAt: row.createdAt,
+    email: row.email,
+    expiresAt: row.expiresAt,
+    publicId: row.publicId,
+    role: row.role,
+    status,
+    tenant,
+  }
+}
+
+function getTenantInvitationRowByToken(
+  database: Database.Database,
+  token: string,
+): TenantInvitationRow | null {
+  const row = database
+    .prepare(
+      `SELECT public_id AS publicId, token_hash AS tokenHash, tenant_id AS tenantId,
+              email, role, status, created_at AS createdAt, expires_at AS expiresAt,
+              accepted_at AS acceptedAt
+       FROM tenant_invitations
+       WHERE token_hash = ?`,
+    )
+    .get(hashApiToken(token.trim())) as TenantInvitationRow | undefined
+  return row ?? null
+}
+
 function parseSshSession(row: AuthSshSessionRow): AuthSshSession {
   return {
     algorithm: row.algorithm,
@@ -1154,7 +1476,7 @@ function resolveSessionExpiresAt(input: Pick<CreateSshSessionInput, 'expiresAt' 
 function getTenantById(database: Database.Database, tenantId: string): AuthTenant | null {
   const row = database
     .prepare(
-      `SELECT id, slug, display_name AS displayName, created_at AS createdAt
+      `SELECT id, public_id AS publicId, slug, display_name AS displayName, created_at AS createdAt
        FROM tenants
        WHERE id = ?`,
     )
@@ -1166,11 +1488,23 @@ function getTenantById(database: Database.Database, tenantId: string): AuthTenan
 function getTenantBySlug(database: Database.Database, slug: string): AuthTenant | null {
   const row = database
     .prepare(
-      `SELECT id, slug, display_name AS displayName, created_at AS createdAt
+      `SELECT id, public_id AS publicId, slug, display_name AS displayName, created_at AS createdAt
        FROM tenants
        WHERE slug = ?`,
     )
     .get(slug) as TenantRow | undefined
+
+  return row ? parseTenant(row) : null
+}
+
+function getTenantByPublicId(database: Database.Database, publicId: string): AuthTenant | null {
+  const row = database
+    .prepare(
+      `SELECT id, public_id AS publicId, slug, display_name AS displayName, created_at AS createdAt
+       FROM tenants
+       WHERE public_id = ?`,
+    )
+    .get(publicId) as TenantRow | undefined
 
   return row ? parseTenant(row) : null
 }
@@ -1221,6 +1555,66 @@ function getUserByPrincipalId(database: Database.Database, principalId: string):
     .get(principalId) as UserRow | undefined
 
   return row ? parseUser(row) : null
+}
+
+function createAvailableLogin(database: Database.Database, preferredLogin: string): string {
+  const base = normalizeIdentifier(preferredLogin, 'user')
+  if (!getUserByLogin(database, base)) return base
+
+  let login = `${base}-${createPublicId().slice(0, 6)}`
+  while (getUserByLogin(database, login)) {
+    login = `${base}-${createPublicId().slice(0, 6)}`
+  }
+  return login
+}
+
+function isInstanceOperator(database: Database.Database, principalId: string): boolean {
+  return Boolean(
+    database
+      .prepare('SELECT 1 FROM instance_operators WHERE principal_id = ?')
+      .get(principalId),
+  )
+}
+
+const workspaceAccessRequestSelect = `
+  SELECT war.public_id AS publicId, war.principal_id AS principalId,
+         war.workspace_name AS workspaceName, war.intended_use AS intendedUse,
+         war.status, war.tenant_id AS tenantId,
+         war.reviewed_by_principal_id AS reviewedByPrincipalId,
+         war.review_note AS reviewNote, war.created_at AS createdAt,
+         war.updated_at AS updatedAt, war.reviewed_at AS reviewedAt,
+         u.login AS requesterLogin, u.display_name AS requesterDisplayName,
+         (SELECT ai.email
+          FROM auth_identities ai
+          WHERE ai.principal_id = war.principal_id AND ai.email IS NOT NULL
+          ORDER BY ai.created_at ASC
+          LIMIT 1) AS requesterEmail
+  FROM workspace_access_requests war
+  INNER JOIN users u ON u.principal_id = war.principal_id`
+
+function getWorkspaceAccessRequestByPublicId(
+  database: Database.Database,
+  publicId: string,
+): AuthWorkspaceAccessRequest | null {
+  const row = database
+    .prepare(`${workspaceAccessRequestSelect} WHERE war.public_id = ?`)
+    .get(publicId) as WorkspaceAccessRequestRow | undefined
+  return row ? parseWorkspaceAccessRequest(database, row) : null
+}
+
+function getLatestWorkspaceAccessRequestForPrincipal(
+  database: Database.Database,
+  principalId: string,
+): AuthWorkspaceAccessRequest | null {
+  const row = database
+    .prepare(
+      `${workspaceAccessRequestSelect}
+       WHERE war.principal_id = ?
+       ORDER BY CASE war.status WHEN 'pending' THEN 0 ELSE 1 END, war.created_at DESC
+       LIMIT 1`,
+    )
+    .get(principalId) as WorkspaceAccessRequestRow | undefined
+  return row ? parseWorkspaceAccessRequest(database, row) : null
 }
 
 function requireUserByLogin(database: Database.Database, login: string): AuthUser {
@@ -1369,13 +1763,26 @@ function getProjectByTenantAndSlug(
 ): AuthProject | null {
   const row = database
     .prepare(
-      `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName,
+      `SELECT id, public_id AS publicId, tenant_id AS tenantId, slug, display_name AS displayName,
               created_at AS createdAt, archived_at AS archivedAt
        FROM projects
        WHERE tenant_id = ? AND slug = ?
          ${opts.includeArchived ? '' : 'AND archived_at IS NULL'}`,
     )
     .get(tenantId, slug) as AuthProjectRow | undefined
+
+  return row ? parseProject(row) : null
+}
+
+function getProjectByPublicId(database: Database.Database, publicId: string): AuthProject | null {
+  const row = database
+    .prepare(
+      `SELECT id, public_id AS publicId, tenant_id AS tenantId, slug, display_name AS displayName,
+              created_at AS createdAt, archived_at AS archivedAt
+       FROM projects
+       WHERE public_id = ? AND archived_at IS NULL`,
+    )
+    .get(publicId) as AuthProjectRow | undefined
 
   return row ? parseProject(row) : null
 }
@@ -1411,16 +1818,17 @@ function ensureProjectForTenant(
     createdAt: createTimestamp(),
     displayName: normalizeLabel(displayName, DEFAULT_PROJECT_NAME),
     id: randomUUID(),
+    publicId: createPublicId(),
     slug: normalizedSlug,
     tenantId,
   }
 
   database
     .prepare(
-      `INSERT INTO projects (id, tenant_id, slug, display_name, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO projects (id, public_id, tenant_id, slug, display_name, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(projectRow.id, projectRow.tenantId, projectRow.slug, projectRow.displayName, projectRow.createdAt)
+    .run(projectRow.id, projectRow.publicId, projectRow.tenantId, projectRow.slug, projectRow.displayName, projectRow.createdAt)
 
   return parseProject(projectRow)
 }
@@ -1442,16 +1850,17 @@ function createProjectForTenant(
     createdAt: createTimestamp(),
     displayName: normalizeLabel(displayName, normalizedSlug),
     id: randomUUID(),
+    publicId: createPublicId(),
     slug: normalizedSlug,
     tenantId,
   }
 
   database
     .prepare(
-      `INSERT INTO projects (id, tenant_id, slug, display_name, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO projects (id, public_id, tenant_id, slug, display_name, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(projectRow.id, projectRow.tenantId, projectRow.slug, projectRow.displayName, projectRow.createdAt)
+    .run(projectRow.id, projectRow.publicId, projectRow.tenantId, projectRow.slug, projectRow.displayName, projectRow.createdAt)
 
   return parseProject(projectRow)
 }
@@ -1712,6 +2121,7 @@ function buildPrincipalSession(
 }
 
 export interface AuthStore {
+  acceptTenantInvitation(input: AcceptTenantInvitationInput): AuthPrincipalSession
   addAuthIdentity(input: AddAuthIdentityInput): AuthIdentity
   addSshKey(input: AddSshKeyInput): AuthSshKey
   addUser(input: AddUserInput): AuthTenantUser
@@ -1722,13 +2132,24 @@ export interface AuthStore {
   createApiToken(input: CreateApiTokenInput): CreatedAuthApiToken
   createProject(input: CreateProjectInput): AuthProject
   createSshSession(input: CreateSshSessionInput): AuthSshSession
+  createTenantInvitation(input: CreateTenantInvitationInput): CreatedTenantInvitation
+  createWorkspaceAccessRequest(input: CreateWorkspaceAccessRequestInput): AuthWorkspaceAccessRequest
   dbPath: string
   ensureSingleTenantOwner(opts?: EnsureSingleTenantOwnerOptions): SingleTenantOwner
   findPrincipalBySshFingerprint(fingerprint: string, username?: string): AuthPrincipalSession | null
+  findUserProjectSessionByPublicIds(
+    userLogin: string,
+    tenantPublicId: string,
+    projectPublicId: string,
+  ): AuthPrincipalSession | null
   findUserProjectSession(userLogin: string, projectSlug?: string): AuthPrincipalSession | null
   findUserByAuthIdentity(params: Pick<AuthIdentity, 'issuer' | 'provider' | 'subject'>): AuthUser | null
   findUserByLogin(login: string): AuthUser | null
   findUserBySshFingerprint(fingerprint: string): AuthUser | null
+  getProjectByPublicId(publicId: string): AuthProject | null
+  getTenantByPublicId(publicId: string): AuthTenant | null
+  getTenantInvitation(token: string): AuthTenantInvitation | null
+  getUserOnboardingState(userLogin: string): AuthUserOnboardingState | null
   hasUsers(): boolean
   listApiTokens(opts?: ListApiTokensOptions): AuthApiToken[]
   listAuthIdentities(userLogin?: string): AuthIdentity[]
@@ -1737,8 +2158,14 @@ export interface AuthStore {
   listSshSessions(opts?: ListSshSessionsOptions): AuthSshSession[]
   listSshKeys(userLogin?: string): AuthSshKey[]
   listUsers(opts?: ListUsersOptions): AuthTenantUser[]
+  listWorkspaceAccessRequests(opts: ListWorkspaceAccessRequestsOptions): AuthWorkspaceAccessRequest[]
+  registerUserWithAuthIdentity(input: RegisterUserWithAuthIdentityInput): {
+    identity: AuthIdentity
+    user: AuthUser
+  }
   revokeApiToken(input: RevokeApiTokenInput): AuthApiToken
   revokeSshSession(input: RevokeSshSessionInput): AuthSshSession
+  reviewWorkspaceAccessRequest(input: ReviewWorkspaceAccessRequestInput): AuthWorkspaceAccessRequest
   signUpFirstUserWithAuthIdentity(input: SignUpFirstUserWithAuthIdentityInput): {
     identity: AuthIdentity
     owner: SingleTenantOwner
@@ -1760,14 +2187,15 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
           createdAt: now,
           displayName: input.instanceName,
           id: randomUUID(),
+          publicId: createPublicId(),
           slug: input.instanceSlug,
         }
         database
           .prepare(
-            `INSERT INTO tenants (id, slug, display_name, created_at)
-             VALUES (?, ?, ?, ?)`,
+            `INSERT INTO tenants (id, public_id, slug, display_name, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
           )
-          .run(tenantRow.id, tenantRow.slug, tenantRow.displayName, tenantRow.createdAt)
+          .run(tenantRow.id, tenantRow.publicId, tenantRow.slug, tenantRow.displayName, tenantRow.createdAt)
         tenant = parseTenant(tenantRow)
       }
 
@@ -1817,6 +2245,13 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
            VALUES (?, ?, 'owner', ?)`,
         )
         .run(tenant.id, principal.id, now)
+
+      database
+        .prepare(
+          `INSERT OR IGNORE INTO instance_operators (principal_id, created_at)
+           VALUES (?, ?)`,
+        )
+        .run(principal.id, now)
 
       const membership = database
         .prepare(
@@ -1897,6 +2332,329 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     },
   )
 
+  const registerUserWithAuthIdentityTx = database.transaction(
+    (input: RegisterUserWithAuthIdentityInput): { identity: AuthIdentity; user: AuthUser } => {
+      const provider = normalizeProvider(input.provider)
+      const issuer = input.issuer.trim()
+      const subject = input.subject.trim()
+      if (!issuer) throw new Error('Missing required issuer for auth identity.')
+      if (!subject) throw new Error('Missing required subject for auth identity.')
+
+      const existingIdentity = getIdentityByKey(database, { issuer, provider, subject })
+      if (existingIdentity) {
+        const existingUser = getUserByPrincipalId(database, existingIdentity.principalId)
+        if (!existingUser) throw new Error('The auth identity is not linked to a user.')
+        return { identity: existingIdentity, user: existingUser }
+      }
+
+      const now = createTimestamp()
+      const displayName = normalizeLabel(input.displayName, 'User')
+      const principalRow: PrincipalRow = {
+        createdAt: now,
+        displayName,
+        id: randomUUID(),
+        kind: 'user',
+      }
+      database
+        .prepare(
+          `INSERT INTO principals (id, kind, display_name, created_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(principalRow.id, principalRow.kind, principalRow.displayName, principalRow.createdAt)
+
+      const userRow: UserRow = {
+        createdAt: now,
+        displayName,
+        id: randomUUID(),
+        login: createAvailableLogin(database, input.login),
+        principalId: principalRow.id,
+      }
+      database
+        .prepare(
+          `INSERT INTO users (id, login, display_name, principal_id, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(userRow.id, userRow.login, userRow.displayName, userRow.principalId, userRow.createdAt)
+
+      const identityRow: AuthIdentityRow = {
+        createdAt: now,
+        email: input.email?.trim() || null,
+        id: randomUUID(),
+        issuer,
+        principalId: principalRow.id,
+        provider,
+        subject,
+        userId: userRow.id,
+      }
+      database
+        .prepare(
+          `INSERT INTO auth_identities (id, principal_id, provider, issuer, subject, email, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          identityRow.id,
+          identityRow.principalId,
+          identityRow.provider,
+          identityRow.issuer,
+          identityRow.subject,
+          identityRow.email,
+          identityRow.createdAt,
+        )
+
+      return {
+        identity: parseAuthIdentity(identityRow),
+        user: parseUser(userRow),
+      }
+    },
+  )
+
+  const createWorkspaceAccessRequestTx = database.transaction(
+    (input: CreateWorkspaceAccessRequestInput): AuthWorkspaceAccessRequest => {
+      const user = requireUserByLogin(database, normalizeIdentifier(input.userLogin, ''))
+      const existing = getLatestWorkspaceAccessRequestForPrincipal(database, user.principalId)
+      if (existing?.status === 'pending') return existing
+
+      const workspaceName = normalizeLabel(input.workspaceName, '')
+      if (!workspaceName) throw new Error('Missing workspace name.')
+      const now = createTimestamp()
+      const publicId = createPublicId()
+      database
+        .prepare(
+          `INSERT INTO workspace_access_requests (
+             id, public_id, principal_id, workspace_name, intended_use, status,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          publicId,
+          user.principalId,
+          workspaceName,
+          input.intendedUse?.trim() || null,
+          now,
+          now,
+        )
+
+      const request = getWorkspaceAccessRequestByPublicId(database, publicId)
+      if (!request) throw new Error('Failed to create workspace access request.')
+      return request
+    },
+  )
+
+  const reviewWorkspaceAccessRequestTx = database.transaction(
+    (input: ReviewWorkspaceAccessRequestInput): AuthWorkspaceAccessRequest => {
+      const reviewer = requireUserByLogin(database, normalizeIdentifier(input.reviewerLogin, ''))
+      if (!isInstanceOperator(database, reviewer.principalId)) {
+        throw new Error('Only instance operators can review workspace requests.')
+      }
+
+      const request = getWorkspaceAccessRequestByPublicId(database, input.publicId.trim())
+      if (!request) throw new Error(`Workspace request "${input.publicId}" was not found.`)
+      if (request.status !== 'pending') {
+        throw new Error(`Workspace request "${input.publicId}" has already been ${request.status}.`)
+      }
+
+      const now = createTimestamp()
+      let tenantId: string | null = null
+      if (input.decision === 'approved') {
+        const tenantPublicId = createPublicId()
+        const tenantRow: TenantRow = {
+          createdAt: now,
+          displayName: request.workspaceName,
+          id: randomUUID(),
+          publicId: tenantPublicId,
+          slug: `w-${tenantPublicId}`,
+        }
+        database
+          .prepare(
+            `INSERT INTO tenants (id, public_id, slug, display_name, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(tenantRow.id, tenantRow.publicId, tenantRow.slug, tenantRow.displayName, tenantRow.createdAt)
+
+        database
+          .prepare(
+            `INSERT INTO memberships (tenant_id, principal_id, role, created_at)
+             VALUES (?, ?, 'owner', ?)`,
+          )
+          .run(tenantRow.id, request.principalId, now)
+
+        const project = createProjectForTenant(
+          database,
+          tenantRow.id,
+          DEFAULT_PROJECT_SLUG,
+          DEFAULT_PROJECT_NAME,
+        )
+        ensureProjectMembership(database, project.id, request.principalId, 'owner')
+        tenantId = tenantRow.id
+      }
+
+      database
+        .prepare(
+          `UPDATE workspace_access_requests
+           SET status = ?, tenant_id = ?, reviewed_by_principal_id = ?,
+               review_note = ?, updated_at = ?, reviewed_at = ?
+           WHERE public_id = ?`,
+        )
+        .run(
+          input.decision,
+          tenantId,
+          reviewer.principalId,
+          input.reviewNote?.trim() || null,
+          now,
+          now,
+          request.publicId,
+        )
+
+      const reviewed = getWorkspaceAccessRequestByPublicId(database, request.publicId)
+      if (!reviewed) throw new Error('Failed to review workspace access request.')
+      return reviewed
+    },
+  )
+
+  const createTenantInvitationTx = database.transaction(
+    (input: CreateTenantInvitationInput): CreatedTenantInvitation => {
+      const inviterUser = requireUserByLogin(database, normalizeIdentifier(input.inviterLogin, ''))
+      const inviterPrincipal = getPrincipalById(database, inviterUser.principalId)
+      const inviterMembership = inviterPrincipal
+        ? getPrimaryMembershipForPrincipal(database, inviterPrincipal.id)
+        : null
+      const inviterTenant = inviterMembership ? getTenantById(database, inviterMembership.tenantId) : null
+      const inviter = inviterPrincipal && inviterMembership && inviterTenant
+        ? buildPrincipalSession(database, {
+            membership: inviterMembership,
+            principal: inviterPrincipal,
+            projectSlug: DEFAULT_PROJECT_SLUG,
+            scopes: [...DEFAULT_SSH_SESSION_SCOPES],
+            tenant: inviterTenant,
+          })
+        : null
+      if (!inviter || (inviter.membership.role !== 'owner' && inviter.membership.role !== 'admin')) {
+        throw new Error('Only workspace owners and admins can create invitations.')
+      }
+      const role = normalizeMembershipRole(input.role)
+      if (role === 'owner' && inviter.membership.role !== 'owner') {
+        throw new Error('Only workspace owners can invite another owner.')
+      }
+      const email = input.email.trim().toLowerCase()
+      if (!email || !email.includes('@')) throw new Error('Enter a valid invitation email address.')
+      const expiresAt = input.expiresAt?.trim()
+        ? new Date(input.expiresAt).toISOString()
+        : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      if (Date.parse(expiresAt) <= Date.now()) throw new Error('Invitation expiration must be in the future.')
+
+      database
+        .prepare(
+          `UPDATE tenant_invitations
+           SET status = 'revoked'
+           WHERE tenant_id = ? AND lower(email) = ? AND status = 'pending'`,
+        )
+        .run(inviter.tenant.id, email)
+
+      const token = createInvitationToken()
+      const row: TenantInvitationRow = {
+        acceptedAt: null,
+        createdAt: createTimestamp(),
+        email,
+        expiresAt,
+        publicId: createPublicId(),
+        role,
+        status: 'pending',
+        tenantId: inviter.tenant.id,
+        tokenHash: hashApiToken(token),
+      }
+      database
+        .prepare(
+          `INSERT INTO tenant_invitations (
+             id, public_id, token_hash, tenant_id, email, role,
+             invited_by_principal_id, status, created_at, expires_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          row.publicId,
+          row.tokenHash,
+          row.tenantId,
+          row.email,
+          row.role,
+          inviter.principal.id,
+          row.createdAt,
+          row.expiresAt,
+        )
+
+      return {
+        ...parseTenantInvitation(database, row),
+        token,
+      }
+    },
+  )
+
+  const acceptTenantInvitationTx = database.transaction(
+    (input: AcceptTenantInvitationInput): AuthPrincipalSession => {
+      const row = getTenantInvitationRowByToken(database, input.token)
+      if (!row) throw new Error('Invitation was not found.')
+      const invitation = parseTenantInvitation(database, row)
+      if (invitation.status !== 'pending') {
+        throw new Error(`Invitation is ${invitation.status}.`)
+      }
+
+      const user = requireUserByLogin(database, normalizeIdentifier(input.userLogin, ''))
+      const emailMatches = listAuthIdentitiesForPrincipal(database, user.principalId)
+        .some((identity) => identity.email?.trim().toLowerCase() === invitation.email)
+      if (!emailMatches) {
+        throw new Error(`Sign in with ${invitation.email} to accept this invitation.`)
+      }
+
+      const now = createTimestamp()
+      database
+        .prepare(
+          `INSERT INTO memberships (tenant_id, principal_id, role, created_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(tenant_id, principal_id) DO UPDATE SET role =
+             CASE
+               WHEN memberships.role = 'owner' THEN 'owner'
+               WHEN memberships.role = 'admin' AND excluded.role = 'member' THEN 'admin'
+               ELSE excluded.role
+             END`,
+        )
+        .run(invitation.tenant.id, user.principalId, invitation.role, now)
+
+      const membership = getMembershipForPrincipalInTenant(database, user.principalId, invitation.tenant.id)
+      if (!membership) throw new Error('Failed to create workspace membership.')
+      const projects = database
+        .prepare(
+          `SELECT id, public_id AS publicId, tenant_id AS tenantId, slug,
+                  display_name AS displayName, created_at AS createdAt, archived_at AS archivedAt
+           FROM projects
+           WHERE tenant_id = ? AND archived_at IS NULL`,
+        )
+        .all(invitation.tenant.id) as AuthProjectRow[]
+      for (const project of projects) {
+        upsertProjectMembership(database, project.id, user.principalId, membership.role)
+      }
+
+      database
+        .prepare(
+          `UPDATE tenant_invitations
+           SET status = 'accepted', accepted_by_principal_id = ?, accepted_at = ?
+           WHERE token_hash = ?`,
+        )
+        .run(user.principalId, now, row.tokenHash)
+
+      const principal = getPrincipalById(database, user.principalId)
+      if (!principal) throw new Error('Invitation principal was not found.')
+      const session = buildPrincipalSession(database, {
+        membership,
+        principal,
+        projectSlug: DEFAULT_PROJECT_SLUG,
+        scopes: [...DEFAULT_SSH_SESSION_SCOPES],
+        tenant: invitation.tenant,
+      })
+      if (!session) throw new Error('Invitation project access could not be created.')
+      return session
+    },
+  )
+
   const addUserTx = database.transaction((input: AddUserInput): AuthTenantUser => {
     const tenant = input.tenantSlug
       ? getTenantBySlug(database, normalizeIdentifier(input.tenantSlug, DEFAULT_TENANT_SLUG))
@@ -1961,7 +2719,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
     ensureProjectForTenant(database, tenant.id, DEFAULT_PROJECT_SLUG, DEFAULT_PROJECT_NAME)
     const projects = database
       .prepare(
-        `SELECT id, tenant_id AS tenantId, slug, display_name AS displayName,
+        `SELECT id, public_id AS publicId, tenant_id AS tenantId, slug, display_name AS displayName,
                 created_at AS createdAt, archived_at AS archivedAt
          FROM projects
          WHERE tenant_id = ?
@@ -2026,8 +2784,77 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
   return {
     dbPath,
+    acceptTenantInvitation(input: AcceptTenantInvitationInput): AuthPrincipalSession {
+      return acceptTenantInvitationTx(input)
+    },
     close(): void {
       database.close()
+    },
+    createWorkspaceAccessRequest(input: CreateWorkspaceAccessRequestInput): AuthWorkspaceAccessRequest {
+      return createWorkspaceAccessRequestTx(input)
+    },
+    createTenantInvitation(input: CreateTenantInvitationInput): CreatedTenantInvitation {
+      return createTenantInvitationTx(input)
+    },
+    getProjectByPublicId(publicId: string): AuthProject | null {
+      return getProjectByPublicId(database, publicId.trim())
+    },
+    getTenantByPublicId(publicId: string): AuthTenant | null {
+      return getTenantByPublicId(database, publicId.trim())
+    },
+    getTenantInvitation(token: string): AuthTenantInvitation | null {
+      const row = getTenantInvitationRowByToken(database, token)
+      return row ? parseTenantInvitation(database, row) : null
+    },
+    getUserOnboardingState(userLogin: string): AuthUserOnboardingState | null {
+      const user = getUserByLogin(database, normalizeIdentifier(userLogin, ''))
+      if (!user) return null
+
+      const memberships = database
+        .prepare(
+          `SELECT m.role, t.id, t.public_id AS publicId, t.slug,
+                  t.display_name AS displayName, t.created_at AS createdAt
+           FROM memberships m
+           INNER JOIN tenants t ON t.id = m.tenant_id
+           WHERE m.principal_id = ?
+           ORDER BY m.created_at ASC`,
+        )
+        .all(user.principalId) as Array<TenantRow & { role: AuthMembershipRole }>
+
+      return {
+        accessRequest: getLatestWorkspaceAccessRequestForPrincipal(database, user.principalId),
+        instanceOperator: isInstanceOperator(database, user.principalId),
+        memberships: memberships.map((row) => ({
+          role: row.role,
+          tenant: parseTenant(row),
+        })),
+        user,
+      }
+    },
+    listWorkspaceAccessRequests(opts: ListWorkspaceAccessRequestsOptions): AuthWorkspaceAccessRequest[] {
+      const reviewer = requireUserByLogin(database, normalizeIdentifier(opts.reviewerLogin, ''))
+      if (!isInstanceOperator(database, reviewer.principalId)) {
+        throw new Error('Only instance operators can list workspace requests.')
+      }
+
+      const where = opts.status ? 'WHERE war.status = ?' : ''
+      const rows = database
+        .prepare(
+          `${workspaceAccessRequestSelect}
+           ${where}
+           ORDER BY CASE war.status WHEN 'pending' THEN 0 ELSE 1 END, war.created_at DESC`,
+        )
+        .all(...(opts.status ? [opts.status] : [])) as WorkspaceAccessRequestRow[]
+      return rows.map((row) => parseWorkspaceAccessRequest(database, row))
+    },
+    registerUserWithAuthIdentity(input: RegisterUserWithAuthIdentityInput): {
+      identity: AuthIdentity
+      user: AuthUser
+    } {
+      return registerUserWithAuthIdentityTx(input)
+    },
+    reviewWorkspaceAccessRequest(input: ReviewWorkspaceAccessRequestInput): AuthWorkspaceAccessRequest {
+      return reviewWorkspaceAccessRequestTx(input)
     },
     addUser(input: AddUserInput): AuthTenantUser {
       return addUserTx(input)
@@ -2534,6 +3361,39 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
         tenant,
       })
     },
+    findUserProjectSessionByPublicIds(
+      userLogin: string,
+      tenantPublicId: string,
+      projectPublicId: string,
+    ): AuthPrincipalSession | null {
+      const user = getUserByLogin(database, normalizeIdentifier(userLogin, DEFAULT_OWNER_LOGIN))
+      if (!user) return null
+      const principal = getPrincipalById(database, user.principalId)
+      if (!principal) return null
+
+      const tenant = getTenantByPublicId(database, tenantPublicId.trim())
+      if (!tenant) return null
+      const membership = getMembershipForPrincipalInTenant(database, principal.id, tenant.id)
+      if (!membership) return null
+
+      const project = getProjectByPublicId(database, projectPublicId.trim())
+      if (!project || project.tenantId !== tenant.id) return null
+      const projectMembership = getProjectMembership(database, project.id, principal.id)
+      if (!projectMembership) return null
+
+      return {
+        displayName: user.displayName,
+        login: user.login,
+        membership,
+        principal,
+        project,
+        projectMembership,
+        scopes: [...DEFAULT_SSH_SESSION_SCOPES],
+        sshSession: null,
+        tenant,
+        user,
+      }
+    },
     findUserByAuthIdentity(params: Pick<AuthIdentity, 'issuer' | 'provider' | 'subject'>): AuthUser | null {
       const identity = getIdentityByKey(database, {
         issuer: params.issuer,
@@ -2637,7 +3497,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       return database
         .prepare(
-          `SELECT p.id, p.tenant_id AS tenantId, p.slug, p.display_name AS displayName,
+          `SELECT p.id, p.public_id AS publicId, p.tenant_id AS tenantId, p.slug, p.display_name AS displayName,
                   p.created_at AS createdAt, p.archived_at AS archivedAt
            FROM projects p
            INNER JOIN project_memberships pm ON pm.project_id = p.id
@@ -2657,7 +3517,7 @@ export function createAuthStore(opts: { dbPath: string }): AuthStore {
 
       return database
         .prepare(
-          `SELECT p.id, p.tenant_id AS tenantId, p.slug, p.display_name AS displayName,
+          `SELECT p.id, p.public_id AS publicId, p.tenant_id AS tenantId, p.slug, p.display_name AS displayName,
                   p.created_at AS createdAt, p.archived_at AS archivedAt
            FROM projects p
            INNER JOIN project_memberships pm ON pm.project_id = p.id

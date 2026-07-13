@@ -14,6 +14,7 @@ describe('loadInstanceConfig', () => {
     expect(config.statePaths.registryPath).toBe(resolve('./tmp/state/sources.json'))
     expect(config.statePaths.sourcesDir).toBe(resolve('./tmp/state/sources'))
     expect(config.auth.dbPath).toBe(resolve('./tmp/state/auth.sqlite'))
+    expect(config.auth.onboardingMode).toBe('closed')
     expect(config.auth.oidc).toEqual({
       clientId: undefined,
       clientSecret: undefined,
@@ -37,6 +38,7 @@ describe('loadInstanceConfig', () => {
       authOidcClientId: 'viewer-client',
       authOidcClientSecret: 'viewer-secret',
       authOidcIssuer: 'https://issuer.example.com',
+      authOnboardingMode: 'approval',
       authOidcProvider: 'google',
       authOidcScope: 'openid email',
       registryPath: './runtime/registry.json',
@@ -58,6 +60,7 @@ describe('loadInstanceConfig', () => {
     expect(config.docsDir).toBe(resolve('./custom-docs'))
     expect(config.docsName).toBe('Project Docs')
     expect(config.auth.dbPath).toBe(resolve('./runtime/auth.sqlite'))
+    expect(config.auth.onboardingMode).toBe('approval')
     expect(config.auth.oidc).toEqual({
       clientId: 'viewer-client',
       clientSecret: 'viewer-secret',

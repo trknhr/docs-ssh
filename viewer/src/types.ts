@@ -10,21 +10,51 @@ export interface RootSummary {
 export interface ViewerOidcState {
   enabled: boolean
   issuer?: string
+  onboardingMode?: 'approval' | 'closed'
   provider?: string
   signupAvailable?: boolean
 }
 
+export interface ViewerWorkspaceAccessRequest {
+  createdAt: string
+  intendedUse: string | null
+  publicId: string
+  requester: {
+    displayName: string
+    email: string | null
+    login: string
+  }
+  reviewNote: string | null
+  reviewedAt: string | null
+  status: 'approved' | 'pending' | 'rejected'
+  updatedAt: string
+  workspace: {
+    displayName: string
+    publicId: string
+  } | null
+  workspaceName: string
+}
+
 export interface ViewerSessionUser {
+  accessRequest: ViewerWorkspaceAccessRequest | null
   email?: string
   expiresAt: number
   issuer: string
+  instanceOperator: boolean
   login: string
   provider: string
+  projectPublicId?: string
   role?: 'owner' | 'admin' | 'member'
   subject: string
   tenant?: string
+  tenantPublicId?: string
   userDisplayName: string
   userId: string
+  workspaces: Array<{
+    displayName: string
+    publicId: string
+    role: 'owner' | 'admin' | 'member'
+  }>
 }
 
 export interface ViewerSessionResponse {
@@ -36,7 +66,40 @@ export interface ViewerProject {
   archivedAt: string | null
   createdAt: string
   displayName: string
+  publicId: string
   slug: string
+}
+
+export interface ViewerWorkspaceAccessRequestMutationResponse {
+  accessRequest: ViewerWorkspaceAccessRequest
+}
+
+export interface ViewerWorkspaceAccessRequestListResponse {
+  requests: ViewerWorkspaceAccessRequest[]
+}
+
+export interface ViewerTenantInvitation {
+  acceptedAt: string | null
+  createdAt: string
+  email: string
+  expiresAt: string
+  publicId: string
+  role: 'owner' | 'admin' | 'member'
+  status: 'accepted' | 'expired' | 'pending' | 'revoked'
+  workspace: {
+    displayName: string
+    publicId: string
+  }
+}
+
+export interface ViewerTenantInvitationResponse {
+  invitation: ViewerTenantInvitation
+  inviteUrl?: string
+  workspace?: {
+    displayName: string
+    projectPublicId: string
+    publicId: string
+  }
 }
 
 export interface ViewerProjectListResponse {

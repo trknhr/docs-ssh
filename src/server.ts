@@ -55,6 +55,7 @@ async function main(): Promise<void> {
           scope: instanceConfig.auth.oidc.scope,
         }
       : undefined,
+    onboardingMode: instanceConfig.auth.onboardingMode,
     port: instanceConfig.viewer.port,
     publicOrigin: instanceConfig.viewer.publicOrigin,
     registryPath: instanceConfig.statePaths.registryPath,

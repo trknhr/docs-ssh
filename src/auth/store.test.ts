@@ -8,6 +8,7 @@ import { createAuthStore } from './store.js'
 
 const tempDirs: string[] = []
 const { utils: sshUtils } = ssh2
+const publicIdPattern = /^[23456789abcdefghjkmnpqrstuvwxyz]{16}$/
 
 async function createTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'docs-ssh-auth-store-'))
@@ -22,8 +23,9 @@ afterEach(async () => {
 describe('createAuthStore', () => {
   it('bootstraps a single-tenant owner idempotently', async () => {
     const tempDir = await createTempDir()
+    const dbPath = resolve(tempDir, 'auth.sqlite')
     const authStore = createAuthStore({
-      dbPath: resolve(tempDir, 'auth.sqlite'),
+      dbPath,
     })
 
     const first = authStore.ensureSingleTenantOwner()
@@ -37,10 +39,20 @@ describe('createAuthStore', () => {
     expect(first.membership.role).toBe('owner')
     expect(first.membership.tenantId).toBe(first.tenant.id)
     expect(first.membership.principalId).toBe(first.principal.id)
+    expect(first.tenant.publicId).toMatch(publicIdPattern)
     expect(second.tenant.id).toBe(first.tenant.id)
+    expect(second.tenant.publicId).toBe(first.tenant.publicId)
     expect(second.user.id).toBe(first.user.id)
 
+    const project = authStore.listProjects()[0]
+    expect(project?.publicId).toMatch(publicIdPattern)
+
     authStore.close()
+
+    const reopenedStore = createAuthStore({ dbPath })
+    expect(reopenedStore.ensureSingleTenantOwner().tenant.publicId).toBe(first.tenant.publicId)
+    expect(reopenedStore.listProjects()[0]?.publicId).toBe(project?.publicId)
+    reopenedStore.close()
   })
 
   it('stores ssh keys and web identities against the same owner', async () => {
@@ -172,14 +184,180 @@ describe('createAuthStore', () => {
     authStore.close()
 
     const migratedDatabase = new Database(dbPath)
-    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(6)
+    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(9)
     expect(
       migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get(),
     ).toBeTruthy()
     expect(
       migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_memberships'").get(),
     ).toBeTruthy()
+    expect((migratedDatabase.prepare('SELECT public_id AS publicId FROM tenants').get() as { publicId: string }).publicId).toMatch(
+      publicIdPattern,
+    )
+    expect((migratedDatabase.prepare('SELECT public_id AS publicId FROM projects').get() as { publicId: string }).publicId).toMatch(
+      publicIdPattern,
+    )
     migratedDatabase.close()
+  })
+
+  it('registers users without a workspace and creates an idempotent access request', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({
+      dbPath: resolve(tempDir, 'auth.sqlite'),
+    })
+    authStore.ensureSingleTenantOwner({ ownerLogin: 'operator', ownerName: 'Operator' })
+
+    const registered = authStore.registerUserWithAuthIdentity({
+      displayName: 'Alice Example',
+      email: 'alice@example.com',
+      issuer: 'https://accounts.example.com',
+      login: 'alice',
+      provider: 'google',
+      subject: 'alice-subject',
+    })
+
+    expect(registered.user.login).toBe('alice')
+    expect(authStore.findUserProjectSession('alice')).toBeNull()
+    expect(authStore.getUserOnboardingState('alice')).toMatchObject({
+      accessRequest: null,
+      instanceOperator: false,
+      memberships: [],
+    })
+
+    const firstRequest = authStore.createWorkspaceAccessRequest({
+      intendedUse: 'Agent investigation notes',
+      userLogin: 'alice',
+      workspaceName: 'Alice workspace',
+    })
+    const repeatedRequest = authStore.createWorkspaceAccessRequest({
+      intendedUse: 'This does not replace the pending request',
+      userLogin: 'alice',
+      workspaceName: 'Another name',
+    })
+
+    expect(firstRequest.publicId).toMatch(publicIdPattern)
+    expect(repeatedRequest.publicId).toBe(firstRequest.publicId)
+    expect(authStore.getUserOnboardingState('alice')?.accessRequest).toMatchObject({
+      intendedUse: 'Agent investigation notes',
+      requesterEmail: 'alice@example.com',
+      status: 'pending',
+      workspaceName: 'Alice workspace',
+    })
+    expect(() => authStore.listWorkspaceAccessRequests({ reviewerLogin: 'alice' })).toThrow(/instance operators/)
+    expect(authStore.listWorkspaceAccessRequests({ reviewerLogin: 'operator' })).toHaveLength(1)
+
+    authStore.close()
+  })
+
+  it('lets an instance operator approve a workspace request atomically', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({
+      dbPath: resolve(tempDir, 'auth.sqlite'),
+    })
+    authStore.ensureSingleTenantOwner({ ownerLogin: 'operator', ownerName: 'Operator' })
+    authStore.registerUserWithAuthIdentity({
+      displayName: 'Alice Example',
+      issuer: 'https://accounts.example.com',
+      login: 'alice',
+      provider: 'google',
+      subject: 'alice-subject',
+    })
+    const request = authStore.createWorkspaceAccessRequest({
+      userLogin: 'alice',
+      workspaceName: 'Acme Docs',
+    })
+
+    const approved = authStore.reviewWorkspaceAccessRequest({
+      decision: 'approved',
+      publicId: request.publicId,
+      reviewerLogin: 'operator',
+    })
+
+    expect(approved).toMatchObject({
+      status: 'approved',
+      tenant: {
+        displayName: 'Acme Docs',
+      },
+    })
+    expect(approved.tenant?.publicId).toMatch(publicIdPattern)
+    expect(authStore.getTenantByPublicId(approved.tenant?.publicId ?? '')?.id).toBe(approved.tenant?.id)
+    expect(authStore.findUserProjectSession('alice')).toMatchObject({
+      membership: { role: 'owner' },
+      project: { slug: 'default' },
+      tenant: { publicId: approved.tenant?.publicId },
+    })
+    const defaultProject = authStore.listProjects({
+      tenantSlug: approved.tenant?.slug,
+      userLogin: 'alice',
+    })[0]
+    expect(defaultProject?.publicId).toMatch(publicIdPattern)
+    expect(authStore.getProjectByPublicId(defaultProject?.publicId ?? '')?.id).toBe(defaultProject?.id)
+    expect(() =>
+      authStore.reviewWorkspaceAccessRequest({
+        decision: 'rejected',
+        publicId: request.publicId,
+        reviewerLogin: 'operator',
+      }),
+    ).toThrow(/already been approved/)
+
+    authStore.close()
+  })
+
+  it('invites an existing global account into a workspace by verified identity email', async () => {
+    const tempDir = await createTempDir()
+    const authStore = createAuthStore({ dbPath: resolve(tempDir, 'auth.sqlite') })
+    authStore.ensureSingleTenantOwner({ ownerLogin: 'owner', ownerName: 'Owner' })
+    authStore.registerUserWithAuthIdentity({
+      displayName: 'Bob',
+      email: 'bob@example.com',
+      issuer: 'https://accounts.example.com',
+      login: 'bob',
+      provider: 'google',
+      subject: 'bob-subject',
+    })
+    authStore.registerUserWithAuthIdentity({
+      displayName: 'Mallory',
+      email: 'mallory@example.com',
+      issuer: 'https://accounts.example.com',
+      login: 'mallory',
+      provider: 'google',
+      subject: 'mallory-subject',
+    })
+
+    const invitation = authStore.createTenantInvitation({
+      email: 'Bob@Example.com',
+      inviterLogin: 'owner',
+      role: 'member',
+    })
+    expect(invitation).toMatchObject({
+      email: 'bob@example.com',
+      role: 'member',
+      status: 'pending',
+    })
+    expect(invitation.publicId).toMatch(publicIdPattern)
+    expect(invitation.token).toMatch(/^dssi_[A-Za-z0-9_-]+$/)
+    expect(authStore.getTenantInvitation(invitation.token)?.tenant.publicId).toBe(invitation.tenant.publicId)
+    expect(() =>
+      authStore.acceptTenantInvitation({
+        token: invitation.token,
+        userLogin: 'mallory',
+      }),
+    ).toThrow(/Sign in with bob@example.com/)
+
+    const accepted = authStore.acceptTenantInvitation({
+      token: invitation.token,
+      userLogin: 'bob',
+    })
+    expect(accepted).toMatchObject({
+      membership: { role: 'member' },
+      tenant: { publicId: invitation.tenant.publicId },
+    })
+    expect(authStore.getTenantInvitation(invitation.token)?.status).toBe('accepted')
+    expect(() =>
+      authStore.acceptTenantInvitation({ token: invitation.token, userLogin: 'bob' }),
+    ).toThrow(/Invitation is accepted/)
+
+    authStore.close()
   })
 
   it('can sign up the first web user into an empty auth store', async () => {
@@ -251,11 +429,12 @@ describe('createAuthStore', () => {
       ownerLogin: 'alice',
       ownerName: 'Alice',
     })
-    authStore.createProject({
+    const created = authStore.createProject({
       displayName: 'Product Docs',
       slug: 'product-docs',
       userLogin: 'alice',
     })
+    expect(created.publicId).toMatch(publicIdPattern)
 
     const user = authStore.addUser({
       displayName: 'Bob Member',
