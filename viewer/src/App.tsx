@@ -531,14 +531,20 @@ function AccountPanel(props: {
 }) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('setup')
   const selectedProject = props.projects.find((project) => project.slug === props.selectedProject) ?? props.projects[0]
-  const projectConfig = selectedProject
+  const viewerOrigin = window.location.origin
+  const connectCommand = selectedProject
     ? [
-        'server = "docs-ssh"',
-        `project = "${selectedProject.slug}"`,
-        '',
+        'npx docs-ssh@latest config init \\',
+        '  --host docs-ssh \\',
+        `  --project ${selectedProject.slug} \\`,
+        `  --viewer-origin ${viewerOrigin}`,
+        'npx docs-ssh@latest login',
       ].join('\n')
     : ''
-  const loginCommand = 'docs-ssh login --server docs-ssh'
+  const skillCommand = [
+    'npx docs-ssh@latest skill \\',
+    '  --output .agents/skills/docs-ssh/SKILL.md',
+  ].join('\n')
   const activeTokenCount = props.apiTokens.filter((token) => !token.revokedAt).length
   const roleLabel = props.session.role ?? 'member'
   const workspaceTabs: Array<{ count?: string, id: WorkspaceTab, label: string }> = [
@@ -605,12 +611,15 @@ function AccountPanel(props: {
           <div className="section-heading">
             <div>
               <p className="eyebrow">Agent setup</p>
-              <h3>Commands</h3>
+              <h3>Connect an agent</h3>
             </div>
           </div>
+          <p className="setup-intro">
+            Run these commands from your project directory. npx uses the latest CLI without a global install.
+          </p>
           <div className="setup-strip">
-            <CopyBlock label="Web session" value={loginCommand} />
-            <CopyBlock label="Directory project" value={projectConfig} />
+            <CopyBlock label="1 · Configure and sign in" value={connectCommand} />
+            <CopyBlock label="2 · Add the agent skill" value={skillCommand} />
           </div>
         </section>
       ) : null}

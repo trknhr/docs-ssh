@@ -667,6 +667,13 @@ textarea {
   margin-bottom: -0.1rem;
 }
 
+.setup-intro {
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: -0.7rem 0 0;
+  max-width: 48rem;
+}
+
 .setup-strip,
 .project-section-grid,
 .content-section-grid {

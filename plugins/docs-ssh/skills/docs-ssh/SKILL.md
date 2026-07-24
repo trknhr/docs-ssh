@@ -10,7 +10,9 @@ Resolve the SSH target before inspecting the mounted project filesystem:
 - Starting from the current working directory, look upward for `.docs-ssh.toml`.
 - If the file contains `server = "<alias>"`, use that SSH alias.
 - If no config file or server value exists, use `docs-ssh`.
-- If the file contains `project = "<slug>"`, treat it as the intended current project when creating or checking SSH sessions.
+- Web/OIDC login is server-wide and does not carry a project.
+- If the file contains `project = "<slug>"`, treat `/projects/<slug>` as the primary project workspace for the current directory.
+- A login session or `bootstrap --json` may report another current project, often `default`; keep using the project from `.docs-ssh.toml` first.
 - Run `docs-ssh status --json` first. If there is no active session, run `docs-ssh login --json`; it opens the browser for Web/OIDC approval and returns the SSH command to use.
 - Do not create directories directly under `/projects`; projects are server-managed resources.
 
@@ -33,7 +35,7 @@ server = "docs-ssh-local"
 project = "docs-ssh"
 ```
 
-When a scoped SSH session is issued, connect as `<session-username>@<server>` so `/projects/<slug>` contains the configured project. Connecting as the normal local SSH user falls back to that principal's default project.
+Use the returned `<session-username>@<server>` connection for SSH access, then address the configured project explicitly as `/projects/<slug>`. The session's reported current project is only its server-side default and does not override `.docs-ssh.toml`.
 
 `docs-ssh login --json` returns `sshCommand`, `identityFile`, `username`, `server`, `project`, and `expiresAt`. Use the returned `sshCommand` as the prefix for SSH commands when available.
 

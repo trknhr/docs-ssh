@@ -1,5 +1,7 @@
 import type { SourceStore } from '../sources/types.js'
 
+const CLI_COMMAND = 'npx docs-ssh@latest'
+
 export interface HelperContentOptions {
   docsName: string
   sourceStore: SourceStore
@@ -28,7 +30,9 @@ function createWorkspaceList(sourceStore: SourceStore): string[] {
 
 function createWorkspaceRules(sourceStore: SourceStore): string[] {
   return [
-    '- Run `docs-ssh status --json` first. If no active session exists, run `docs-ssh login --json` and use the returned `sshCommand` for SSH access.',
+    `- Run \`${CLI_COMMAND} status --json\` first. If no active session exists, run \`${CLI_COMMAND} login --json\` and use the returned \`sshCommand\` for SSH access.`,
+    '- Web/OIDC login is server-wide and is not scoped to a project.',
+    `- Treat \`${sourceStore.projectMountPath}\` as the primary project workspace for this directory, even if the SSH session or \`bootstrap --json\` reports a different current project.`,
     `- Run \`bootstrap --json\`, then read \`/README.md\` and \`${sourceStore.projectMountPath}/README.md\` before writing files.`,
     `- Use \`${sourceStore.homeMountPath}\` for private personal notes.`,
     `- Use \`${sourceStore.projectMountPath}/issues\` for issue tracking: what to do, why, status, next action, and result links.`,
@@ -44,8 +48,8 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
 
 function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   return [
-    'docs-ssh status --json',
-    'docs-ssh login --json',
+    `${CLI_COMMAND} status --json`,
+    `${CLI_COMMAND} login --json`,
     `${sshPrefix} bootstrap --json`,
     `${sshPrefix} cat /README.md`,
     `${sshPrefix} cat ${sourceStore.projectMountPath}/README.md`,
@@ -139,37 +143,32 @@ export function createSetupMarkdown(opts: HelperContentOptions): string {
     '2. Install a reusable `docs-ssh` skill into your tool-specific skills directory.',
     '3. Do both.',
     '',
-    'Install the local CLI first:',
+    'Run the CLI without a global install:',
     '',
     '```bash',
-    'git clone https://github.com/trknhr/docs-ssh.git',
-    'cd docs-ssh',
-    'pnpm install',
-    'pnpm run build',
-    'npm link',
-    'docs-ssh status --json',
+    `${CLI_COMMAND} status --json`,
     '```',
     '',
-    '`npm link` creates the global `docs-ssh` command for the cloned repo. The reusable skill expects `docs-ssh` to be available in `PATH`. Rerun `pnpm run build:server` after editing CLI or server TypeScript.',
+    '`npx` downloads the latest `docs-ssh` CLI on demand, so no global install is required.',
     '',
     'Append to instructions:',
     '',
     '```bash',
-    `docs-ssh agents --output AGENTS.md --append ${helperFlags}`,
+    `${CLI_COMMAND} agents --output AGENTS.md --append ${helperFlags}`,
     '```',
     '',
     'Install the skill:',
     '',
     '```bash',
-    `docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md ${helperFlags}`,
+    `${CLI_COMMAND} skill --output .agents/skills/docs-ssh/SKILL.md ${helperFlags}`,
     '```',
     '',
     'Preview the generated helper files from the local CLI or running server:',
     '',
     '```bash',
-    `docs-ssh agents ${helperFlags}`,
-    `docs-ssh skill ${helperFlags}`,
-    `docs-ssh setup ${helperFlags}`,
+    `${CLI_COMMAND} agents ${helperFlags}`,
+    `${CLI_COMMAND} skill ${helperFlags}`,
+    `${CLI_COMMAND} setup ${helperFlags}`,
     `${sshPrefix} agents`,
     `${sshPrefix} skill`,
     `${sshPrefix} setup`,

@@ -54,6 +54,12 @@ describe('helper content', () => {
     expect(markdown).toContain('Do not create new directories directly under `/projects`')
     expect(markdown).toContain('pipe newline-separated commands into `batch`')
     expect(markdown).toContain('Use `read-range [-n] <path> <start> <end>`')
+    expect(markdown).toContain('npx docs-ssh@latest status --json')
+    expect(markdown).toContain('npx docs-ssh@latest login --json')
+    expect(markdown).toContain('Web/OIDC login is server-wide and is not scoped to a project')
+    expect(markdown).toContain(
+      'Treat `/projects/default` as the primary project workspace for this directory, even if the SSH session or `bootstrap --json` reports a different current project',
+    )
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
     expect(markdown).toContain('ssh docs-ssh -p 2222 bootstrap --json')
     expect(markdown).toContain('ssh docs-ssh -p 2222 read-range -n /README.md 1 80')
@@ -80,6 +86,11 @@ describe('helper content', () => {
     expect(markdown).toContain('Use ssh docs.example.com to inspect the mounted project filesystem before making changes.')
     expect(markdown).not.toContain('-p 22')
     expect(markdown).toContain('ssh docs.example.com bootstrap --json')
+    expect(markdown).toContain('npx docs-ssh@latest status --json')
+    expect(markdown).toContain('Web/OIDC login is server-wide and is not scoped to a project')
+    expect(markdown).toContain(
+      'Treat `/projects/default` as the primary project workspace for this directory, even if the SSH session or `bootstrap --json` reports a different current project',
+    )
     expect(markdown).toContain('pipe newline-separated commands into `batch`')
     expect(markdown).toContain('read-range -n /README.md 1 80')
     expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
@@ -95,13 +106,12 @@ describe('helper content', () => {
     })
 
     expect(markdown).toContain('Choose one of these setup flows:')
-    expect(markdown).toContain('git clone https://github.com/trknhr/docs-ssh.git')
-    expect(markdown).toContain('npm link')
-    expect(markdown).toContain('docs-ssh status --json')
-    expect(markdown).toContain('docs-ssh agents --output AGENTS.md --append --ssh-host docs-ssh --ssh-port 2222')
-    expect(markdown).toContain('docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md --ssh-host docs-ssh --ssh-port 2222')
+    expect(markdown).toContain('Run the CLI without a global install:')
+    expect(markdown).toContain('npx docs-ssh@latest status --json')
+    expect(markdown).toContain('npx docs-ssh@latest agents --output AGENTS.md --append --ssh-host docs-ssh --ssh-port 2222')
+    expect(markdown).toContain('npx docs-ssh@latest skill --output .agents/skills/docs-ssh/SKILL.md --ssh-host docs-ssh --ssh-port 2222')
     expect(markdown).toContain('| Codex | `AGENTS.md` | `.agents/skills/docs-ssh/SKILL.md` |')
-    expect(markdown).toContain('docs-ssh setup --ssh-host docs-ssh --ssh-port 2222')
+    expect(markdown).toContain('npx docs-ssh@latest setup --ssh-host docs-ssh --ssh-port 2222')
     expect(markdown).toContain('ssh docs-ssh -p 2222 setup')
   })
 })
