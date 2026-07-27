@@ -158,6 +158,42 @@ export interface ViewerUserMutationResponse {
   users: ViewerUser[]
 }
 
+export type ViewerArtifactVisibility = 'private' | 'project'
+
+export interface ViewerArtifactVersion {
+  contentHash: string
+  createdAt: string
+  createdByLogin: string
+  sizeBytes: number
+  version: number
+}
+
+export interface ViewerArtifact {
+  canManage: boolean
+  createdAt: string
+  creator: {
+    displayName: string
+    login: string
+  }
+  format: 'html'
+  latestVersion: number
+  project: {
+    displayName: string
+    publicId: string
+    slug: string
+  }
+  publicId: string
+  sourcePath: string
+  title: string
+  updatedAt: string
+  versions: ViewerArtifactVersion[]
+  visibility: ViewerArtifactVisibility
+}
+
+export interface ViewerArtifactResponse {
+  artifact: ViewerArtifact
+}
+
 export interface TreeNodeData {
   children?: TreeNodeData[]
   id: string

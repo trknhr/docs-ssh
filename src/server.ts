@@ -3,6 +3,7 @@
  * Modified to provide a local-first docs-ssh server with minimal dependencies.
  */
 
+import { resolve } from 'node:path'
 import { loadLocalEnvFile } from './env.js'
 import { ensureHostKey, logHostKeyFingerprint } from './host-key.js'
 import { loadInstanceConfig, type InstanceConfig } from './instance-config.js'
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
   const hostKey = await loadHostKey(instanceConfig)
 
   const server = createSSHServer({
+    artifactDbPath: resolve(instanceConfig.statePaths.stateDir, 'artifacts.sqlite'),
     authDbPath: instanceConfig.auth.dbPath,
     hostKey,
     host: instanceConfig.ssh.bindHost,
@@ -38,10 +40,12 @@ async function main(): Promise<void> {
     registryPath: instanceConfig.statePaths.registryPath,
     sshConnectHost: instanceConfig.ssh.connectHost,
     sshConnectPort: instanceConfig.ssh.connectPort,
+    viewerOrigin: instanceConfig.viewer.publicOrigin,
     workspaceDir: instanceConfig.workspaceDir,
   })
 
   const viewer = createViewerServer({
+    artifactDbPath: resolve(instanceConfig.statePaths.stateDir, 'artifacts.sqlite'),
     authDbPath: instanceConfig.auth.dbPath,
     docsDir: instanceConfig.docsDir,
     docsName: instanceConfig.docsName,

@@ -37,6 +37,7 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
     `- Use \`${sourceStore.homeMountPath}\` for private personal notes.`,
     `- Use \`${sourceStore.projectMountPath}/issues\` for issue tracking: what to do, why, status, next action, and result links.`,
     `- Use \`${sourceStore.projectMountPath}/tasks\` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.`,
+    `- Put self-contained HTML in \`${sourceStore.projectMountPath}/tasks/<task-slug>/artifacts/\`, then publish it with \`${CLI_COMMAND} artifact publish tasks/<task-slug>/artifacts/<name>.html\`.`,
     `- Do not create new directories directly under \`${sourceStore.projectsMountPath}\`; projects are server-managed resources.`,
     '- To reduce SSH round trips, pipe newline-separated commands into `batch`; it returns one JSON object per command.',
     '- Use `read-range [-n] <path> <start> <end>` instead of `cat` when you only need a small part of a large file.',
@@ -61,6 +62,8 @@ function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
     `${sshPrefix} "printf '%s\\n' '# Notes' '- item' > ${sourceStore.projectMountPath}/tasks/example-task/notes.md"`,
     `${sshPrefix} sh -lc 'echo \"- note\" >> ${sourceStore.projectMountPath}/tasks/example-task/notes.md'`,
     `${sshPrefix} cat ${sourceStore.projectMountPath}/tasks/example-task/notes.md`,
+    `${CLI_COMMAND} artifact publish tasks/example-task/artifacts/index.html`,
+    `${sshPrefix} artifact list --project ${sourceStore.projectSlug}`,
   ]
 }
 

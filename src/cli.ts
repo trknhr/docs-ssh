@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { AddressInfo } from 'node:net'
 import { homedir } from 'node:os'
 import { access, appendFile, chmod, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, relative, resolve } from 'node:path'
+import { basename, dirname, posix, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { promisify } from 'node:util'
 import ssh2 from 'ssh2'
@@ -112,6 +112,10 @@ Usage:
   docs-ssh config init [--host <ssh-config-host>] [--project <slug>] [--viewer-origin <url>] [--output <path>] [--force] [--json] [--interactive]
   docs-ssh status [--host <ssh-config-host>] [--project <slug>] [--json]
   docs-ssh logout [--host <ssh-config-host>] [--project <slug>] [--json]
+  docs-ssh artifact publish <path> [--title <title>] [--share private|project] [--project <slug>] [--json]
+  docs-ssh artifact list [--project <slug>] [--json]
+  docs-ssh artifact versions <id> [--json]
+  docs-ssh artifact share <id> private|project [--json]
   docs-ssh projects list [--db-path <path>] [--user <login>] [--tenant-slug <slug>] [--all]
   docs-ssh projects create --project <slug> [--display-name <name>] [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
   docs-ssh projects update --project <slug> --display-name <name> [--db-path <path>] [--user <login>] [--tenant-slug <slug>]
@@ -1041,6 +1045,82 @@ async function cliStatus(args: ParsedArgs): Promise<void> {
   console.log(`- command: ${session.sshCommand}`)
 }
 
+function quoteRemoteCommandArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+async function cliArtifact(args: ParsedArgs): Promise<void> {
+  const config = await resolveCliLoginConfig(args)
+  const session = await readCliSession(args, config)
+  if (!isCliSessionActive(session)) {
+    throw new Error(`No active docs-ssh session for ${config.server}. Run docs-ssh login first.`)
+  }
+
+  const subcommand = args.positionals[1]
+  const values = args.positionals.slice(2)
+  const remoteArgs = ['artifact']
+
+  if (subcommand === 'publish') {
+    const sourcePath = values[0]
+    if (!sourcePath || values.length > 1) {
+      throw new Error('Usage: docs-ssh artifact publish <path>')
+    }
+    const virtualPath = sourcePath.startsWith('/')
+      ? posix.normalize(sourcePath)
+      : posix.resolve(`/projects/${config.project}`, sourcePath)
+    remoteArgs.push('publish', virtualPath, '--project', config.project)
+    const title = getFlagString(args, 'title')
+    const visibility = getFlagString(args, 'share')
+    if (title) remoteArgs.push('--title', title)
+    if (visibility) remoteArgs.push('--share', visibility)
+  } else if (subcommand === 'list') {
+    if (values.length > 0) throw new Error('Usage: docs-ssh artifact list')
+    remoteArgs.push('list', '--project', config.project)
+  } else if (subcommand === 'versions') {
+    if (!values[0] || values.length > 1) {
+      throw new Error('Usage: docs-ssh artifact versions <id>')
+    }
+    remoteArgs.push('versions', values[0])
+  } else if (subcommand === 'share') {
+    if (!values[0] || !values[1] || values.length > 2) {
+      throw new Error('Usage: docs-ssh artifact share <id> private|project')
+    }
+    remoteArgs.push('share', values[0], values[1])
+  } else {
+    throw new Error('Artifact subcommand must be publish, list, versions, or share.')
+  }
+
+  if (getJsonFlag(args)) remoteArgs.push('--json')
+  const remoteCommand = remoteArgs.map(quoteRemoteCommandArgument).join(' ')
+
+  try {
+    const result = await execFileAsync('ssh', [
+      '-i',
+      session!.identityFile,
+      `${session!.username}@${session!.server}`,
+      remoteCommand,
+    ], {
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: 30_000,
+    })
+    if (result.stdout) process.stdout.write(result.stdout)
+    if (result.stderr) process.stderr.write(result.stderr)
+  } catch (error) {
+    const commandError = error as Error & {
+      code?: number
+      stderr?: string
+      stdout?: string
+    }
+    if (commandError.stdout) process.stdout.write(commandError.stdout)
+    if (commandError.stderr) process.stderr.write(commandError.stderr)
+    if (typeof commandError.code === 'number') {
+      process.exitCode = commandError.code
+      return
+    }
+    throw error
+  }
+}
+
 async function cliLogout(args: ParsedArgs): Promise<void> {
   const config = await resolveCliLoginConfig(args)
   const sessionDirs = new Set([
@@ -1647,6 +1727,21 @@ async function main() {
       'server',
     ])
     await cliStatus(args)
+    return
+  }
+
+  if (command === 'artifact') {
+    assertKnownFlags(args, [
+      'home',
+      'host',
+      'json',
+      'project',
+      'server',
+      'share',
+      'title',
+      'viewer-origin',
+    ])
+    await cliArtifact(args)
     return
   }
 

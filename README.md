@@ -71,6 +71,30 @@ docs-ssh token login --token dssh_... --host docs-ssh --project default --json
 docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md
 ```
 
+## HTML Artifacts
+
+Have an agent store a self-contained HTML file in the remote task artifact directory, then publish
+that virtual path from the CLI:
+
+```bash
+# Remote source: /projects/<configured-project>/tasks/demo/artifacts/index.html
+docs-ssh artifact publish tasks/demo/artifacts/index.html
+```
+
+The project comes from `.docs-ssh.toml`. Publishing returns a stable Viewer URL. Publishing the
+same source path again creates a new immutable version at that URL.
+
+```bash
+docs-ssh artifact list
+docs-ssh artifact versions <artifact-id>
+docs-ssh artifact share <artifact-id> project
+docs-ssh artifact share <artifact-id> private
+```
+
+Artifacts currently support single-file `.html` and `.htm` documents below
+`tasks/<task>/artifacts/`. Inline JavaScript runs in a sandbox with external network access,
+forms, popups, and parent-page access disabled.
+
 ## Notes
 
 - Runtime target is Node 24.
@@ -85,7 +109,7 @@ Git is still the right home for durable docs that should evolve with the code, s
 
 ### Why not SQLite?
 
-docs-ssh does use SQLite for authentication and session metadata. Workspace content stays file-based so humans and agents can inspect it with ordinary tools without a database-specific query layer.
+Workspace source content stays file-based so humans and agents can inspect and edit it with ordinary tools. docs-ssh uses SQLite for authentication, sessions, Artifact metadata, and immutable published Artifact revisions.
 
 ### Why not MCP?
 

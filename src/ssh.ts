@@ -4,9 +4,14 @@
  */
 
 import type { AddressInfo } from 'node:net'
-import { posix } from 'node:path'
+import { dirname, posix, resolve } from 'node:path'
 import { Chalk } from 'chalk'
 import ssh2, { type PublicKeyAuthContext, type ServerChannel } from 'ssh2'
+import {
+  createArtifactStore,
+  type ArtifactStore,
+} from './artifacts/store.js'
+import type { ArtifactCommandService } from './artifacts/command.js'
 import { createAuthStore, type AuthPrincipalSession } from './auth/store.js'
 import { normalizeSshPublicKey } from './auth/ssh-key.js'
 import { createBash } from './shell/bash.js'
@@ -17,6 +22,7 @@ const { Server } = ssh2
 const chalkInstance = new Chalk({ level: 3 })
 const blue = chalkInstance.rgb(89, 136, 255)
 export interface SSHServerOptions {
+  artifactDbPath?: string
   authDbPath: string
   hostKey: Buffer
   host?: string
@@ -29,6 +35,7 @@ export interface SSHServerOptions {
   registryPath?: string
   sshConnectHost?: string
   sshConnectPort?: number
+  viewerOrigin?: string
   workspaceDir?: string
 }
 
@@ -257,6 +264,89 @@ function createBashSessionContext(
   }
 }
 
+function createSshArtifactService(
+  authStore: ReturnType<typeof createAuthStore>,
+  artifactStore: ArtifactStore,
+  principal: AuthenticatedPrincipal,
+): ArtifactCommandService {
+  const requireProject = (projectSlug: string, operation: 'read' | 'write') => {
+    const access = authStore.authorizeSshProjectAccess({
+      operation,
+      principalId: principal.auth.principal.id,
+      projectSlug,
+      scopes: principal.auth.scopes,
+      sshSessionId: principal.auth.sshSession?.id,
+      tenantId: principal.auth.tenant.id,
+    })
+    if (!access.allowed) {
+      throw new Error(`EACCES: ${access.reason ?? `Project access denied for "${projectSlug}".`}`)
+    }
+
+    const project = authStore
+      .listPrincipalProjects({
+        principalId: principal.auth.principal.id,
+        tenantId: principal.auth.tenant.id,
+      })
+      .find((entry) => entry.slug === projectSlug)
+    if (!project) throw new Error(`Project "${projectSlug}" was not found.`)
+    return project
+  }
+
+  const requireArtifact = (publicId: string, operation: 'read' | 'write') => {
+    const artifact = artifactStore.getArtifact(publicId)
+    if (!artifact || artifact.tenantId !== principal.auth.tenant.id) {
+      throw new Error(`Artifact "${publicId}" was not found.`)
+    }
+    requireProject(artifact.projectSlug, operation)
+    if (
+      artifact.visibility === 'private'
+      && artifact.creatorPrincipalId !== principal.auth.principal.id
+    ) {
+      throw new Error(`Artifact "${publicId}" was not found.`)
+    }
+    return artifact
+  }
+
+  return {
+    getArtifact(publicId) {
+      return requireArtifact(publicId, 'read')
+    },
+    listArtifacts(projectSlug) {
+      const project = requireProject(projectSlug, 'read')
+      return artifactStore.listArtifacts({
+        principalId: principal.auth.principal.id,
+        projectId: project.id,
+        tenantId: principal.auth.tenant.id,
+      })
+    },
+    publishArtifact(input) {
+      const project = requireProject(input.projectSlug, 'write')
+      return artifactStore.publishArtifact({
+        ...input,
+        creatorDisplayName: principal.auth.displayName,
+        creatorLogin: principal.auth.login,
+        creatorPrincipalId: principal.auth.principal.id,
+        projectDisplayName: project.displayName,
+        projectId: project.id,
+        projectPublicId: project.publicId,
+        tenantId: principal.auth.tenant.id,
+        tenantPublicId: principal.auth.tenant.publicId,
+      }).artifact
+    },
+    updateArtifactVisibility(publicId, visibility) {
+      const artifact = requireArtifact(publicId, 'write')
+      if (artifact.creatorPrincipalId !== principal.auth.principal.id) {
+        throw new Error('Only the artifact creator can change its visibility.')
+      }
+      return artifactStore.updateArtifactVisibility({
+        principalId: principal.auth.principal.id,
+        publicId,
+        visibility,
+      })
+    },
+  }
+}
+
 function authenticateWithPublicKey(
   ctx: PublicKeyAuthContext,
   authStore: ReturnType<typeof createAuthStore>,
@@ -286,6 +376,7 @@ function authenticateWithPublicKey(
 export function createSSHServer(opts: SSHServerOptions) {
   const {
     authDbPath,
+    artifactDbPath = resolve(dirname(authDbPath), 'artifacts.sqlite'),
     hostKey,
     host = '127.0.0.1',
     port = 2222,
@@ -297,11 +388,15 @@ export function createSSHServer(opts: SSHServerOptions) {
     registryPath,
     sshConnectHost = '127.0.0.1',
     sshConnectPort = 2222,
+    viewerOrigin,
     workspaceDir,
   } = opts
 
   const authStore = createAuthStore({
     dbPath: authDbPath,
+  })
+  const artifactStore = createArtifactStore({
+    dbPath: artifactDbPath,
   })
   const activeClients = new Map<ssh2.Connection, Set<ServerChannel>>()
 
@@ -357,6 +452,7 @@ export function createSSHServer(opts: SSHServerOptions) {
         const principal = authenticatedPrincipal
         const sessionEnv = createSessionEnv(principal)
         const accessGuard = createSshAccessGuard(authStore, principal)
+        const artifactService = createSshArtifactService(authStore, artifactStore, principal)
 
         client.on('session', (accept) => {
           const session = accept()
@@ -379,6 +475,7 @@ export function createSSHServer(opts: SSHServerOptions) {
 
             try {
               const { bash } = await createBash({
+                artifactService,
                 docsDir,
                 docsName,
                 env: sessionEnv,
@@ -387,6 +484,7 @@ export function createSSHServer(opts: SSHServerOptions) {
                 session: createBashSessionContext(principal, authStore),
                 sshHost: sshConnectHost,
                 sshPort: sshConnectPort,
+                viewerOrigin,
                 workspaceDir,
               })
               const stdin = await stdinPromise
@@ -415,6 +513,7 @@ export function createSSHServer(opts: SSHServerOptions) {
             channel.on('data', () => resetIdle())
 
             const { bash } = await createBash({
+              artifactService,
               docsDir,
               docsName,
               env: sessionEnv,
@@ -423,6 +522,7 @@ export function createSSHServer(opts: SSHServerOptions) {
               session: createBashSessionContext(principal, authStore),
               sshHost: sshConnectHost,
               sshPort: sshConnectPort,
+              viewerOrigin,
               workspaceDir,
             })
             let shellSession: ReturnType<typeof createShellSession> | null = null
@@ -492,6 +592,7 @@ export function createSSHServer(opts: SSHServerOptions) {
           client.end()
         }
         server.close(() => {
+          artifactStore.close()
           authStore.close()
           resolve()
         })

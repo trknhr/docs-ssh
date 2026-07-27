@@ -8,6 +8,7 @@ import Database from 'better-sqlite3'
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose'
 import ssh2 from 'ssh2'
 import { afterEach, describe, expect, it } from 'vitest'
+import { createArtifactStore } from '../artifacts/store.js'
 import { createAuthStore } from '../auth/store.js'
 import { createViewerServer } from './server.js'
 
@@ -236,6 +237,7 @@ async function createViewerFixture(config: {
   const tempDir = await createTempDir()
   const docsDir = resolve(tempDir, 'docs')
   const authDbPath = resolve(tempDir, 'state', 'auth.sqlite')
+  const artifactDbPath = resolve(tempDir, 'state', 'artifacts.sqlite')
   const workspaceDir = resolve(tempDir, 'workspace')
   const staticDir = resolve(tempDir, 'viewer-dist')
   await mkdir(docsDir, { recursive: true })
@@ -270,6 +272,7 @@ async function createViewerFixture(config: {
   authStore.close()
 
   const viewer = createViewerServer({
+    artifactDbPath,
     authDbPath,
     docsDir,
     docsName: 'Viewer Docs',
@@ -289,6 +292,7 @@ async function createViewerFixture(config: {
   closers.push(() => viewer.close())
 
   return {
+    artifactDbPath,
     authDbPath,
     baseUrl: `http://127.0.0.1:${port}`,
     owner,
@@ -308,6 +312,15 @@ async function fetchWithCookies(url: string, jar: CookieJar, init: RequestInit =
   })
   jar.absorb(response)
   return response
+}
+
+async function signInViewer(baseUrl: string, jar: CookieJar): Promise<void> {
+  const loginResponse = await fetchWithCookies(`${baseUrl}/auth/login`, jar)
+  const authorizeResponse = await fetchWithCookies(loginResponse.headers.get('location')!, jar)
+  const callbackResponse = await fetchWithCookies(authorizeResponse.headers.get('location')!, jar)
+  if (callbackResponse.status !== 302) {
+    throw new Error(`Viewer sign-in failed with ${callbackResponse.status}.`)
+  }
 }
 
 afterEach(async () => {
@@ -341,6 +354,130 @@ describe('createViewerServer health check', () => {
     expect(headResponse.status).toBe(200)
     expect(await headResponse.text()).toBe('')
     expect(postResponse.status).toBe(405)
+  })
+})
+
+describe('createViewerServer artifacts', () => {
+  it('serves authenticated metadata and sandboxed immutable HTML versions', async () => {
+    const clientId = 'docs-ssh-viewer'
+    const provider = await createFakeOidcProvider({
+      clientId,
+      email: 'owner@example.com',
+      subject: 'artifact-owner',
+    })
+    const viewer = await createViewerFixture({
+      clientId,
+      issuer: provider.issuer,
+      linkedIdentity: {
+        issuer: provider.issuer,
+        provider: 'oidc',
+        subject: 'artifact-owner',
+      },
+    })
+    const authStore = createAuthStore({ dbPath: viewer.authDbPath })
+    const project = authStore.listProjects({ userLogin: viewer.owner!.user.login })[0]!
+    authStore.close()
+    const artifactStore = createArtifactStore({ dbPath: viewer.artifactDbPath })
+    const first = artifactStore.publishArtifact({
+      content: '<!doctype html><title>First</title><script>document.body.dataset.ran = "yes"</script>',
+      creatorDisplayName: viewer.owner!.user.displayName,
+      creatorLogin: viewer.owner!.user.login,
+      creatorPrincipalId: viewer.owner!.principal.id,
+      format: 'html',
+      projectDisplayName: project.displayName,
+      projectId: project.id,
+      projectPublicId: project.publicId,
+      projectSlug: project.slug,
+      sourcePath: '/projects/default/tasks/demo/artifacts/index.html',
+      tenantId: viewer.owner!.tenant.id,
+      tenantPublicId: viewer.owner!.tenant.publicId,
+      title: 'Demo artifact',
+    })
+    artifactStore.publishArtifact({
+      content: '<!doctype html><title>Second</title>',
+      creatorDisplayName: viewer.owner!.user.displayName,
+      creatorLogin: viewer.owner!.user.login,
+      creatorPrincipalId: viewer.owner!.principal.id,
+      format: 'html',
+      projectDisplayName: project.displayName,
+      projectId: project.id,
+      projectPublicId: project.publicId,
+      projectSlug: project.slug,
+      sourcePath: '/projects/default/tasks/demo/artifacts/index.html',
+      tenantId: viewer.owner!.tenant.id,
+      tenantPublicId: viewer.owner!.tenant.publicId,
+      title: 'Demo artifact',
+    })
+    artifactStore.close()
+
+    const artifactUrl = `${viewer.baseUrl}/artifacts/${first.artifact.publicId}`
+    const signedOutMetadata = await fetch(`${viewer.baseUrl}/api/artifacts/${first.artifact.publicId}`)
+    const signedOutContent = await fetch(`${artifactUrl}/content`, { redirect: 'manual' })
+    const shellResponse = await fetch(artifactUrl)
+    expect(signedOutMetadata.status).toBe(401)
+    expect(signedOutContent.status).toBe(401)
+    expect(shellResponse.status).toBe(200)
+    expect(await shellResponse.text()).toContain('fixture viewer')
+
+    const jar = new CookieJar()
+    await signInViewer(viewer.baseUrl, jar)
+    const sourceFilePath = resolve(
+      viewer.workspaceDir,
+      'tenants/default/projects/default/tasks/demo/artifacts/source.html',
+    )
+    await mkdir(resolve(sourceFilePath, '..'), { recursive: true })
+    await writeFile(sourceFilePath, '<!doctype html><script>window.top.location = "/"</script>')
+    const rawSourceResponse = await fetchWithCookies(
+      `${viewer.baseUrl}/api/raw?path=${encodeURIComponent('/projects/default/tasks/demo/artifacts/source.html')}`,
+      jar,
+    )
+    expect(rawSourceResponse.status).toBe(200)
+    expect(rawSourceResponse.headers.get('content-disposition')).toContain('attachment')
+    expect(rawSourceResponse.headers.get('content-security-policy')).toContain("default-src 'none'")
+
+    const metadataResponse = await fetchWithCookies(
+      `${viewer.baseUrl}/api/artifacts/${first.artifact.publicId}`,
+      jar,
+    )
+    const metadata = await metadataResponse.json() as {
+      artifact: {
+        canManage: boolean
+        latestVersion: number
+        versions: Array<{ version: number }>
+        visibility: string
+      }
+    }
+    expect(metadataResponse.status).toBe(200)
+    expect(metadata.artifact).toMatchObject({
+      canManage: true,
+      latestVersion: 2,
+      visibility: 'private',
+    })
+    expect(metadata.artifact.versions.map((version) => version.version)).toEqual([2, 1])
+
+    const contentResponse = await fetchWithCookies(`${artifactUrl}/content?v=1`, jar)
+    expect(contentResponse.status).toBe(200)
+    expect(contentResponse.headers.get('content-security-policy')).toContain('sandbox allow-scripts')
+    expect(contentResponse.headers.get('content-security-policy')).toContain("connect-src 'none'")
+    expect(contentResponse.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(await contentResponse.text()).toContain('<title>First</title>')
+
+    const shareResponse = await fetchWithCookies(
+      `${viewer.baseUrl}/api/artifacts/${first.artifact.publicId}`,
+      jar,
+      {
+        body: JSON.stringify({ visibility: 'project' }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'PATCH',
+      },
+    )
+    expect(shareResponse.status).toBe(200)
+    await expect(shareResponse.json()).resolves.toMatchObject({
+      artifact: { visibility: 'project' },
+    })
+
+    const downloadResponse = await fetchWithCookies(`${artifactUrl}/content?v=2&download=1`, jar)
+    expect(downloadResponse.headers.get('content-disposition')).toContain('attachment')
   })
 })
 

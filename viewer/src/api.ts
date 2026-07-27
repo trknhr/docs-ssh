@@ -1,4 +1,6 @@
 import type {
+  ViewerArtifactResponse,
+  ViewerArtifactVisibility,
   FileResponse,
   TreeResponse,
   ViewerApiTokenCreateScope,
@@ -66,6 +68,23 @@ export async function getFile(
 
 export async function getSession() {
   return fetchJson<ViewerSessionResponse>('/api/auth/session')
+}
+
+export async function getArtifact(publicId: string) {
+  return fetchJson<ViewerArtifactResponse>(`/api/artifacts/${encodeURIComponent(publicId)}`)
+}
+
+export async function updateArtifactVisibility(
+  publicId: string,
+  visibility: ViewerArtifactVisibility,
+) {
+  return fetchJson<ViewerArtifactResponse>(`/api/artifacts/${encodeURIComponent(publicId)}`, {
+    body: JSON.stringify({ visibility }),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    method: 'PATCH',
+  })
 }
 
 export async function createWorkspaceAccessRequest(input: {

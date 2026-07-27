@@ -5,6 +5,7 @@ import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import ssh2 from 'ssh2'
 import { createAuthStore } from './auth/store.js'
+import { createArtifactStore } from './artifacts/store.js'
 import { generateHostKeyPem } from './host-key.js'
 import { createSSHServer } from './ssh.js'
 
@@ -26,6 +27,7 @@ async function createTestServer() {
   const stateDir = resolve(tempDir, 'state')
   const workspaceDir = resolve(tempDir, 'workspace')
   const authDbPath = resolve(stateDir, 'auth.sqlite')
+  const artifactDbPath = resolve(stateDir, 'artifacts.sqlite')
   await mkdir(docsDir, { recursive: true })
   await writeFile(resolve(docsDir, 'README.md'), '# Project Docs\n')
 
@@ -54,6 +56,7 @@ async function createTestServer() {
   authStore.close()
 
   const server = createSSHServer({
+    artifactDbPath,
     authDbPath,
     docsDir,
     docsName: 'Project Docs',
@@ -63,6 +66,7 @@ async function createTestServer() {
     registryPath: resolve(stateDir, 'sources.json'),
     sshConnectHost: 'docs-ssh',
     sshConnectPort: 2222,
+    viewerOrigin: 'https://docs.example.com',
     workspaceDir,
   })
   activeServers.push(server)
@@ -70,11 +74,13 @@ async function createTestServer() {
   const port = await server.listen()
   return {
     allowedKey,
+    artifactDbPath,
     authDbPath,
     owner,
     port,
     sessionKey,
     sshSession,
+    workspaceDir,
   }
 }
 
@@ -459,5 +465,46 @@ describe('createSSHServer', () => {
       exitCode: 0,
       stdout: expect.stringContaining('/projects/default/tasks'),
     })
+  })
+
+  it('publishes versioned HTML artifacts over SSH', async () => {
+    const { allowedKey, artifactDbPath, port, workspaceDir } = await createTestServer()
+    const artifactPath = resolve(
+      workspaceDir,
+      'tenants/default/projects/product-docs/tasks/demo/artifacts/index.html',
+    )
+    await mkdir(resolve(artifactPath, '..'), { recursive: true })
+    await writeFile(artifactPath, '<!doctype html><title>SSH artifact</title>')
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: allowedKey.private,
+      username: 'workstation-user',
+    })
+
+    const result = await execCommand(
+      client,
+      'artifact publish /projects/product-docs/tasks/demo/artifacts/index.html --share project --json',
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    const payload = JSON.parse(result.stdout) as {
+      artifact: {
+        latestVersion: number
+        publicId: string
+        url: string
+        visibility: string
+      }
+    }
+    expect(payload.artifact).toMatchObject({
+      latestVersion: 1,
+      url: expect.stringMatching(/^https:\/\/docs\.example\.com\/artifacts\//u),
+      visibility: 'project',
+    })
+
+    const artifactStore = createArtifactStore({ dbPath: artifactDbPath })
+    expect(artifactStore.getArtifactContent(payload.artifact.publicId)?.content).toContain('SSH artifact')
+    artifactStore.close()
   })
 })

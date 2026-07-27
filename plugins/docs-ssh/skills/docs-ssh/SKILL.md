@@ -56,6 +56,7 @@ Workspace rules:
 - Use `/home` for private personal notes.
 - Use `/projects/<slug>/issues` for issue tracking: what to do, why, status, next action, and result links.
 - Use `/projects/<slug>/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.
+- Put self-contained HTML in `/projects/<slug>/tasks/<task-slug>/artifacts/`, then publish it with `docs-ssh artifact publish tasks/<task-slug>/artifacts/<name>.html`. The configured `.docs-ssh.toml` project is used for relative paths.
 - Use `/projects/<slug>/docs` only for polished references that should stay useful long-term.
 - Do not create new directories directly under `/projects`; projects are server-managed resources.
 - To reduce SSH round trips, pipe newline-separated commands into `batch`; it returns one JSON object per command.
@@ -82,4 +83,8 @@ ssh <server> mkdir -p /projects/<slug>/tasks/example-task/artifacts
 ssh <server> "printf '%s\n' '# Notes' '- item' > /projects/<slug>/tasks/example-task/notes.md"
 ssh <server> sh -lc 'echo "- note" >> /projects/<slug>/tasks/example-task/notes.md'
 ssh <server> cat /projects/<slug>/tasks/example-task/notes.md
+docs-ssh artifact publish tasks/example-task/artifacts/index.html
+docs-ssh artifact list
+docs-ssh artifact versions <artifact-id>
+docs-ssh artifact share <artifact-id> project
 ```

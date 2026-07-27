@@ -7,6 +7,10 @@ import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Bash, defineCommand, InMemoryFs, ReadWriteFs, type ExecResult } from 'just-bash'
 import { loadInstanceConfig, type InstanceConfig } from '../instance-config.js'
+import {
+  createArtifactCommand,
+  type ArtifactCommandService,
+} from '../artifacts/command.js'
 import { loadSourceStore } from '../sources/source-store.js'
 import type { SourceStore } from '../sources/types.js'
 import {
@@ -416,6 +420,7 @@ export interface CreateBashSessionContext {
 
 export interface CreateBashOptions {
   accessGuard?: FsAccessGuard
+  artifactService?: ArtifactCommandService
   docsDir?: string
   docsName?: string
   env?: Record<string, string>
@@ -424,6 +429,7 @@ export interface CreateBashOptions {
   session?: CreateBashSessionContext
   sshHost?: string
   sshPort?: number
+  viewerOrigin?: string
   workspaceDir?: string
 }
 
@@ -498,6 +504,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
     `- \`${sourceStore.projectsMountPath}\` contains accessible project workspaces by slug.`,
     `- \`${sourceStore.projectMountPath}/issues\` is project issue tracking: what to do, why, status, next action, and result links.`,
     `- \`${sourceStore.projectMountPath}/tasks\` stores research and work results.`,
+    `- Publish self-contained task HTML with \`artifact publish ${sourceStore.projectMountPath}/tasks/<task-slug>/artifacts/<name>.html\`.`,
     '- `/tmp` is temporary and resets between SSH sessions.',
     '',
     `Use \`/home\` for personal notes, \`${sourceStore.projectMountPath}/issues\` for issue records, and \`${sourceStore.projectMountPath}/tasks/<task-slug>/\` for task results.`,
@@ -510,6 +517,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
     '',
     '- `issues/`: project issue tracking.',
     '- `tasks/`: research and work results.',
+    '- Publish self-contained HTML below `tasks/<task-slug>/artifacts/` with the `artifact publish` command.',
     '',
   ].join('\n')
   const scopes = new Set(opts.session?.scopes ?? [
@@ -611,6 +619,7 @@ export async function createBash(opts: CreateBashOptions = {}) {
               '',
               '- `issues/`: project issue tracking.',
               '- `tasks/`: research and work results.',
+              '- Publish self-contained HTML below `tasks/<task-slug>/artifacts/` with the `artifact publish` command.',
               '',
             ].join('\n'),
         ]))
@@ -659,6 +668,11 @@ export async function createBash(opts: CreateBashOptions = {}) {
       createBatchCommand('docs-ssh-batch'),
       createBatchCommand('ssh-batch'),
       createReadRangeCommand(),
+      createArtifactCommand({
+        defaultProjectSlug: sourceStore.projectSlug,
+        service: opts.artifactService,
+        viewerOrigin: opts.viewerOrigin ?? instanceConfig.viewer.publicOrigin,
+      }),
     ],
     defenseInDepth: true,
     executionLimits: EXECUTION_LIMITS,

@@ -994,6 +994,306 @@ textarea {
   word-break: break-word;
 }
 
+.artifact-shell {
+  background: #f1f1f3;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.artifact-toolbar {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 3rem;
+  padding: 0.45rem 0.6rem;
+  position: relative;
+  z-index: 2;
+}
+
+.artifact-toolbar__identity {
+  align-items: center;
+  display: flex;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.artifact-toolbar__brand {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.artifact-toolbar__brand img {
+  border-radius: 6px;
+  display: block;
+  height: 1.8rem;
+  width: 1.8rem;
+}
+
+.artifact-toolbar__tabs {
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  display: flex;
+  padding: 0.15rem;
+}
+
+.artifact-toolbar__tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  min-height: 1.9rem;
+  padding: 0.3rem 0.62rem;
+}
+
+.artifact-toolbar__tabs button:hover,
+.artifact-toolbar__tabs button.selected {
+  color: var(--text);
+}
+
+.artifact-toolbar__tabs button.selected {
+  background: var(--bg-elevated);
+  box-shadow: 0 1px 3px rgba(20, 20, 24, 0.1);
+}
+
+.artifact-toolbar__controls {
+  align-items: center;
+  display: flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.artifact-toolbar__select,
+.artifact-toolbar__button,
+.artifact-toolbar__chip {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.76rem;
+  min-height: 2.2rem;
+  white-space: nowrap;
+}
+
+.artifact-toolbar__select {
+  max-width: 9.5rem;
+  padding: 0.38rem 1.75rem 0.38rem 0.58rem;
+}
+
+.artifact-toolbar__select--version {
+  max-width: 10.5rem;
+}
+
+.artifact-toolbar__button,
+.artifact-toolbar__chip {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  padding: 0.38rem 0.62rem;
+  text-decoration: none;
+}
+
+button.artifact-toolbar__button {
+  cursor: pointer;
+}
+
+.artifact-toolbar__button:hover {
+  background: var(--bg-input);
+  border-color: var(--text-soft);
+}
+
+.artifact-toolbar__button--muted {
+  color: var(--text-muted);
+}
+
+.artifact-toolbar__chip {
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+
+.artifact-toolbar__menu {
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.artifact-toolbar__menu summary {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.92rem;
+  font-weight: 700;
+  height: 2.2rem;
+  justify-content: center;
+  letter-spacing: 0.08em;
+  list-style: none;
+  padding: 0 0.55rem;
+  user-select: none;
+}
+
+.artifact-toolbar__menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.artifact-toolbar__menu summary:hover,
+.artifact-toolbar__menu[open] summary {
+  background: var(--bg-input);
+  border-color: var(--text-soft);
+  color: var(--text);
+}
+
+.artifact-toolbar__menu-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 14px 38px rgba(20, 20, 24, 0.18);
+  display: grid;
+  min-width: 13rem;
+  padding: 0.35rem;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.45rem);
+  z-index: 5;
+}
+
+.artifact-toolbar__menu-panel > a,
+.artifact-toolbar__menu-panel > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.8rem;
+  justify-content: space-between;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  text-decoration: none;
+  width: 100%;
+}
+
+.artifact-toolbar__menu-panel > a:hover,
+.artifact-toolbar__menu-panel > button:hover {
+  background: var(--bg-input);
+}
+
+.artifact-toolbar__menu-panel small {
+  color: var(--text-soft);
+  font-size: 0.68rem;
+  margin-left: 1rem;
+}
+
+.artifact-toolbar__menu-divider {
+  border-top: 1px solid var(--border);
+  margin: 0.3rem 0.35rem;
+}
+
+.artifact-toolbar__menu-account {
+  color: var(--text-muted) !important;
+}
+
+.artifact-workspace {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.artifact-page {
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.artifact-state {
+  align-content: center;
+  display: grid;
+  gap: 0.8rem;
+  height: 100%;
+  justify-self: center;
+  max-width: 42rem;
+  padding: 2rem;
+  width: 100%;
+}
+
+.artifact-state h2,
+.artifact-state p {
+  margin: 0;
+}
+
+.artifact-state p {
+  color: var(--text-muted);
+}
+
+.artifact-stage {
+  background: #ffffff;
+  height: 100%;
+  overflow: hidden;
+}
+
+.artifact-frame {
+  background: #ffffff;
+  border: 0;
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.artifact-source {
+  background: #111318;
+  color: #e6edf3;
+  font: 0.84rem/1.6 var(--font-mono);
+  height: 100%;
+  margin: 0;
+  overflow: auto;
+  padding: 1rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.artifact-source-state {
+  align-content: center;
+  background: #ffffff;
+  color: var(--text-muted);
+  display: grid;
+  height: 100%;
+  justify-content: center;
+}
+
+.artifact-toast {
+  backdrop-filter: blur(12px);
+  background: rgba(24, 24, 28, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  bottom: 1rem;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+  color: #ffffff;
+  font-size: 0.78rem;
+  left: 50%;
+  max-width: min(90vw, 34rem);
+  overflow: hidden;
+  padding: 0.55rem 0.85rem;
+  position: absolute;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.artifact-toast--error {
+  background: rgba(132, 24, 24, 0.94);
+}
+
 .preview-skeleton {
   animation: pulse 1.3s ease-in-out infinite alternate;
   background: #eeeeef;
@@ -1147,6 +1447,51 @@ textarea {
 
   .workspace {
     overflow: auto;
+  }
+
+  .artifact-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0.4rem 0.45rem;
+  }
+
+  .artifact-toolbar__tabs {
+    justify-self: end;
+  }
+
+  .artifact-toolbar__controls {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .artifact-toolbar__select {
+    flex: 1 1 0;
+    max-width: none;
+    min-width: 0;
+    width: 0;
+  }
+
+  .artifact-toolbar__button,
+  .artifact-toolbar__chip {
+    flex: 0 0 auto;
+  }
+
+  .artifact-toolbar__select,
+  .artifact-toolbar__button,
+  .artifact-toolbar__chip {
+    min-height: 2.05rem;
+  }
+
+  .artifact-toolbar__menu summary {
+    height: 2.05rem;
+  }
+
+  .artifact-workspace,
+  .artifact-page,
+  .artifact-stage {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .workspace .workspace-split {

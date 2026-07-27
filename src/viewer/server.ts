@@ -3,7 +3,12 @@ import { createReadStream } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { basename, extname, posix, resolve, sep } from 'node:path'
+import { basename, dirname, extname, posix, resolve, sep } from 'node:path'
+import {
+  createArtifactStore,
+  type ArtifactWithVersions,
+  type ArtifactVisibility,
+} from '../artifacts/store.js'
 import {
   createAuthStore,
   type AuthApiToken,
@@ -91,6 +96,21 @@ const MAX_VIEWER_JSON_BODY_BYTES = 64 * 1024
 const CLI_LOGIN_REQUEST_TTL_MS = 5 * 60 * 1000
 const VIEWER_SESSION_TTL_MS = 12 * 60 * 60 * 1000
 const PROTECTED_VIEWER_DATA_ROUTES = new Set(['/api/tree', '/api/file', '/api/raw'])
+const ARTIFACT_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "base-uri 'none'",
+  "connect-src 'none'",
+  'font-src data:',
+  "form-action 'none'",
+  "frame-src 'none'",
+  'img-src data: blob:',
+  'media-src data: blob:',
+  "object-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "worker-src 'none'",
+  'sandbox allow-scripts',
+].join('; ')
 
 type ViewerFileKind = 'binary' | 'image' | 'markdown' | 'text'
 type ViewerMountType = 'home' | 'project'
@@ -113,6 +133,7 @@ interface ViewerTreeNode {
 }
 
 interface ViewerServerOptions {
+  artifactDbPath?: string
   authDbPath?: string
   docsDir: string
   docsName?: string
@@ -198,6 +219,10 @@ function guessContentType(path: string): string {
     default:
       return 'application/octet-stream'
   }
+}
+
+function isActiveRawContent(path: string): boolean {
+  return new Set(['.htm', '.html', '.svg']).has(extname(path).toLowerCase())
 }
 
 function isHiddenPathSegment(name: string): boolean {
@@ -439,6 +464,8 @@ function getRequestedPublicProject(url: URL): { projectPublicId: string; tenantP
 
 function isProtectedViewerDataRoute(pathname: string): boolean {
   return PROTECTED_VIEWER_DATA_ROUTES.has(pathname)
+    || /^\/api\/artifacts\/[^/]+$/u.test(pathname)
+    || /^\/artifacts\/[^/]+\/content$/u.test(pathname)
 }
 
 function buildViewerReturnTo(url: URL): string {
@@ -813,6 +840,50 @@ function sendMethodNotAllowed(response: ServerResponse) {
   sendJson(response, 405, { error: 'Method not allowed.' })
 }
 
+function toViewerArtifactPayload(
+  artifact: ArtifactWithVersions,
+  opts: { canManage: boolean },
+) {
+  return {
+    canManage: opts.canManage,
+    createdAt: artifact.createdAt,
+    creator: {
+      displayName: artifact.creatorDisplayName,
+      login: artifact.creatorLogin,
+    },
+    format: artifact.format,
+    latestVersion: artifact.latestVersion,
+    project: {
+      displayName: artifact.projectDisplayName,
+      publicId: artifact.projectPublicId,
+      slug: artifact.projectSlug,
+    },
+    publicId: artifact.publicId,
+    sourcePath: artifact.sourcePath,
+    title: artifact.title,
+    updatedAt: artifact.updatedAt,
+    versions: artifact.versions.map((version) => ({
+      contentHash: version.contentHash,
+      createdAt: version.createdAt,
+      createdByLogin: version.createdByLogin,
+      sizeBytes: version.sizeBytes,
+      version: version.version,
+    })),
+    visibility: artifact.visibility,
+  }
+}
+
+function parseArtifactVersion(value: string | null): number | undefined | null {
+  if (value === null || value === '') return undefined
+  if (!/^\d+$/u.test(value)) return null
+  const version = Number(value)
+  return Number.isSafeInteger(version) && version > 0 ? version : null
+}
+
+function sanitizeDownloadFilename(value: string): string {
+  return value.replace(/[^\w.-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'artifact.html'
+}
+
 async function readRequestBodyText(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = []
   let totalBytes = 0
@@ -961,6 +1032,13 @@ export function createViewerServer(opts: ViewerServerOptions) {
   const port = opts.port ?? 3000
   const staticDir = resolve(opts.staticDir ?? './viewer-dist')
   const authStore = opts.authDbPath ? createAuthStore({ dbPath: opts.authDbPath }) : null
+  const artifactStore = opts.artifactDbPath || opts.authDbPath
+    ? createArtifactStore({
+        dbPath: opts.artifactDbPath
+          ? resolve(opts.artifactDbPath)
+          : resolve(dirname(opts.authDbPath!), 'artifacts.sqlite'),
+      })
+    : null
   const oidcClient = opts.oidc ? new OidcClient(opts.oidc) : null
   const sessionSecret = opts.sessionSecret ? deriveViewerSessionSecret(opts.sessionSecret) : null
   const cliLoginRequests = new Map<string, CliLoginRequest>()
@@ -999,6 +1077,8 @@ export function createViewerServer(opts: ViewerServerOptions) {
       const isCliLoginExchangeRoute = url.pathname === '/api/cli-login/exchange'
       const cliLoginViewMatch = /^\/cli-login\/([^/]+)$/u.exec(url.pathname)
       const cliLoginApproveMatch = /^\/cli-login\/([^/]+)\/approve$/u.exec(url.pathname)
+      const artifactApiMatch = /^\/api\/artifacts\/([^/]+)$/u.exec(url.pathname)
+      const artifactContentMatch = /^\/artifacts\/([^/]+)\/content$/u.exec(url.pathname)
 
       if (url.pathname === '/healthz') {
         if (method !== 'GET' && method !== 'HEAD') {
@@ -1027,6 +1107,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
         && !(isCliLoginRequestRoute && method === 'POST')
         && !(isCliLoginExchangeRoute && method === 'POST')
         && !(cliLoginApproveMatch && method === 'POST')
+        && !(artifactApiMatch && method === 'PATCH')
       ) {
         sendMethodNotAllowed(response)
         return
@@ -2312,6 +2393,97 @@ export function createViewerServer(opts: ViewerServerOptions) {
         return
       }
 
+      if (artifactApiMatch || artifactContentMatch) {
+        if (!artifactStore || !authStore || !session) {
+          sendJson(response, 401, { error: 'Sign in to access this artifact.' }, headOnly)
+          return
+        }
+
+        const publicId = (artifactApiMatch ?? artifactContentMatch)![1]
+        const artifact = artifactStore.getArtifact(publicId)
+        if (!artifact) {
+          sendJson(response, 404, { error: 'Artifact not found.' }, headOnly)
+          return
+        }
+
+        const principalSession = authStore.findUserProjectSessionByPublicIds(
+          session.login,
+          artifact.tenantPublicId,
+          artifact.projectPublicId,
+        )
+        const canManage = principalSession?.principal.id === artifact.creatorPrincipalId
+        if (
+          !principalSession
+          || (artifact.visibility === 'private' && !canManage)
+        ) {
+          sendJson(response, 404, { error: 'Artifact not found.' }, headOnly)
+          return
+        }
+
+        if (artifactApiMatch) {
+          if (method === 'PATCH') {
+            if (!canManage) {
+              sendJson(response, 403, { error: 'Only the artifact creator can change sharing.' }, headOnly)
+              return
+            }
+
+            const body = await readJsonBody(request)
+            const visibility = body && typeof body === 'object' && 'visibility' in body
+              ? body.visibility
+              : undefined
+            if (visibility !== 'private' && visibility !== 'project') {
+              sendJson(response, 400, { error: 'visibility must be private or project.' }, headOnly)
+              return
+            }
+            const updated = artifactStore.updateArtifactVisibility({
+              principalId: principalSession.principal.id,
+              publicId,
+              visibility: visibility as ArtifactVisibility,
+            })
+            sendJson(response, 200, {
+              artifact: toViewerArtifactPayload(updated, { canManage: true }),
+            }, headOnly)
+            return
+          }
+
+          sendJson(response, 200, {
+            artifact: toViewerArtifactPayload(artifact, { canManage }),
+          }, headOnly)
+          return
+        }
+
+        const requestedVersion = parseArtifactVersion(url.searchParams.get('v'))
+        if (requestedVersion === null) {
+          sendJson(response, 400, { error: 'Artifact version must be a positive integer.' }, headOnly)
+          return
+        }
+        const published = artifactStore.getArtifactContent(publicId, requestedVersion)
+        if (!published) {
+          sendJson(response, 404, { error: 'Artifact version not found.' }, headOnly)
+          return
+        }
+
+        const filename = sanitizeDownloadFilename(
+          published.artifact.title.toLowerCase().endsWith('.html')
+            ? published.artifact.title
+            : `${published.artifact.title}.html`,
+        )
+        const download = url.searchParams.get('download') === '1'
+        response.writeHead(200, {
+          'Cache-Control': 'private, no-store',
+          'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename="${filename}"`,
+          'Content-Length': String(Buffer.byteLength(published.content, 'utf8')),
+          'Content-Security-Policy': ARTIFACT_CONTENT_SECURITY_POLICY,
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cross-Origin-Resource-Policy': 'same-origin',
+          'Permissions-Policy': 'camera=(), geolocation=(), microphone=()',
+          'Referrer-Policy': 'no-referrer',
+          'X-Content-Type-Options': 'nosniff',
+        })
+        response.end(headOnly ? undefined : published.content)
+        return
+      }
+
       let context
       try {
         context = await loadViewerContext(opts, {
@@ -2381,11 +2553,18 @@ export function createViewerServer(opts: ViewerServerOptions) {
         }
 
         if (url.pathname === '/api/raw') {
-          response.writeHead(200, {
+          const headers: Record<string, string> = {
             'Cache-Control': 'no-store',
             'Content-Length': String(fileStats.size),
             'Content-Type': guessContentType(resolvedPath.absolutePath),
-          })
+            'X-Content-Type-Options': 'nosniff',
+          }
+          if (isActiveRawContent(resolvedPath.absolutePath)) {
+            headers['Content-Disposition'] = `attachment; filename="${sanitizeDownloadFilename(basename(resolvedPath.absolutePath))}"`
+            headers['Content-Security-Policy'] = "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'"
+            headers['Referrer-Policy'] = 'no-referrer'
+          }
+          response.writeHead(200, headers)
           if (headOnly) {
             response.end()
             return
@@ -2459,6 +2638,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
           && (
             /^\/w\/[^/]+\/p\/[^/]+(?:\/files(?:\/.*)?)?$/u.test(url.pathname)
             || /^\/invite\/[^/]+$/u.test(url.pathname)
+            || /^\/artifacts\/[^/]+$/u.test(url.pathname)
           )
         ) {
           try {
@@ -2541,6 +2721,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
     close: () =>
       new Promise<void>((resolveClose) => {
         server.close(() => {
+          artifactStore?.close()
           authStore?.close()
           resolveClose()
         })

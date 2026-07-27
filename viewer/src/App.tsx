@@ -10,6 +10,7 @@ import {
   createProject,
   createTenantInvitation,
   createWorkspaceAccessRequest,
+  getArtifact,
   getApiTokens,
   getFile,
   getProjects,
@@ -20,6 +21,7 @@ import {
   getWorkspaceAccessRequests,
   reviewWorkspaceAccessRequest,
   revokeApiToken,
+  updateArtifactVisibility,
   updateProject,
 } from './api'
 import { resolveProjectSelection } from './project-selection'
@@ -27,6 +29,8 @@ import type {
   FilePayload,
   RootSummary,
   TreeNodeData,
+  ViewerArtifact,
+  ViewerArtifactVisibility,
   ViewerApiToken,
   ViewerApiTokenCreateScope,
   ViewerApiTokenScope,
@@ -144,6 +148,27 @@ function createExpirationTimestamp(days: string) {
 
 function getCurrentReturnTo() {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`
+}
+
+function readArtifactPublicId() {
+  return /^\/artifacts\/([^/]+)$/u.exec(window.location.pathname)?.[1] ?? null
+}
+
+function readArtifactVersion() {
+  const value = new URL(window.location.href).searchParams.get('v')
+  if (!value || !/^\d+$/u.test(value)) return null
+  const version = Number(value)
+  return Number.isSafeInteger(version) && version > 0 ? version : null
+}
+
+function writeArtifactVersion(version: number | null) {
+  const url = new URL(window.location.href)
+  if (version === null) {
+    url.searchParams.delete('v')
+  } else {
+    url.searchParams.set('v', String(version))
+  }
+  window.history.replaceState(null, '', url)
 }
 
 function findFirstFile(nodes: TreeNodeData[]): string | null {
@@ -545,6 +570,13 @@ function AccountPanel(props: {
     'npx docs-ssh@latest skill \\',
     '  --output .agents/skills/docs-ssh/SKILL.md',
   ].join('\n')
+  const projectConfig = selectedProject
+    ? [
+        'server = "docs-ssh"',
+        `project = "${selectedProject.slug}"`,
+        `viewer_origin = "${viewerOrigin}"`,
+      ].join('\n')
+    : ''
   const activeTokenCount = props.apiTokens.filter((token) => !token.revokedAt).length
   const roleLabel = props.session.role ?? 'member'
   const workspaceTabs: Array<{ count?: string, id: WorkspaceTab, label: string }> = [
@@ -1365,7 +1397,349 @@ function InvitationPanel(props: {
   )
 }
 
-export function App() {
+function formatArtifactDate(value: string) {
+  return new Date(value).toLocaleString()
+}
+
+function ArtifactPage(props: { publicId: string }) {
+  const initialVersion = readArtifactVersion()
+  const [oidc, setOidc] = useState<ViewerOidcState>({ enabled: false })
+  const [session, setSession] = useState<ViewerSessionUser | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(true)
+  const [artifact, setArtifact] = useState<ViewerArtifact | null>(null)
+  const [artifactLoading, setArtifactLoading] = useState(true)
+  const [artifactError, setArtifactError] = useState<string | null>(null)
+  const [followLatest, setFollowLatest] = useState(initialVersion === null)
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(initialVersion)
+  const [activeTab, setActiveTab] = useState<'preview' | 'source'>('preview')
+  const [source, setSource] = useState('')
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceError, setSourceError] = useState<string | null>(null)
+  const [copyStatus, setCopyStatus] = useState<string | null>(null)
+  const [shareStatus, setShareStatus] = useState<string | null>(null)
+  const [shareError, setShareError] = useState<string | null>(null)
+  const [shareUpdating, setShareUpdating] = useState(false)
+  const actionMenuRef = useRef<HTMLDetailsElement | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getSession()
+      .then((payload) => {
+        if (cancelled) return
+        setOidc(payload.oidc)
+        setSession(payload.session)
+        setSessionLoading(false)
+      })
+      .catch(() => {
+        if (!cancelled) setSessionLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const refreshArtifact = useCallback(async () => {
+    const payload = await getArtifact(props.publicId)
+    setArtifact(payload.artifact)
+    setSelectedVersion((current) => {
+      if (followLatest || current === null) return payload.artifact.latestVersion
+      return payload.artifact.versions.some((version) => version.version === current)
+        ? current
+        : payload.artifact.latestVersion
+    })
+    return payload.artifact
+  }, [followLatest, props.publicId])
+
+  useEffect(() => {
+    if (!session) {
+      setArtifactLoading(sessionLoading)
+      return
+    }
+
+    let cancelled = false
+    setArtifactLoading(true)
+    setArtifactError(null)
+    refreshArtifact()
+      .then(() => {
+        if (!cancelled) setArtifactLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setArtifactError(error instanceof Error ? error.message : String(error))
+        setArtifactLoading(false)
+      })
+
+    const interval = window.setInterval(() => {
+      refreshArtifact().catch(() => undefined)
+    }, 5_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [refreshArtifact, session, sessionLoading])
+
+  const contentUrl = selectedVersion
+    ? `/artifacts/${encodeURIComponent(props.publicId)}/content?v=${selectedVersion}`
+    : null
+
+  useEffect(() => {
+    if (activeTab !== 'source' || !contentUrl) return
+    let cancelled = false
+    setSource('')
+    setSourceError(null)
+    setSourceLoading(true)
+    fetch(contentUrl)
+      .then(async (response) => {
+        const content = await response.text()
+        if (!response.ok) throw new Error(`Source request failed with ${response.status}.`)
+        return content
+      })
+      .then((content) => {
+        if (cancelled) return
+        setSource(content)
+        setSourceLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setSourceError(error instanceof Error ? error.message : String(error))
+        setSourceLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, contentUrl])
+
+  const selectVersion = (value: string) => {
+    if (!artifact) return
+    setCopyStatus(null)
+    setShareStatus(null)
+    if (value === 'latest') {
+      setFollowLatest(true)
+      setSelectedVersion(artifact.latestVersion)
+      writeArtifactVersion(null)
+      return
+    }
+
+    const version = Number(value)
+    if (!Number.isSafeInteger(version) || version <= 0) return
+    setFollowLatest(false)
+    setSelectedVersion(version)
+    writeArtifactVersion(version)
+  }
+
+  const changeVisibility = async (visibility: ViewerArtifactVisibility) => {
+    setShareUpdating(true)
+    setShareError(null)
+    setShareStatus(null)
+    try {
+      const payload = await updateArtifactVisibility(props.publicId, visibility)
+      setArtifact(payload.artifact)
+      setShareStatus(visibility === 'project' ? 'Shared with the project.' : 'Made private.')
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setShareUpdating(false)
+    }
+  }
+
+  const copyArtifactUrl = async () => {
+    try {
+      const url = new URL(`/artifacts/${encodeURIComponent(props.publicId)}`, window.location.origin)
+      if (!followLatest && selectedVersion) url.searchParams.set('v', String(selectedVersion))
+      await navigator.clipboard.writeText(url.toString())
+      setCopyStatus(followLatest ? 'Copied latest-version URL.' : `Copied pinned v${selectedVersion} URL.`)
+    } catch {
+      setCopyStatus('Could not copy the URL.')
+    } finally {
+      actionMenuRef.current?.removeAttribute('open')
+    }
+  }
+
+  const artifactStatus = shareError ?? shareStatus ?? copyStatus
+
+  return (
+    <div className="app-shell artifact-shell">
+      <header className="artifact-toolbar">
+        <div className="artifact-toolbar__identity">
+          <a
+            className="artifact-toolbar__brand"
+            href="/"
+            aria-label="Open docs-ssh files"
+            title={artifact
+              ? `${artifact.title}\n${artifact.sourcePath}\nPublished by ${artifact.creator.displayName}\nUpdated ${formatArtifactDate(artifact.updatedAt)}`
+              : 'Open docs-ssh files'}
+          >
+            <img src="/brand/docs-ssh-mark.svg" alt="" />
+          </a>
+        </div>
+
+        {artifact && session && contentUrl && selectedVersion ? (
+          <>
+            <div className="artifact-toolbar__tabs" role="tablist" aria-label="Artifact view">
+              <button
+                aria-selected={activeTab === 'preview'}
+                className={activeTab === 'preview' ? 'selected' : ''}
+                onClick={() => setActiveTab('preview')}
+                role="tab"
+                type="button"
+              >
+                Preview
+              </button>
+              <button
+                aria-selected={activeTab === 'source'}
+                className={activeTab === 'source' ? 'selected' : ''}
+                onClick={() => setActiveTab('source')}
+                role="tab"
+                type="button"
+              >
+                Source
+              </button>
+            </div>
+
+            <div className="artifact-toolbar__controls">
+              <select
+                aria-label="Artifact version"
+                className="artifact-toolbar__select artifact-toolbar__select--version"
+                onChange={(event) => selectVersion(event.target.value)}
+                value={followLatest ? 'latest' : String(selectedVersion)}
+              >
+                <option value="latest">Latest · v{artifact.latestVersion}</option>
+                {artifact.versions.map((version) => (
+                  <option key={version.version} value={version.version}>
+                    v{version.version} · {formatArtifactDate(version.createdAt)}
+                  </option>
+                ))}
+              </select>
+              {artifact.canManage ? (
+                <select
+                  aria-label="Artifact sharing"
+                  className="artifact-toolbar__select"
+                  disabled={shareUpdating}
+                  onChange={(event) => changeVisibility(event.target.value as ViewerArtifactVisibility)}
+                  value={artifact.visibility}
+                >
+                  <option value="private">Private</option>
+                  <option value="project">Project members</option>
+                </select>
+              ) : (
+                <span className="artifact-toolbar__chip">{artifact.visibility}</span>
+              )}
+              <details
+                className="artifact-toolbar__menu"
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    event.currentTarget.removeAttribute('open')
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') event.currentTarget.removeAttribute('open')
+                }}
+                ref={actionMenuRef}
+              >
+                <summary aria-label="More artifact actions" title="More actions">•••</summary>
+                <div className="artifact-toolbar__menu-panel">
+                  <button onClick={copyArtifactUrl} type="button">
+                    <span>Copy link</span>
+                    <small>{followLatest ? 'Latest URL' : `Pinned v${selectedVersion}`}</small>
+                  </button>
+                  <a href={`${contentUrl}&download=1`}>
+                    <span>Download HTML</span>
+                  </a>
+                  <a href="/">
+                    <span>Open Files</span>
+                  </a>
+                  <div className="artifact-toolbar__menu-divider" />
+                  <a
+                    className="artifact-toolbar__menu-account"
+                    href={`/auth/logout?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}
+                    title={`Signed in as ${session.userDisplayName} (${session.login})`}
+                  >
+                    <span>Sign out</span>
+                    <small>{session.login}</small>
+                  </a>
+                </div>
+              </details>
+            </div>
+          </>
+        ) : session ? (
+          <div className="artifact-toolbar__controls">
+            <details
+              className="artifact-toolbar__menu"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  event.currentTarget.removeAttribute('open')
+                }
+              }}
+              ref={actionMenuRef}
+            >
+              <summary aria-label="More artifact actions" title="More actions">•••</summary>
+              <div className="artifact-toolbar__menu-panel">
+                <a href="/"><span>Open Files</span></a>
+                <a href={`/auth/logout?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}>
+                  <span>Sign out</span>
+                </a>
+              </div>
+            </details>
+          </div>
+        ) : null}
+      </header>
+
+      <main className="artifact-workspace">
+        {sessionLoading ? (
+          <section className="session-gate" aria-label="Checking web session">
+            <p className="eyebrow">Web Session</p>
+            <div className="preview-skeleton preview-skeleton--wide" />
+            <div className="preview-skeleton" />
+          </section>
+        ) : !session ? (
+          <LoggedOutLanding oidc={oidc} />
+        ) : artifactLoading ? (
+          <section className="artifact-state">
+            <div className="preview-skeleton preview-skeleton--wide" />
+            <div className="preview-skeleton" />
+          </section>
+        ) : artifactError || !artifact || !contentUrl || !selectedVersion ? (
+          <section className="artifact-state">
+            <p className="eyebrow">Artifact unavailable</p>
+            <h2>Unable to open this artifact</h2>
+            <p>{artifactError ?? 'The requested artifact or version was not found.'}</p>
+          </section>
+        ) : (
+          <section className="artifact-page">
+            <div className="artifact-stage">
+              {activeTab === 'preview' ? (
+                <iframe
+                  className="artifact-frame"
+                  key={`${artifact.publicId}:${selectedVersion}`}
+                  referrerPolicy="no-referrer"
+                  sandbox="allow-scripts"
+                  src={contentUrl}
+                  title={artifact.title}
+                />
+              ) : sourceLoading ? (
+                <div className="artifact-source-state">Loading source...</div>
+              ) : sourceError ? (
+                <div className="artifact-source-state status-message--error">{sourceError}</div>
+              ) : (
+                <pre className="artifact-source"><code>{source}</code></pre>
+              )}
+            </div>
+            {artifactStatus ? (
+              <div
+                className={`artifact-toast ${shareError ? 'artifact-toast--error' : ''}`}
+                role="status"
+              >
+                {artifactStatus}
+              </div>
+            ) : null}
+          </section>
+        )}
+      </main>
+    </div>
+  )
+}
+
+function WorkspaceApp() {
   const [initialLocation] = useState(readLocationState)
   const treeRef = useRef<TreeApi<TreeNodeData> | null>(null)
   const [oidc, setOidc] = useState<ViewerOidcState>({ enabled: false })
@@ -2216,4 +2590,11 @@ export function App() {
       </main>
     </div>
   )
+}
+
+export function App() {
+  const artifactPublicId = readArtifactPublicId()
+  return artifactPublicId
+    ? <ArtifactPage publicId={artifactPublicId} />
+    : <WorkspaceApp />
 }
