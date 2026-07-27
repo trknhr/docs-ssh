@@ -98,7 +98,8 @@ forms, popups, and parent-page access disabled.
 ## Notes
 
 - Runtime target is Node 24.
-- Release images are published from `v*.*.*` tags.
+- Matching `v*.*.*` tags publish the Docker image and npm package through the Release workflow.
+- Keep the tag and `package.json` version aligned.
 - Use `pnpm run smoke` before release tags.
 
 ## Design FAQ

@@ -1,6 +1,6 @@
 {
   "name": "docs-ssh",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A shell-native workspace over SSH for AI-agent work notes.",
   "license": "Apache-2.0",
   "repository": {
