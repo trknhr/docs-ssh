@@ -1924,18 +1924,21 @@ function getActiveSshSessionByFingerprint(
   username?: string,
 ): AuthSshSession | null {
   const trimmedUsername = username?.trim()
+  const filterByUsername = trimmedUsername !== undefined
   const sql = `SELECT id, tenant_id AS tenantId, principal_id AS principalId, current_project_slug AS currentProjectSlug,
                       username, algorithm, public_key AS publicKey, fingerprint, scopes,
                       source_api_token_id AS sourceApiTokenId,
                       created_at AS createdAt, expires_at AS expiresAt, revoked_at AS revokedAt
                FROM ssh_sessions
                WHERE fingerprint = ?
-                 ${trimmedUsername ? 'AND username = ?' : ''}
+                 ${filterByUsername ? 'AND username = ?' : ''}
                  AND revoked_at IS NULL
                  AND expires_at > ?
                ORDER BY expires_at DESC
                LIMIT 1`
-  const params = trimmedUsername ? [fingerprint, trimmedUsername, createTimestamp()] : [fingerprint, createTimestamp()]
+  const params = filterByUsername
+    ? [fingerprint, trimmedUsername, createTimestamp()]
+    : [fingerprint, createTimestamp()]
   const row = database.prepare(sql).get(...params) as AuthSshSessionRow | undefined
 
   return row ? parseSshSession(row) : null

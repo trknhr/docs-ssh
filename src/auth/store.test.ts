@@ -600,6 +600,7 @@ describe('createAuthStore', () => {
     expect(session.username).toBe('sess_test')
     expect(session.currentProjectSlug).toBe(project.slug)
     expect(authStore.findPrincipalBySshFingerprint(session.fingerprint, 'wrong-user')).toBeNull()
+    expect(authStore.findPrincipalBySshFingerprint(session.fingerprint, '   ')).toBeNull()
     expect(principalSession).toMatchObject({
       login: 'alice',
       principal: { id: owner.principal.id },
