@@ -85,13 +85,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  publish-npm:
+  prepare-npm:
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - name: Check out repository
@@ -111,10 +108,40 @@ jobs:
           package-manager-cache: false
 
       - name: Ensure npm supports trusted publishing
-        run: npm install --global npm@11
+        run: npm install --global --prefix "${RUNNER_TEMP}/npm-cli" npm@11.6.2
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Pack npm package
+        run: |
+          mkdir -p "${RUNNER_TEMP}/package"
+          npm pack --pack-destination "${RUNNER_TEMP}/package"
+
+      - name: Upload npm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: |
+            ${{ runner.temp }}/package/*.tgz
+            ${{ runner.temp }}/npm-cli
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-npm:
+    needs: prepare-npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download npm package
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm-package
+
       - name: Publish npm package
-        run: npm publish
+        run: node "${RUNNER_TEMP}/npm-package/npm-cli/lib/node_modules/npm/bin/npm-cli.js" publish "${RUNNER_TEMP}/npm-package/package/"*.tgz
