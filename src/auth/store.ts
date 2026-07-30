@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { normalizeSshPublicKey } from './ssh-key.js'
 
-const AUTH_SCHEMA_VERSION = 9
+const AUTH_SCHEMA_VERSION = 10
 const IDENTIFIER_PATTERN = /[^a-z0-9-]+/g
 const PUBLIC_ID_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'
 const PUBLIC_ID_LENGTH = 16
@@ -605,6 +605,7 @@ function migrateDatabase(database: Database.Database): void {
   if (currentVersion <= 6) migrateSchemaV6ToV7(database)
   if (currentVersion <= 7) migrateSchemaV7ToV8(database)
   if (currentVersion <= 8) migrateSchemaV8ToV9(database)
+  if (currentVersion <= 9) migrateSchemaV9ToV10(database)
   database.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`)
 }
 
@@ -1101,7 +1102,11 @@ function migrateSchemaV5ToV6(database: Database.Database): void {
   const columnNames = new Set(columns.map((column) => column.name))
 
   if (!columnNames.has('source_api_token_id')) {
-    database.exec('ALTER TABLE ssh_sessions ADD COLUMN source_api_token_id TEXT REFERENCES api_tokens(id) ON DELETE SET NULL;')
+    const tx = database.transaction(() => {
+      database.exec('ALTER TABLE ssh_sessions ADD COLUMN source_api_token_id TEXT REFERENCES api_tokens(id) ON DELETE SET NULL;')
+      database.prepare('UPDATE ssh_sessions SET revoked_at = ? WHERE revoked_at IS NULL').run(createTimestamp())
+    })
+    tx()
   }
 }
 
@@ -1211,6 +1216,11 @@ function migrateSchemaV8ToV9(database: Database.Database): void {
     `)
   })
   tx()
+}
+
+function migrateSchemaV9ToV10(database: Database.Database): void {
+  database.prepare('UPDATE ssh_sessions SET revoked_at = ? WHERE source_api_token_id IS NULL AND revoked_at IS NULL')
+    .run(createTimestamp())
 }
 
 function parseTenant(row: TenantRow): AuthTenant {
