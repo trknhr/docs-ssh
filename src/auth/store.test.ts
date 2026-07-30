@@ -184,7 +184,7 @@ describe('createAuthStore', () => {
     authStore.close()
 
     const migratedDatabase = new Database(dbPath)
-    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(9)
+    expect(migratedDatabase.pragma('user_version', { simple: true })).toBe(10)
     expect(
       migratedDatabase.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenants'").get(),
     ).toBeTruthy()
@@ -198,6 +198,33 @@ describe('createAuthStore', () => {
       publicIdPattern,
     )
     migratedDatabase.close()
+  })
+
+  it('revokes existing SSH sessions when adding source API token tracking', async () => {
+    const tempDir = await createTempDir()
+    const dbPath = resolve(tempDir, 'auth.sqlite')
+    const authStore = createAuthStore({ dbPath })
+    authStore.ensureSingleTenantOwner({ ownerLogin: 'alice' })
+    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const session = authStore.createSshSession({
+      publicKey: keys.public,
+      userLogin: 'alice',
+    })
+    authStore.close()
+
+    const legacyDatabase = new Database(dbPath)
+    legacyDatabase.exec('PRAGMA user_version = 9;')
+    legacyDatabase.close()
+
+    const migratedStore = createAuthStore({ dbPath })
+    expect(migratedStore.listSshSessions({ includeRevoked: true })).toMatchObject([
+      {
+        id: session.id,
+        revokedAt: expect.any(String),
+      },
+    ])
+    expect(migratedStore.findPrincipalBySshFingerprint(session.fingerprint, session.username)).toBeNull()
+    migratedStore.close()
   })
 
   it('registers users without a workspace and creates an idempotent access request', async () => {
