@@ -1434,8 +1434,39 @@ button.artifact-toolbar__button {
 
 @media (max-width: 900px) {
   .topbar {
-    align-items: start;
+    align-items: center;
+    gap: 0.6rem;
     grid-template-columns: 1fr;
+    min-height: 0;
+    padding: 0.55rem 0.65rem;
+  }
+
+  .topbar__brand {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .topbar__brand > .eyebrow,
+  .topbar__subtitle {
+    display: none;
+  }
+
+  .topbar h1 {
+    font-size: 1.12rem;
+  }
+
+  .topbar__brand-mark {
+    border-radius: 6px;
+    height: 1.75rem;
+    width: 1.75rem;
+  }
+
+  .topbar__actions {
+    align-items: end;
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .topbar__actions,
@@ -1445,8 +1476,38 @@ button.artifact-toolbar__button {
     width: 100%;
   }
 
-  .workspace {
-    overflow: auto;
+  .project-switcher {
+    align-items: center;
+    gap: 0.55rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    min-width: 0;
+  }
+
+  .project-switcher select {
+    min-height: 2.25rem;
+    min-width: 0;
+    padding-block: 0.4rem;
+  }
+
+  .auth-panel {
+    justify-items: stretch;
+    width: 100%;
+  }
+
+  .auth-panel__body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .auth-panel__body > .meta-button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .topbar__user {
+    display: none;
   }
 
   .artifact-toolbar {
@@ -1495,8 +1556,34 @@ button.artifact-toolbar__button {
   }
 
   .workspace .workspace-split {
-    height: auto;
-    min-height: calc(100vh - 6rem);
+    height: 100%;
+    min-height: 0;
+  }
+
+  .workspace-split--account .preview-header {
+    display: none;
+  }
+
+  .workspace-split--files .sidebar {
+    border-bottom: 1px solid var(--border);
+    border-right: 0;
+  }
+
+  .workspace-split--files .sidebar__project {
+    display: none;
+  }
+
+  .workspace-split--files .sidebar__toolbar {
+    padding: 0.65rem;
+  }
+
+  .preview-header {
+    gap: 0.65rem;
+    padding: 0.75rem 0.85rem;
+  }
+
+  .preview-body {
+    padding: 1rem;
   }
 
   .docs-tabs {
@@ -1524,5 +1611,16 @@ button.artifact-toolbar__button {
   .token-scope-grid,
   .workspace-stats {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar__actions {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topbar__signout {
+    justify-content: center;
   }
 }

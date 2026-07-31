@@ -365,6 +365,26 @@ function useElementSize<T extends HTMLElement>() {
   return { ref, size }
 }
 
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => (
+    typeof window !== 'undefined' && window.matchMedia(query).matches
+  ))
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(query)
+    const updateMatches = () => setMatches(mediaQuery.matches)
+
+    updateMatches()
+    mediaQuery.addEventListener('change', updateMatches)
+
+    return () => {
+      mediaQuery.removeEventListener('change', updateMatches)
+    }
+  }, [query])
+
+  return matches
+}
+
 function renderMarkdown(file: FilePayload) {
   const renderer = new Renderer()
 
@@ -1742,6 +1762,7 @@ function ArtifactPage(props: { publicId: string }) {
 function WorkspaceApp() {
   const [initialLocation] = useState(readLocationState)
   const treeRef = useRef<TreeApi<TreeNodeData> | null>(null)
+  const isCompactViewport = useMediaQuery('(max-width: 900px)')
   const [oidc, setOidc] = useState<ViewerOidcState>({ enabled: false })
   const [session, setSession] = useState<ViewerSessionUser | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
@@ -2447,11 +2468,11 @@ function WorkspaceApp() {
                 >
                   Files
                 </button> : null}
-                <span className="meta-pill">
+                <span className="meta-pill topbar__user">
                   {session.userDisplayName} ({session.login})
                 </span>
                 <a
-                  className="meta-link"
+                  className="meta-link topbar__signout"
                   href={`/auth/logout?returnTo=${encodeURIComponent(getCurrentReturnTo())}`}
                 >
                   Sign out
@@ -2487,8 +2508,17 @@ function WorkspaceApp() {
             workspaceName={workspaceName}
           />
         ) : (
-          <Allotment className="workspace-split" defaultSizes={[28, 72]}>
-            <Allotment.Pane minSize={260} preferredSize={320}>
+          <Allotment
+            className={`workspace-split ${showAccountPanel ? 'workspace-split--account' : 'workspace-split--files'}`}
+            defaultSizes={isCompactViewport ? [34, 66] : [28, 72]}
+            key={isCompactViewport ? 'compact' : 'desktop'}
+            vertical={isCompactViewport}
+          >
+            <Allotment.Pane
+              minSize={isCompactViewport ? 112 : 260}
+              preferredSize={isCompactViewport ? '34%' : 320}
+              visible={!isCompactViewport || !showAccountPanel}
+            >
               <section className="sidebar">
                 <div className="sidebar__toolbar">
                   {currentProject ? (
@@ -2565,7 +2595,7 @@ function WorkspaceApp() {
               </section>
             </Allotment.Pane>
 
-            <Allotment.Pane minSize={420}>
+            <Allotment.Pane minSize={isCompactViewport ? 160 : 420}>
               <section className="preview-panel">
                 <PreviewHeader file={file} session={session} />
                 <div className="preview-body">
