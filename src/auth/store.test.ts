@@ -3,11 +3,10 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
-import ssh2 from 'ssh2'
+import { generateSshEd25519KeyPair } from './ssh-key.js'
 import { createAuthStore } from './store.js'
 
 const tempDirs: string[] = []
-const { utils: sshUtils } = ssh2
 const publicIdPattern = /^[23456789abcdefghjkmnpqrstuvwxyz]{16}$/
 
 async function createTempDir(): Promise<string> {
@@ -61,7 +60,7 @@ describe('createAuthStore', () => {
       dbPath: resolve(tempDir, 'auth.sqlite'),
     })
     const owner = authStore.ensureSingleTenantOwner()
-    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const keys = generateSshEd25519KeyPair()
 
     const sshKey = authStore.addSshKey({
       name: 'laptop',
@@ -168,7 +167,7 @@ describe('createAuthStore', () => {
       provider: 'oidc',
       subject: 'legacy-sub',
     })
-    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const keys = generateSshEd25519KeyPair()
     const sshKey = authStore.addSshKey({
       publicKey: keys.public,
       userLogin: 'legacy-owner',
@@ -205,7 +204,7 @@ describe('createAuthStore', () => {
     const dbPath = resolve(tempDir, 'auth.sqlite')
     const authStore = createAuthStore({ dbPath })
     authStore.ensureSingleTenantOwner({ ownerLogin: 'alice' })
-    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const keys = generateSshEd25519KeyPair()
     const session = authStore.createSshSession({
       publicKey: keys.public,
       userLogin: 'alice',
@@ -425,7 +424,7 @@ describe('createAuthStore', () => {
       ownerLogin: 'alice',
       ownerName: 'Alice',
     })
-    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const keys = generateSshEd25519KeyPair()
 
     const sshKey = authStore.addSshKey({
       publicKey: keys.public,
@@ -543,7 +542,7 @@ describe('createAuthStore', () => {
       }),
     ).toThrow(/Project slugs cannot be changed/)
 
-    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const keys = generateSshEd25519KeyPair()
     const session = authStore.createSshSession({
       projectSlug: 'product-docs',
       publicKey: keys.public,
@@ -612,7 +611,7 @@ describe('createAuthStore', () => {
       slug: 'product-docs',
       userLogin: 'alice',
     })
-    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const keys = generateSshEd25519KeyPair()
 
     const session = authStore.createSshSession({
       projectSlug: 'product-docs',
@@ -687,7 +686,7 @@ describe('createAuthStore', () => {
       slug: 'product-docs',
       userLogin: 'alice',
     })
-    const tokenSessionKey = sshUtils.generateKeyPairSync('ed25519')
+    const tokenSessionKey = generateSshEd25519KeyPair()
     const apiToken = authStore.createApiToken({
       label: 'agent token',
       projectSlug: 'product-docs',
@@ -726,7 +725,7 @@ describe('createAuthStore', () => {
       reason: 'Source API token is no longer active.',
     })
 
-    const membershipSessionKey = sshUtils.generateKeyPairSync('ed25519')
+    const membershipSessionKey = generateSshEd25519KeyPair()
     const membershipSession = authStore.createSshSession({
       projectSlug: 'product-docs',
       publicKey: membershipSessionKey.public,
@@ -897,7 +896,7 @@ describe('createAuthStore', () => {
       ownerLogin: 'backup-owner',
       ownerName: 'Backup Owner',
     })
-    const keys = sshUtils.generateKeyPairSync('ed25519')
+    const keys = generateSshEd25519KeyPair()
 
     authStore.addSshKey({
       publicKey: keys.public,

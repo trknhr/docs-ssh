@@ -4,12 +4,12 @@ import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import ssh2 from 'ssh2'
+import { generateSshEd25519KeyPair } from './auth/ssh-key.js'
 import { createAuthStore } from './auth/store.js'
 import { createArtifactStore } from './artifacts/store.js'
 import { generateHostKeyPem } from './host-key.js'
 import { createSSHServer } from './ssh.js'
 
-const { utils: sshUtils } = ssh2
 const HOST_KEY = Buffer.from(generateHostKeyPem())
 const tempDirs: string[] = []
 const activeClients: ssh2.Client[] = []
@@ -36,11 +36,11 @@ async function createTestServer() {
     ownerLogin: 'alice',
     ownerName: 'Alice Owner',
   })
-  const allowedKey = sshUtils.generateKeyPairSync('ed25519')
+  const allowedKey = generateSshEd25519KeyPair()
   authStore.addSshKey({
     publicKey: allowedKey.public,
   })
-  const sessionKey = sshUtils.generateKeyPairSync('ed25519')
+  const sessionKey = generateSshEd25519KeyPair()
   authStore.createProject({
     displayName: 'Product Docs',
     slug: 'product-docs',
@@ -488,7 +488,7 @@ describe('createSSHServer', () => {
 
   it('checks source API token status for existing SSH sessions', async () => {
     const { authDbPath, port } = await createTestServer()
-    const tokenSessionKey = sshUtils.generateKeyPairSync('ed25519')
+    const tokenSessionKey = generateSshEd25519KeyPair()
     const authStore = createAuthStore({ dbPath: authDbPath })
     const apiToken = authStore.createApiToken({
       label: 'agent token',
@@ -530,7 +530,7 @@ describe('createSSHServer', () => {
 
   it('rejects public keys that are not stored in the auth database', async () => {
     const { port } = await createTestServer()
-    const unknownKey = sshUtils.generateKeyPairSync('ed25519')
+    const unknownKey = generateSshEd25519KeyPair()
 
     const error = await connectExpectFailure({
       host: '127.0.0.1',

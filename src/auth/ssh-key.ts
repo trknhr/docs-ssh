@@ -15,6 +15,13 @@ export interface NormalizedSshPublicKey {
   publicKey: string
 }
 
+export interface GeneratedSshKeyPair {
+  private: string
+  public: string
+}
+
+const SSH_KEY_GENERATION_ATTEMPTS = 8
+
 function createPublicKeyInput(publicKey: Buffer | PresentedSshPublicKey | string): string {
   if (typeof publicKey === 'string') return publicKey.trim()
   if (Buffer.isBuffer(publicKey)) return publicKey.toString('utf8').trim()
@@ -59,4 +66,51 @@ export function normalizeSshPublicKey(
     parsedKey: key,
     publicKey: normalized,
   }
+}
+
+// ssh2 can occasionally shorten Ed25519 public key material that starts with zero bytes.
+// Validate the complete pair and retry instead of persisting an unusable CLI identity.
+export function generateSshEd25519KeyPair(
+  generateKeyPair: () => GeneratedSshKeyPair = () => sshUtils.generateKeyPairSync('ed25519'),
+): GeneratedSshKeyPair {
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < SSH_KEY_GENERATION_ATTEMPTS; attempt += 1) {
+    const keyPair = generateKeyPair()
+
+    try {
+      const publicKey = normalizeSshPublicKey(keyPair.public)
+      if (publicKey.algorithm !== 'ssh-ed25519') {
+        throw new Error(`Expected an Ed25519 public key, but generated ${publicKey.algorithm}.`)
+      }
+
+      const parsedPrivate = sshUtils.parseKey(keyPair.private)
+      if (parsedPrivate instanceof Error) {
+        throw new Error(`Invalid SSH private key: ${parsedPrivate.message}`)
+      }
+
+      const privateKey = Array.isArray(parsedPrivate) ? parsedPrivate[0] : parsedPrivate
+      if (!privateKey?.isPrivateKey()) {
+        throw new Error('Invalid SSH private key: no usable private key material found.')
+      }
+      if (privateKey.type !== 'ssh-ed25519') {
+        throw new Error(`Expected an Ed25519 private key, but generated ${privateKey.type}.`)
+      }
+      if (!publicKey.parsedKey.getPublicSSH().equals(privateKey.getPublicSSH())) {
+        throw new Error('Generated SSH public and private keys do not match.')
+      }
+
+      return {
+        private: keyPair.private,
+        public: publicKey.publicKey,
+      }
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  const detail = lastError instanceof Error ? `: ${lastError.message}` : ''
+  throw new Error(
+    `Failed to generate a valid Ed25519 SSH key pair after ${SSH_KEY_GENERATION_ATTEMPTS} attempts${detail}`,
+  )
 }

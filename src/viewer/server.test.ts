@@ -6,15 +6,14 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose'
-import ssh2 from 'ssh2'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createArtifactStore } from '../artifacts/store.js'
+import { generateSshEd25519KeyPair } from '../auth/ssh-key.js'
 import { createAuthStore } from '../auth/store.js'
 import { createViewerServer } from './server.js'
 
 const tempDirs: string[] = []
 const closers: Array<() => Promise<void>> = []
-const { utils: sshUtils } = ssh2
 
 async function createTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'docs-ssh-viewer-'))
@@ -915,7 +914,7 @@ describe('createViewerServer OIDC session flow', () => {
     expect(emptyListResponse.status).toBe(200)
     expect(emptyListPayload.keys).toEqual([])
 
-    const keyPair = sshUtils.generateKeyPairSync('ed25519')
+    const keyPair = generateSshEd25519KeyPair()
     const addResponse = await fetchWithCookies(`${viewer.baseUrl}/api/auth/ssh-keys`, jar, {
       body: JSON.stringify({
         name: 'Laptop',
@@ -1062,7 +1061,7 @@ describe('createViewerServer OIDC session flow', () => {
     const missingTreeResponse = await fetchWithCookies(`${viewer.baseUrl}/api/tree?project=missing-project`, jar)
     expect(missingTreeResponse.status).toBe(404)
 
-    const sessionKeyPair = sshUtils.generateKeyPairSync('ed25519')
+    const sessionKeyPair = generateSshEd25519KeyPair()
     const createSessionResponse = await fetchWithCookies(`${viewer.baseUrl}/api/ssh-sessions`, jar, {
       body: JSON.stringify({
         project: 'product-docs',
@@ -1090,7 +1089,7 @@ describe('createViewerServer OIDC session flow', () => {
     expect(createSessionPayload.session.fingerprint.startsWith('SHA256:')).toBe(true)
     expect(Date.parse(createSessionPayload.session.expiresAt)).toBeGreaterThan(Date.now())
 
-    const cliSessionKeyPair = sshUtils.generateKeyPairSync('ed25519')
+    const cliSessionKeyPair = generateSshEd25519KeyPair()
     const cliRequestResponse = await fetch(`${viewer.baseUrl}/api/cli-login/requests`, {
       body: JSON.stringify({
         callbackUrl: 'http://127.0.0.1:54321/callback',
@@ -1448,7 +1447,7 @@ describe('createViewerServer OIDC session flow', () => {
     ])
     expect(listTokenPayload.tokens[0].token).toBeUndefined()
 
-    const keyPair = sshUtils.generateKeyPairSync('ed25519')
+    const keyPair = generateSshEd25519KeyPair()
     const bearerSessionResponse = await fetch(`${viewer.baseUrl}/api/ssh-sessions`, {
       body: JSON.stringify({
         project: 'product-docs',
@@ -1624,7 +1623,7 @@ describe('createViewerServer OIDC session flow', () => {
     expect(listResponse.status).toBe(401)
     expect(listPayload.error).toContain('Sign in')
 
-    const keyPair = sshUtils.generateKeyPairSync('ed25519')
+    const keyPair = generateSshEd25519KeyPair()
     const addResponse = await fetch(`${viewer.baseUrl}/api/auth/ssh-keys`, {
       body: JSON.stringify({
         publicKey: keyPair.public,

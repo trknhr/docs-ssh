@@ -8,7 +8,7 @@ import { access, appendFile, chmod, mkdir, readFile, readdir, realpath, rm, stat
 import { basename, dirname, posix, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { promisify } from 'node:util'
-import ssh2 from 'ssh2'
+import { generateSshEd25519KeyPair } from './auth/ssh-key.js'
 import { createAuthStore, type AuthStore } from './auth/store.js'
 import { inferViewerOrigin } from './cli-login-config.js'
 import { loadLocalEnvFile } from './env.js'
@@ -36,7 +36,6 @@ import {
 import { ensureWorkspaceLayout } from './workspace/layout.js'
 
 const execFileAsync = promisify(execFile)
-const { utils: sshUtils } = ssh2
 
 const DEFAULT_CLI_LOGIN_TTL_SECONDS = 60 * 60
 const DEFAULT_CLI_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
@@ -586,7 +585,7 @@ async function createCliIdentity(
 }> {
   const sessionDir = getCliSessionDir(args, config, scope)
   const identityFile = resolve(sessionDir, 'id_ed25519')
-  const keyPair = sshUtils.generateKeyPairSync('ed25519')
+  const keyPair = generateSshEd25519KeyPair()
 
   await mkdir(sessionDir, { recursive: true, mode: 0o700 })
   await chmod(sessionDir, 0o700)
