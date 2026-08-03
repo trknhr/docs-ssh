@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { isAbsolute, posix, relative, resolve, sep } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import type { RagbenchCase, RagbenchDocument } from './types.js'
@@ -8,6 +8,7 @@ import type { RagbenchCase, RagbenchDocument } from './types.js'
 const DEFAULT_CASES = '.bench/ragbench/cases.jsonl'
 const DEFAULT_LOCAL_ROOT = '.bench/ragbench/tree/cases'
 const DEFAULT_REMOTE_ROOT = '/projects/ragbench/tasks/ragbench-cases'
+const DEFAULT_REMOTE_BATCH_BYTES = `${900 * 1024}`
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`
@@ -32,6 +33,18 @@ function expectStringArray(record: Record<string, unknown>, field: string, lineN
     throw new Error(`Invalid case JSONL line ${lineNumber}: ${field} must be a string array`)
   }
   return value
+}
+
+function parsePositiveInteger(name: string, value: string | undefined): number {
+  if (!value || !/^\d+$/u.test(value)) {
+    throw new Error(`--${name} must be a positive integer`)
+  }
+
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`--${name} must be a positive integer`)
+  }
+  return parsed
 }
 
 function parseDocument(value: unknown, lineNumber: number, index: number): RagbenchDocument {
@@ -148,7 +161,7 @@ function resolveInsideLocalRoot(root: string, kind: string, ...parts: string[]):
   return target
 }
 
-function formatQuestion(entry: RagbenchCase): string {
+function formatQuestion(entry: RagbenchCase, includeLabels: boolean): string {
   return [
     `# ${entry.caseId}`,
     '',
@@ -156,14 +169,18 @@ function formatQuestion(entry: RagbenchCase): string {
     '',
     entry.question,
     '',
-    '## Reference Answer',
-    '',
-    entry.referenceAnswer,
-    '',
-    '## Supporting Documents',
-    '',
-    entry.supportingDocumentIds.length > 0 ? entry.supportingDocumentIds.join(', ') : 'unknown',
-    '',
+    ...(includeLabels
+      ? [
+          '## Reference Answer',
+          '',
+          entry.referenceAnswer,
+          '',
+          '## Supporting Documents',
+          '',
+          entry.supportingDocumentIds.length > 0 ? entry.supportingDocumentIds.join(', ') : 'unknown',
+          '',
+        ]
+      : []),
   ].join('\n')
 }
 
@@ -177,13 +194,17 @@ function formatDocument(document: RagbenchDocument): string {
   ].join('\n')
 }
 
-async function writeLocalCase(root: string, entry: RagbenchCase): Promise<number> {
+async function writeLocalCase(root: string, entry: RagbenchCase, includeLabels: boolean): Promise<number> {
   assertSafePathSegment('caseId', entry.caseId)
   const caseDir = resolveInsideLocalRoot(root, 'case directory', entry.caseId)
   const documentsDir = resolveInsideLocalRoot(root, 'documents directory', entry.caseId, 'documents')
   await mkdir(caseDir, { recursive: true })
   await mkdir(documentsDir, { recursive: true })
-  await writeFile(resolveInsideLocalRoot(root, 'question file', entry.caseId, 'question.md'), formatQuestion(entry), 'utf8')
+  await writeFile(
+    resolveInsideLocalRoot(root, 'question file', entry.caseId, 'question.md'),
+    formatQuestion(entry, includeLabels),
+    'utf8',
+  )
 
   for (const document of entry.documents) {
     assertSafePathSegment('document.id', document.id)
@@ -198,7 +219,7 @@ async function writeLocalCase(root: string, entry: RagbenchCase): Promise<number
 }
 
 function runRemoteCommand(opts: {
-  input?: string
+  input?: Buffer | string
   remoteCommand: string
   sshCommand: string
 }): string {
@@ -217,44 +238,101 @@ function runRemoteCommand(opts: {
   return result.stdout
 }
 
-export function formatRemoteWriteCommand(remotePath: string, content: string): string {
-  const encoded = Buffer.from(content, 'utf8').toString('base64')
-  return `printf %s ${shellQuote(encoded)} | base64 -d > ${shellQuote(remotePath)}`
-}
-
-function writeRemoteFile(sshCommand: string, remotePath: string, content: string): void {
-  runRemoteCommand({
-    remoteCommand: formatRemoteWriteCommand(remotePath, content),
-    sshCommand,
+function createLocalTarArchive(localRoot: string, entries: string[]): Buffer {
+  const result = spawnSync('tar', ['-cf', '-', '-C', localRoot, ...entries], {
+    encoding: 'buffer',
+    env: {
+      ...process.env,
+      COPYFILE_DISABLE: '1',
+    },
+    maxBuffer: 1024 * 1024 * 256,
   })
 
-  const expectedBytes = Buffer.byteLength(content, 'utf8')
-  const byteCount = Number.parseInt(runRemoteCommand({
-    remoteCommand: `wc -c < ${shellQuote(remotePath)}`,
-    sshCommand,
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString('utf8').trim() : String(result.stderr).trim()
+    throw new Error(`Local tar archive failed (${result.status}): ${stderr || localRoot}`)
+  }
+
+  return result.stdout
+}
+
+export function formatRemoteExtractCommand(remoteRoot: string): string {
+  return `tar -xf - -C ${shellQuote(remoteRoot)}`
+}
+
+export interface RemoteArchiveBatch {
+  archive: Buffer
+  entries: string[]
+}
+
+export function createRemoteArchiveBatches(opts: {
+  entries: string[]
+  localRoot: string
+  maxBytes: number
+}): RemoteArchiveBatch[] {
+  if (opts.entries.length === 0) return []
+
+  const archive = createLocalTarArchive(opts.localRoot, opts.entries)
+  if (archive.length <= opts.maxBytes) {
+    return [{ archive, entries: opts.entries }]
+  }
+
+  if (opts.entries.length === 1) {
+    throw new Error(
+      `Remote materialize batch for ${opts.entries[0]} is ${archive.length} bytes, exceeding --remote-batch-bytes ${opts.maxBytes}`,
+    )
+  }
+
+  const midpoint = Math.ceil(opts.entries.length / 2)
+  return [
+    ...createRemoteArchiveBatches({
+      ...opts,
+      entries: opts.entries.slice(0, midpoint),
+    }),
+    ...createRemoteArchiveBatches({
+      ...opts,
+      entries: opts.entries.slice(midpoint),
+    }),
+  ]
+}
+
+function materializeRemoteTree(opts: {
+  caseIds: string[]
+  expectedFileCount: number
+  localRoot: string
+  maxBatchBytes: number
+  remoteRoot: string
+  sshCommand: string
+}): number {
+  runRemoteCommand({
+    remoteCommand: `rm -rf ${shellQuote(opts.remoteRoot)} && mkdir -p ${shellQuote(opts.remoteRoot)}`,
+    sshCommand: opts.sshCommand,
+  })
+
+  const batches = createRemoteArchiveBatches({
+    entries: opts.caseIds,
+    localRoot: opts.localRoot,
+    maxBytes: opts.maxBatchBytes,
+  })
+  for (const batch of batches) {
+    runRemoteCommand({
+      input: batch.archive,
+      remoteCommand: formatRemoteExtractCommand(opts.remoteRoot),
+      sshCommand: opts.sshCommand,
+    })
+  }
+
+  const fileCount = Number.parseInt(runRemoteCommand({
+    remoteCommand: `find ${shellQuote(opts.remoteRoot)} -type f | wc -l`,
+    sshCommand: opts.sshCommand,
   }).trim(), 10)
 
-  if (byteCount !== expectedBytes) {
-    throw new Error(`Remote write verification failed for ${remotePath}: expected ${expectedBytes} bytes, got ${byteCount}`)
-  }
-}
-
-function writeRemoteCase(sshCommand: string, remoteRoot: string, entry: RagbenchCase): number {
-  assertSafePathSegment('caseId', entry.caseId)
-  const caseRoot = posix.join(remoteRoot, entry.caseId)
-  const documentsRoot = posix.join(caseRoot, 'documents')
-  runRemoteCommand({
-    remoteCommand: `mkdir -p ${shellQuote(documentsRoot)}`,
-    sshCommand,
-  })
-
-  writeRemoteFile(sshCommand, posix.join(caseRoot, 'question.md'), formatQuestion(entry))
-  for (const document of entry.documents) {
-    assertSafePathSegment('document.id', document.id)
-    writeRemoteFile(sshCommand, posix.join(documentsRoot, `doc-${document.id}.md`), formatDocument(document))
+  if (fileCount !== opts.expectedFileCount) {
+    throw new Error(`Remote materialize verification failed for ${opts.remoteRoot}: expected ${opts.expectedFileCount} files, got ${fileCount}`)
   }
 
-  return entry.documents.length
+  return batches.length
 }
 
 function isMainModule(): boolean {
@@ -268,16 +346,20 @@ async function main(): Promise<void> {
     options: {
       cases: { type: 'string', default: DEFAULT_CASES },
       'local-root': { type: 'string', default: DEFAULT_LOCAL_ROOT },
+      'remote-batch-bytes': { type: 'string', default: DEFAULT_REMOTE_BATCH_BYTES },
       'remote-root': { type: 'string', default: DEFAULT_REMOTE_ROOT },
+      'include-labels': { type: 'boolean', default: false },
     },
   })
 
   const casesPath = resolve(values.cases ?? DEFAULT_CASES)
   const localRoot = resolve(values['local-root'] ?? DEFAULT_LOCAL_ROOT)
+  const maxRemoteBatchBytes = parsePositiveInteger('remote-batch-bytes', values['remote-batch-bytes'])
   const remoteRoot = values['remote-root'] ?? DEFAULT_REMOTE_ROOT
   const sshCommand = process.env.DOCS_SSH_BENCH_SSH_COMMAND?.trim()
   const cases = await readCases(casesPath)
   let documentCount = 0
+  let remoteBatchCount: number | null = null
 
   for (const entry of cases) {
     validateCasePathSegments(entry)
@@ -287,24 +369,28 @@ async function main(): Promise<void> {
   await rm(localRoot, { force: true, recursive: true })
   await mkdir(localRoot, { recursive: true })
   for (const entry of cases) {
-    documentCount += await writeLocalCase(localRoot, entry)
+    documentCount += await writeLocalCase(localRoot, entry, values['include-labels'] ?? false)
   }
 
   if (sshCommand) {
     validateRemoteRoot(remoteRoot)
-    runRemoteCommand({
-      remoteCommand: `rm -rf ${shellQuote(remoteRoot)} && mkdir -p ${shellQuote(remoteRoot)}`,
+    remoteBatchCount = materializeRemoteTree({
+      caseIds: cases.map((entry) => entry.caseId),
+      expectedFileCount: cases.length + documentCount,
+      localRoot,
+      maxBatchBytes: maxRemoteBatchBytes,
+      remoteRoot,
       sshCommand,
     })
-    for (const entry of cases) {
-      writeRemoteCase(sshCommand, remoteRoot, entry)
-    }
   }
 
   console.log(JSON.stringify({
     cases: cases.length,
     documents: documentCount,
     localRoot,
+    questionIncludesAnswerKey: values['include-labels'] ?? false,
+    remoteBatches: remoteBatchCount,
+    remoteBatchBytes: sshCommand ? maxRemoteBatchBytes : null,
     remoteRoot: sshCommand ? remoteRoot : null,
   }, null, 2))
 }

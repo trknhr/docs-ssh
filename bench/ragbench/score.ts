@@ -111,8 +111,10 @@ function parseCase(record: Record<string, unknown>, lineNumber: number): CaseLab
 
 function parseMode(record: Record<string, unknown>, lineNumber: number): RetrievalMode {
   const mode = expectString(record, 'mode', 'run', lineNumber)
-  if (mode !== 'vector' && mode !== 'docs-ssh') {
-    throw new Error(`Invalid run JSONL line ${lineNumber}: mode must be "vector" or "docs-ssh"`)
+  if (mode !== 'vector' && mode !== 'vector-agent' && mode !== 'docs-ssh' && mode !== 'docs-ssh-agent') {
+    throw new Error(
+      `Invalid run JSONL line ${lineNumber}: mode must be "vector", "vector-agent", "docs-ssh", or "docs-ssh-agent"`,
+    )
   }
   return mode
 }

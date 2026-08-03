@@ -24,7 +24,7 @@ export interface RetrievedCandidate {
 
 export interface RetrievalRun {
   caseId: string
-  mode: 'docs-ssh' | 'vector'
+  mode: 'docs-ssh' | 'docs-ssh-agent' | 'vector' | 'vector-agent'
   question: string
   candidates: RetrievedCandidate[]
   elapsedMs: number
