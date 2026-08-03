@@ -34,7 +34,8 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
     `- Use \`${sourceStore.projectMountPath}/issues\` for issue tracking: what to do, why, status, next action, and result links.`,
     `- Use \`${sourceStore.projectMountPath}/tasks\` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.`,
     `- Do not create new directories directly under \`${sourceStore.projectsMountPath}\`; projects are server-managed resources.`,
-    '- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.',
+    '- Non-interactive SSH exec stdin is supported; use `cat > file` or tar streams for larger writes, and `printf` for short literals.',
+    '- To reduce SSH round trips, pipe newline-separated commands into `docs-ssh-batch`; it returns one JSON object per command.',
     '- After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.',
     `- Use \`${sourceStore.tmpMountPath}\` for temporary files.`,
   ]
@@ -48,6 +49,7 @@ function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
     `${sshPrefix} cat /README.md`,
     `${sshPrefix} cat ${sourceStore.projectMountPath}/README.md`,
     `${sshPrefix} ls ${sourceStore.projectMountPath}/issues`,
+    `printf '%s\\n' 'find ${sourceStore.projectMountPath}/tasks -maxdepth 1 -type f' 'cat /README.md' | ${sshPrefix} docs-ssh-batch`,
     `${sshPrefix} "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > ${sourceStore.projectMountPath}/issues/example-issue.md"`,
     `${sshPrefix} mkdir -p ${sourceStore.projectMountPath}/tasks/example-task/artifacts`,
     `${sshPrefix} "printf '%s\\n' '# Notes' '- item' > ${sourceStore.projectMountPath}/tasks/example-task/notes.md"`,

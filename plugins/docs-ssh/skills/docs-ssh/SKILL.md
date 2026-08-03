@@ -56,7 +56,8 @@ Workspace rules:
 - Use `/projects/<slug>/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.
 - Use `/projects/<slug>/docs` only for polished references that should stay useful long-term.
 - Do not create new directories directly under `/projects`; projects are server-managed resources.
-- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.
+- Non-interactive SSH exec stdin is supported; use `cat > file` or tar streams for larger writes, and `printf` for short literals.
+- To reduce SSH round trips, pipe newline-separated commands into `docs-ssh-batch`; it returns one JSON object per command.
 - After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.
 - Use `/tmp` for temporary files.
 
@@ -71,6 +72,7 @@ ssh <server> cat /projects/<slug>/README.md
 ssh <server> ls /projects/<slug>/issues
 ssh <server> find /projects/<slug>/docs -name '*.md' | head
 ssh <server> grep -R "keyword" /projects/<slug>/docs
+printf '%s\n' 'find /projects/<slug>/tasks -maxdepth 1 -type f' 'cat /README.md' | ssh <server> docs-ssh-batch
 ssh <server> "printf '%s\n' '# Example issue' 'status: open' 'next: inspect docs' > /projects/<slug>/issues/example-issue.md"
 ssh <server> mkdir -p /projects/<slug>/tasks/example-task/artifacts
 ssh <server> "printf '%s\n' '# Notes' '- item' > /projects/<slug>/tasks/example-task/notes.md"

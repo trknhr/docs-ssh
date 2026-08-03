@@ -5,7 +5,7 @@
 
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { Bash, defineCommand, InMemoryFs, ReadWriteFs } from 'just-bash'
+import { Bash, defineCommand, InMemoryFs, ReadWriteFs, type ExecResult } from 'just-bash'
 import { loadInstanceConfig, type InstanceConfig } from '../instance-config.js'
 import { loadSourceStore } from '../sources/source-store.js'
 import type { SourceStore } from '../sources/types.js'
@@ -39,6 +39,10 @@ export const EXECUTION_LIMITS = {
   maxHeredocSize: 1024 * 1024,
 }
 
+const BATCH_COMMAND_MAX_COUNT = 50
+const BATCH_COMMAND_MAX_LENGTH = 8192
+const BATCH_OUTPUT_MAX_BYTES = 1024 * 1024
+
 const sshCommand = defineCommand('ssh', async (args) => {
   const command = args.join(' ')
   return {
@@ -57,6 +61,145 @@ function createTextCommand(name: string, content: string) {
     stderr: '',
     exitCode: 0,
   }))
+}
+
+function createUsageResult(commandName: string): ExecResult {
+  return {
+    stdout: [
+      `Usage: ${commandName} [command ... [-- command ...]]`,
+      `       printf '%s\\n' 'find /projects/default/tasks' 'cat /README.md' | ${commandName}`,
+      '',
+      'Runs multiple commands in one SSH exec and returns one JSON object per line:',
+      '{"index":0,"command":"...","exitCode":0,"stdout":"...","stderr":"..."}',
+      '',
+    ].join('\n'),
+    stderr: '',
+    exitCode: 0,
+  }
+}
+
+function parseBatchCommands(args: string[], stdin: string): string[] {
+  if (args.includes('--help') || args.includes('-h')) {
+    return []
+  }
+
+  if (args.length === 0) {
+    return stdin
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('#'))
+  }
+
+  const commands: string[] = []
+  let current: string[] = []
+  for (const arg of args) {
+    if (arg === '--') {
+      const command = current.join(' ').trim()
+      if (command) commands.push(command)
+      current = []
+    } else {
+      current.push(arg)
+    }
+  }
+
+  const command = current.join(' ').trim()
+  if (command) commands.push(command)
+  return commands
+}
+
+function validateBatchCommands(commandName: string, commands: string[]): ExecResult | null {
+  if (commands.length === 0) {
+    return {
+      stdout: '',
+      stderr: `${commandName}: no commands provided.\n`,
+      exitCode: 2,
+    }
+  }
+
+  if (commands.length > BATCH_COMMAND_MAX_COUNT) {
+    return {
+      stdout: '',
+      stderr: `${commandName}: at most ${BATCH_COMMAND_MAX_COUNT} commands are allowed.\n`,
+      exitCode: 2,
+    }
+  }
+
+  for (const [index, command] of commands.entries()) {
+    if (command.length > BATCH_COMMAND_MAX_LENGTH) {
+      return {
+        stdout: '',
+        stderr: `${commandName}: command ${index} exceeds ${BATCH_COMMAND_MAX_LENGTH} characters.\n`,
+        exitCode: 2,
+      }
+    }
+
+    if (/^\s*(?:batch|docs-ssh-batch|ssh-batch)(?:\s|$)/u.test(command)) {
+      return {
+        stdout: '',
+        stderr: `${commandName}: nested batch commands are not allowed.\n`,
+        exitCode: 2,
+      }
+    }
+  }
+
+  return null
+}
+
+function createBatchCommand(commandName: string) {
+  return defineCommand(commandName, async (args, ctx) => {
+    if (args.includes('--help') || args.includes('-h')) {
+      return createUsageResult(commandName)
+    }
+
+    if (!ctx.exec) {
+      return {
+        stdout: '',
+        stderr: `${commandName}: internal exec function is not available.\n`,
+        exitCode: 1,
+      }
+    }
+
+    const commands = parseBatchCommands(args, ctx.stdin)
+    const invalid = validateBatchCommands(commandName, commands)
+    if (invalid) return invalid
+
+    const lines: string[] = []
+    let exitCode = 0
+    let outputBytes = 0
+    for (const [index, command] of commands.entries()) {
+      const result = await ctx.exec(command, {
+        cwd: ctx.cwd,
+        signal: ctx.signal,
+        stdin: '',
+      })
+      if (result.exitCode !== 0 && exitCode === 0) {
+        exitCode = result.exitCode
+      }
+
+      const line = `${JSON.stringify({
+        command,
+        exitCode: result.exitCode,
+        index,
+        stderr: result.stderr,
+        stdout: result.stdout,
+      })}\n`
+      outputBytes += Buffer.byteLength(line, 'utf8')
+      if (outputBytes > BATCH_OUTPUT_MAX_BYTES) {
+        return {
+          stdout: lines.join(''),
+          stderr: `${commandName}: output exceeded ${BATCH_OUTPUT_MAX_BYTES} bytes.\n`,
+          exitCode: 126,
+        }
+      }
+      lines.push(line)
+    }
+
+    return {
+      stdout: lines.join(''),
+      stderr: '',
+      exitCode,
+    }
+  })
 }
 
 function hasScope(scopes: Set<string>, scope: string): boolean {
@@ -342,6 +485,9 @@ export async function createBash(opts: CreateBashOptions = {}) {
       createTextCommand('skill', skillMarkdown),
       createTextCommand('setup', setupMarkdown),
       createBootstrapCommand(bootstrapPayload, canReadBootstrap),
+      createBatchCommand('batch'),
+      createBatchCommand('docs-ssh-batch'),
+      createBatchCommand('ssh-batch'),
     ],
     defenseInDepth: true,
     executionLimits: EXECUTION_LIMITS,

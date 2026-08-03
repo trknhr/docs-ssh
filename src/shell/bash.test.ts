@@ -46,7 +46,7 @@ describe('createBash', () => {
       'Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.',
     )
     expect(agents.stdout).toContain(
-      'prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`',
+      'Non-interactive SSH exec stdin is supported',
     )
     await expect(fs.readFile('/projects/default/README.md', 'utf8')).resolves.toContain('# Project')
     await expect(fs.readFile('/home/README.md', 'utf8')).resolves.toContain('# Home')
@@ -155,5 +155,65 @@ describe('createBash', () => {
     const deniedBootstrap = await restricted.bash.exec('bootstrap --json')
     expect(deniedBootstrap.exitCode).toBe(126)
     expect(deniedBootstrap.stderr).toContain('bootstrap:read')
+  })
+
+  it('runs multiple commands through docs-ssh-batch', async () => {
+    const tempDir = await createTempDir()
+    const docsDir = resolve(tempDir, 'docs')
+    const workspaceDir = resolve(tempDir, 'workspace')
+    vi.stubEnv('DOCS_SSH_STATE_DIR', resolve(tempDir, 'state'))
+    vi.stubEnv('WORKSPACE_DIR', workspaceDir)
+    await mkdir(docsDir, { recursive: true })
+    await writeFile(resolve(docsDir, 'README.md'), '# Product Docs\n')
+
+    const { bash } = await createBash({
+      docsDir,
+      docsName: 'Product Docs',
+      workspaceDir,
+    })
+
+    const result = await bash.exec('docs-ssh-batch', {
+      cwd: '/',
+      stdin: [
+        'printf first',
+        'cat /README.md',
+        '',
+      ].join('\n'),
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    const rows = result.stdout.trim().split('\n').map((line) => JSON.parse(line) as {
+      command: string
+      exitCode: number
+      stdout: string
+    })
+    expect(rows).toEqual([
+      {
+        command: 'printf first',
+        exitCode: 0,
+        index: 0,
+        stderr: '',
+        stdout: 'first',
+      },
+      {
+        command: 'cat /README.md',
+        exitCode: 0,
+        index: 1,
+        stderr: '',
+        stdout: expect.stringContaining('# docs-ssh'),
+      },
+    ])
+
+    const aliasResult = await bash.exec('batch', {
+      cwd: '/',
+      stdin: 'printf alias\n',
+    })
+    expect(aliasResult.exitCode).toBe(0)
+    expect(JSON.parse(aliasResult.stdout)).toMatchObject({
+      command: 'printf alias',
+      exitCode: 0,
+      stdout: 'alias',
+    })
   })
 })

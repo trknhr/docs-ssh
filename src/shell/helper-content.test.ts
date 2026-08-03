@@ -52,8 +52,12 @@ describe('helper content', () => {
     expect(markdown).toContain('- `/home` -> private personal notes')
     expect(markdown).toContain('Run `bootstrap --json`')
     expect(markdown).toContain('Do not create new directories directly under `/projects`')
-    expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
+    expect(markdown).toContain('Non-interactive SSH exec stdin is supported')
+    expect(markdown).toContain('docs-ssh-batch')
     expect(markdown).toContain('ssh docs-ssh -p 2222 bootstrap --json')
+    expect(markdown).toContain(
+      `printf '%s\\n' 'find /projects/default/tasks -maxdepth 1 -type f' 'cat /README.md' | ssh docs-ssh -p 2222 docs-ssh-batch`,
+    )
     expect(markdown).toContain(
       `ssh docs-ssh -p 2222 "printf '%s\\n' '# Example issue' 'status: open' 'next: inspect docs' > /projects/default/issues/example-issue.md"`,
     )
@@ -74,7 +78,8 @@ describe('helper content', () => {
     expect(markdown).toContain('Use ssh docs.example.com to inspect the mounted project filesystem before making changes.')
     expect(markdown).not.toContain('-p 22')
     expect(markdown).toContain('ssh docs.example.com bootstrap --json')
-    expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
+    expect(markdown).toContain('Non-interactive SSH exec stdin is supported')
+    expect(markdown).toContain('docs-ssh-batch')
     expect(markdown).not.toContain('/sources')
   })
 
