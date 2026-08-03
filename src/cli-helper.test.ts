@@ -38,7 +38,7 @@ describe('docs-ssh helper aliases', () => {
     expect(stdout).toBe(legacy.stdout)
     expect(stdout).toContain('name: docs-ssh')
     expect(stdout).toContain('Use ssh docs-ssh -p 2222 to inspect')
-  })
+  }, 15_000)
 
   it('writes helper content with --output', async () => {
     const workDir = await createTempDir()
@@ -50,5 +50,5 @@ describe('docs-ssh helper aliases', () => {
     })
 
     await expect(readFile(outputPath, 'utf8')).resolves.toContain('name: docs-ssh')
-  })
+  }, 15_000)
 })

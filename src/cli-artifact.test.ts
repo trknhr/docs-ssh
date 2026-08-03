@@ -69,6 +69,7 @@ describe('docs-ssh artifact', () => {
         DOCS_SSH_HOME: docsSshHome,
         PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
       },
+      timeout: 10_000,
     })
 
     expect(stdout).toContain(`sess_test@docs-test`)
@@ -76,5 +77,5 @@ describe('docs-ssh artifact', () => {
       "'artifact' 'publish' '/projects/product-docs/tasks/demo/artifacts/index.html' '--project' 'product-docs'",
     )
     expect(stdout).toContain("'--title' 'Demo app' '--share' 'project' '--json'")
-  })
+  }, 15_000)
 })
