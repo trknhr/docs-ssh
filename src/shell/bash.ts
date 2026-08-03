@@ -375,7 +375,6 @@ function createReadRangeCommand() {
     }
   })
 }
-
 function hasScope(scopes: Set<string>, scope: string): boolean {
   return scopes.has(scope) || scopes.has('admin')
 }

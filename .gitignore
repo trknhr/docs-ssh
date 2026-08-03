@@ -8,6 +8,7 @@ ssh_host_key
 .env
 .env.selfhost
 .DS_Store
+.bench/
 var
 .superpowers/
 .worktrees/

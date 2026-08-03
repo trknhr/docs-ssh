@@ -59,9 +59,9 @@ Workspace rules:
 - Put self-contained HTML in `/projects/<slug>/tasks/<task-slug>/artifacts/`, then publish it with `docs-ssh artifact publish tasks/<task-slug>/artifacts/<name>.html`. The configured `.docs-ssh.toml` project is used for relative paths.
 - Use `/projects/<slug>/docs` only for polished references that should stay useful long-term.
 - Do not create new directories directly under `/projects`; projects are server-managed resources.
-- To reduce SSH round trips, pipe newline-separated commands into `batch`; it returns one JSON object per command.
+- Non-interactive SSH exec stdin is supported; use `cat > file` or tar streams for larger writes, and remote-side `printf` or `echo` for short literals.
+- To reduce SSH round trips, pipe newline-separated commands into `batch` (also available as `docs-ssh-batch` and `ssh-batch`); it returns one JSON object per command.
 - Use `read-range [-n] <path> <start> <end>` instead of `cat` when you only need a small part of a large file.
-- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.
 - After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.
 - Use `/tmp` for temporary files.
 

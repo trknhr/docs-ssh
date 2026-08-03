@@ -39,9 +39,9 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
     `- Use \`${sourceStore.projectMountPath}/tasks\` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.`,
     `- Put self-contained HTML in \`${sourceStore.projectMountPath}/tasks/<task-slug>/artifacts/\`, then publish it with \`${CLI_COMMAND} artifact publish tasks/<task-slug>/artifacts/<name>.html\`.`,
     `- Do not create new directories directly under \`${sourceStore.projectsMountPath}\`; projects are server-managed resources.`,
-    '- To reduce SSH round trips, pipe newline-separated commands into `batch`; it returns one JSON object per command.',
+    '- Non-interactive SSH exec stdin is supported; use `cat > file` or tar streams for larger writes, and remote-side `printf` or `echo` for short literals.',
+    '- To reduce SSH round trips, pipe newline-separated commands into `batch` (also available as `docs-ssh-batch` and `ssh-batch`); it returns one JSON object per command.',
     '- Use `read-range [-n] <path> <start> <end>` instead of `cat` when you only need a small part of a large file.',
-    '- For non-interactive SSH exec writes, prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`.',
     '- After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.',
     `- Use \`${sourceStore.tmpMountPath}\` for temporary files.`,
   ]

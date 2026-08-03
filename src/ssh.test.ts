@@ -239,6 +239,39 @@ function execCommandWithInput(client: ssh2.Client, command: string, input: strin
   })
 }
 
+function writeTarOctal(buffer: Buffer, value: number, offset: number, length: number) {
+  buffer.write(`${value.toString(8).padStart(length - 1, '0')}\0`, offset, length, 'ascii')
+}
+
+function padTarBlock(buffer: Buffer): Buffer {
+  const paddingLength = (512 - (buffer.length % 512)) % 512
+  return paddingLength === 0 ? buffer : Buffer.concat([buffer, Buffer.alloc(paddingLength)])
+}
+
+function createTarArchive(name: string, content: Buffer): Buffer {
+  const header = Buffer.alloc(512)
+  header.write(name, 0, 100, 'ascii')
+  writeTarOctal(header, 0o644, 100, 8)
+  writeTarOctal(header, 0, 108, 8)
+  writeTarOctal(header, 0, 116, 8)
+  writeTarOctal(header, content.length, 124, 12)
+  writeTarOctal(header, 0, 136, 12)
+  header.fill(' ', 148, 156)
+  header.write('0', 156, 1, 'ascii')
+  header.write('ustar\0', 257, 6, 'ascii')
+  header.write('00', 263, 2, 'ascii')
+
+  let checksum = 0
+  for (const byte of header) checksum += byte
+  header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii')
+
+  return Buffer.concat([
+    header,
+    padTarBlock(content),
+    Buffer.alloc(1024),
+  ])
+}
+
 afterEach(async () => {
   for (const client of activeClients.splice(0)) {
     client.removeAllListeners()
@@ -268,6 +301,114 @@ describe('createSSHServer', () => {
     expect(result.stdout).toBe(
       `${owner.user.login}|user|default|workstation-user|${owner.user.login}|${owner.user.login}`,
     )
+  })
+
+  it('passes SSH exec stdin through to non-interactive commands', async () => {
+    const { allowedKey, port } = await createTestServer()
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: allowedKey.private,
+      username: 'workstation-user',
+    })
+
+    const result = await execCommandWithInput(
+      client,
+      'cat > /projects/default/tasks/stdin-check.txt && wc -c < /projects/default/tasks/stdin-check.txt && printf ":" && cat /projects/default/tasks/stdin-check.txt',
+      'abc',
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('3\n:abc')
+  })
+
+  it('keeps UTF-8 text stdin intact when later commands inspect the written file', async () => {
+    const { allowedKey, port } = await createTestServer()
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: allowedKey.private,
+      username: 'workstation-user',
+    })
+
+    const result = await execCommandWithInput(
+      client,
+      'cat > /projects/default/tasks/stdin-check.txt && base64 -w 0 /projects/default/tasks/stdin-check.txt && printf ":" && cat /projects/default/tasks/stdin-check.txt',
+      '日本語',
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('5pel5pys6Kqe:日本語')
+  })
+
+  it('preserves binary stdin for tar extraction over SSH exec', async () => {
+    const { allowedKey, port } = await createTestServer()
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: allowedKey.private,
+      username: 'workstation-user',
+    })
+    const payload = Buffer.from([0, 255, 128, 65])
+    const archive = createTarArchive('payload.bin', payload)
+
+    const result = await execCommandWithInput(
+      client,
+      'tar -xf - -C /projects/default/tasks && base64 -w 0 /projects/default/tasks/payload.bin',
+      archive,
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe(payload.toString('base64'))
+  })
+
+  it('runs multiple commands through batch over one SSH exec', async () => {
+    const { allowedKey, port } = await createTestServer()
+    const client = await connectClient({
+      host: '127.0.0.1',
+      port,
+      privateKey: allowedKey.private,
+      username: 'workstation-user',
+    })
+
+    const result = await execCommandWithInput(
+      client,
+      'batch',
+      [
+        'printf one',
+        'cat /README.md',
+        'find /projects/default -maxdepth 1 -type d | sort',
+        '',
+      ].join('\n'),
+    )
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toBe('')
+    const rows = result.stdout.trim().split('\n').map((line) => JSON.parse(line) as {
+      command: string
+      exitCode: number
+      stderr: string
+      stdout: string
+    })
+    expect(rows).toHaveLength(3)
+    expect(rows[0]).toMatchObject({
+      command: 'printf one',
+      exitCode: 0,
+      stdout: 'one',
+    })
+    expect(rows[1]).toMatchObject({
+      command: 'cat /README.md',
+      exitCode: 0,
+      stdout: expect.stringContaining('# docs-ssh'),
+    })
+    expect(rows[2]).toMatchObject({
+      command: 'find /projects/default -maxdepth 1 -type d | sort',
+      exitCode: 0,
+      stdout: expect.stringContaining('/projects/default/tasks'),
+    })
   })
 
   it('authenticates scoped SSH sessions and exposes project context', async () => {

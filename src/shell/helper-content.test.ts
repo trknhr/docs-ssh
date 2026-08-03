@@ -60,7 +60,8 @@ describe('helper content', () => {
     expect(markdown).toContain(
       'Treat `/projects/default` as the primary project workspace for this directory, even if the SSH session or `bootstrap --json` reports a different current project',
     )
-    expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
+    expect(markdown).toContain('Non-interactive SSH exec stdin is supported')
+    expect(markdown).toContain('docs-ssh-batch')
     expect(markdown).toContain('ssh docs-ssh -p 2222 bootstrap --json')
     expect(markdown).toContain('ssh docs-ssh -p 2222 read-range -n /README.md 1 80')
     expect(markdown).toContain(
@@ -93,7 +94,8 @@ describe('helper content', () => {
     )
     expect(markdown).toContain('pipe newline-separated commands into `batch`')
     expect(markdown).toContain('read-range -n /README.md 1 80')
-    expect(markdown).toContain('prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`')
+    expect(markdown).toContain('Non-interactive SSH exec stdin is supported')
+    expect(markdown).toContain('docs-ssh-batch')
     expect(markdown).not.toContain('/sources')
   })
 

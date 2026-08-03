@@ -93,11 +93,14 @@ function createBanner(docsName: string, principal: AuthenticatedPrincipal): stri
 async function collectExecStdin(
   channel: ServerChannel,
   opts: {
+    encoding?: BufferEncoding
     graceMs?: number
     maxBytes?: number
+    onActivity?: () => void
     waitForEndMs?: number
   } = {},
 ): Promise<string | undefined> {
+  const encoding = opts.encoding ?? 'utf8'
   const graceMs = opts.graceMs ?? getExecStdinGraceMs()
   const maxBytes = opts.maxBytes ?? getMaxExecStdinBytes()
   const waitForEndMs = opts.waitForEndMs ?? 10_000
@@ -134,7 +137,7 @@ async function collectExecStdin(
       if (settled) return
       settled = true
       cleanup()
-      resolve(sawData ? Buffer.concat(chunks).toString('utf8') : undefined)
+      resolve(sawData ? Buffer.concat(chunks).toString(encoding) : undefined)
     }
 
     const fail = (message: string) => {
@@ -145,6 +148,7 @@ async function collectExecStdin(
     }
 
     const onData = (chunk: Buffer | string) => {
+      opts.onActivity?.()
       sawData = true
       if (graceTimer) {
         clearTimeout(graceTimer)
@@ -174,6 +178,15 @@ async function collectExecStdin(
       input.on('close', onClose)
     }
   })
+}
+
+function getExecStdinEncoding(command: string): BufferEncoding {
+  // just-bash binary stdin consumers reconstruct bytes from charCodeAt().
+  if (/^\s*(?:base64|gzip|gunzip|tar|zcat)(?:$|[\s;&|()])/.test(command)) {
+    return 'latin1'
+  }
+
+  return 'utf8'
 }
 
 function createSessionEnv(principal: AuthenticatedPrincipal): Record<string, string> {
@@ -468,8 +481,9 @@ export function createSSHServer(opts: SSHServerOptions) {
             const channel = acceptExec()
             channels.add(channel)
             channel.on('close', () => channels.delete(channel))
-            channel.stdin.on('data', () => resetIdle())
             const stdinPromise = collectExecStdin(channel, {
+              encoding: getExecStdinEncoding(execInfo.command),
+              onActivity: resetIdle,
               waitForEndMs: execTimeout,
             })
 

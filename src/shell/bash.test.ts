@@ -46,7 +46,7 @@ describe('createBash', () => {
       'Before implementing against Project Docs, inspect the mounted project filesystem over SSH first.',
     )
     expect(agents.stdout).toContain(
-      'prefer remote-side `printf` or `echo` commands over heredocs or `cat > file`',
+      'Non-interactive SSH exec stdin is supported',
     )
     await expect(fs.readFile('/projects/default/README.md', 'utf8')).resolves.toContain('# Project')
     await expect(fs.readFile('/home/README.md', 'utf8')).resolves.toContain('# Home')
@@ -204,6 +204,16 @@ describe('createBash', () => {
         stdout: expect.stringContaining('# docs-ssh'),
       },
     ])
+    const aliasResult = await bash.exec('docs-ssh-batch', {
+      cwd: '/',
+      stdin: 'printf alias\n',
+    })
+    expect(aliasResult.exitCode).toBe(0)
+    expect(JSON.parse(aliasResult.stdout)).toMatchObject({
+      command: 'printf alias',
+      exitCode: 0,
+      stdout: 'alias',
+    })
   })
 
   it('reads bounded file ranges with optional line metadata', async () => {
