@@ -1,90 +1,72 @@
 ---
 name: docs-ssh
-description: Search and use a docs-ssh project filesystem over SSH using a configured local alias.
+description: Search, read, and update a docs-ssh project workspace over authenticated HTTPS. Use for project docs, issues, task results, file access, or structured text search on a configured docs-ssh instance.
 ---
 
 # docs-ssh
 
-Resolve the SSH target before inspecting the mounted project filesystem:
+## Resolve the project
 
-- Starting from the current working directory, look upward for `.docs-ssh.toml`.
-- If the file contains `server = "<alias>"`, use that SSH alias.
-- If no config file or server value exists, use `docs-ssh`.
-- Web/OIDC login is server-wide and does not carry a project.
-- If the file contains `project = "<slug>"`, treat `/projects/<slug>` as the primary project workspace for the current directory.
-- A login session or `bootstrap --json` may report another current project, often `default`; keep using the project from `.docs-ssh.toml` first.
-- Run `docs-ssh status --json` first. If there is no active session, run `docs-ssh login --json`; it opens the browser for Web/OIDC approval and returns the SSH command to use.
-- Do not create directories directly under `/projects`; projects are server-managed resources.
+Starting from the current directory, find the nearest `.docs-ssh.toml` and read:
 
-Common SSH config:
+- `viewer_origin` as the HTTPS origin.
+- `project` as the project slug.
 
-```sshconfig
-Host docs-ssh-local
-  HostName localhost
-  Port 2222
+Use the configured project for every request. Access the project only through the HTTPS Files API.
 
-Host docs-ssh
-  HostName <server-host-or-ip>
-  Port 2222
-```
+## HTTPS authentication
 
-In this repo, local development normally uses `.docs-ssh.toml` with:
+Read the bearer credential from `DOCS_SSH_TOKEN`. Never print it, commit it, place it in
+`.docs-ssh.toml`, or use a verbose HTTP client.
 
-```toml
-server = "docs-ssh-local"
-project = "docs-ssh"
-```
+Require the caller or runtime to inject `DOCS_SSH_TOKEN`. Do not invoke or assume a particular
+credential manager. If the token is absent, stop and ask the caller to provide it.
 
-Use the returned `<session-username>@<server>` connection for SSH access, then address the configured project explicitly as `/projects/<slug>`. The session's reported current project is only its server-side default and does not override `.docs-ssh.toml`.
-
-`docs-ssh login --json` returns `sshCommand`, `identityFile`, `username`, `server`, `project`, and `expiresAt`. Use the returned `sshCommand` as the prefix for SSH commands when available.
-
-Mounted paths:
-
-- `/README.md` -> root filesystem guide and writing rules
-- `/home` -> private personal notes for the authenticated principal
-- `/projects/<slug>` -> project workspace selected by slug
-- `/projects/<slug>/docs` -> read-only default source
-- `/projects/<slug>/sources/<name>` -> additional read-only named sources
-- `/projects/<slug>/issues` -> issue tracking: what to do, why, status, next action, and result links
-- `/projects/<slug>/tasks` -> research and work results
-- `/tmp` -> temporary session-local files
-
-Workspace rules:
-
-- Start by running `bootstrap --json`, then read `/README.md` and `/projects/<slug>/README.md` before searching or writing files.
-- Use `/home` for private personal notes.
-- Use `/projects/<slug>/issues` for issue tracking: what to do, why, status, next action, and result links.
-- Use `/projects/<slug>/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.
-- Put self-contained HTML in `/projects/<slug>/tasks/<task-slug>/artifacts/`, then publish it with `docs-ssh artifact publish tasks/<task-slug>/artifacts/<name>.html`. The configured `.docs-ssh.toml` project is used for relative paths.
-- Use `/projects/<slug>/docs` only for polished references that should stay useful long-term.
-- Do not create new directories directly under `/projects`; projects are server-managed resources.
-- Non-interactive SSH exec stdin is supported; use `cat > file` or tar streams for larger writes, and remote-side `printf` or `echo` for short literals.
-- To reduce SSH round trips, pipe newline-separated commands into `batch` (also available as `docs-ssh-batch` and `ssh-batch`); it returns one JSON object per command.
-- Use `read-range [-n] <path> <start> <end>` instead of `cat` when you only need a small part of a large file.
-- After writing a file over SSH, read it back with `cat` or inspect it with `ls -l` to confirm the content arrived.
-- Use `/tmp` for temporary files.
-
-Example commands:
+Send the Authorization header through curl config on stdin so the token is not included in curl's
+command arguments:
 
 ```bash
-docs-ssh status --json
-docs-ssh login --json
-ssh <server> bootstrap --json
-ssh <server> cat /README.md
-ssh <server> cat /projects/<slug>/README.md
-ssh <server> ls /projects/<slug>/issues
-ssh <server> find /projects/<slug>/docs -name '*.md' | head
-ssh <server> grep -R "keyword" /projects/<slug>/docs
-ssh <server> read-range -n /README.md 1 80
-printf '%s\n' 'find /projects/<slug>/tasks -maxdepth 1 -type f' 'read-range -n /README.md 1 40' | ssh <server> batch
-ssh <server> "printf '%s\n' '# Example issue' 'status: open' 'next: inspect docs' > /projects/<slug>/issues/example-issue.md"
-ssh <server> mkdir -p /projects/<slug>/tasks/example-task/artifacts
-ssh <server> "printf '%s\n' '# Notes' '- item' > /projects/<slug>/tasks/example-task/notes.md"
-ssh <server> sh -lc 'echo "- note" >> /projects/<slug>/tasks/example-task/notes.md'
-ssh <server> cat /projects/<slug>/tasks/example-task/notes.md
-docs-ssh artifact publish tasks/example-task/artifacts/index.html
-docs-ssh artifact list
-docs-ssh artifact versions <artifact-id>
-docs-ssh artifact share <artifact-id> project
+export DOCS_SSH_ORIGIN='<viewer_origin from .docs-ssh.toml>'
+export DOCS_SSH_PROJECT='<project from .docs-ssh.toml>'
+
+test -n "$DOCS_SSH_TOKEN"
+docs_http() {
+  printf "header = \"Authorization: Bearer %s\"\n" "$DOCS_SSH_TOKEN" |
+    curl --config - --fail-with-body --silent --show-error "$@"
+}
+
+base="$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT"
+docs_http "$base/entries"
+docs_http --get "$base/search" \
+  --data-urlencode "q=keyword" \
+  --data-urlencode "path=tasks" \
+  --data-urlencode "glob=*.md"
 ```
+
+Do not use stdin as an upload body while curl config also uses stdin; upload from a file with
+`--data-binary @<file>`.
+
+## HTTP Files API
+
+All paths are project-relative. URL-encode project names, paths, queries, and globs; use
+`--get --data-urlencode` for query parameters.
+
+- List: `GET /api/v1/projects/:project/entries?path=:path`
+- Stat: `GET /api/v1/projects/:project/stat?path=:path`
+- Search: `GET /api/v1/projects/:project/search?q=:query`
+- Read: `GET /api/v1/projects/:project/files/:path`
+- Write: `PUT /api/v1/projects/:project/files/:path` with raw bytes
+- Create directories: `POST /api/v1/projects/:project/directories` with
+  `{"path":"tasks/example"}`
+
+For search, optional parameters are `path`, repeated `glob`, `limit`, `mode=literal|regex`, and
+`case=smart|sensitive|insensitive`. Consume structured `path`, `line`, `text`, and `submatches`
+fields rather than parsing shell output.
+
+Start by listing the project root and reading `README.md`. Reads may access the whole project.
+Writes and directory creation are limited to `issues/` and `tasks/`; generated README files are
+read-only. The API does not support delete or rename. After writing, read or stat the destination
+to verify it.
+
+Use `issues/` for what to do, why, status, and next action. Use `tasks/` for research, logs,
+conclusions, generated artifacts, and work results.

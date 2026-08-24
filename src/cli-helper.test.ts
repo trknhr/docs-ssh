@@ -37,7 +37,12 @@ describe('docs-ssh helper aliases', () => {
 
     expect(stdout).toBe(legacy.stdout)
     expect(stdout).toContain('name: docs-ssh')
-    expect(stdout).toContain('Use ssh docs-ssh -p 2222 to inspect')
+    expect(stdout).toContain('## HTTPS workflow')
+    expect(stdout).toContain('Require the caller or runtime to inject `DOCS_SSH_TOKEN`')
+    expect(stdout.toLowerCase()).not.toContain('envvault')
+    expect(stdout).not.toContain('## SSH workflow')
+    expect(stdout).not.toContain('ssh docs-ssh -p 2222')
+    expect(stdout).not.toContain('fallback')
   }, 15_000)
 
   it('writes helper content with --output', async () => {

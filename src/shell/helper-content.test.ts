@@ -75,7 +75,7 @@ describe('helper content', () => {
     expect(markdown).not.toContain('/sources')
   })
 
-  it('renders skill markdown and omits -p for the standard ssh port', () => {
+  it('renders HTTPS-only skill markdown', () => {
     const markdown = createSkillMarkdown({
       docsName: 'Project Docs',
       sourceStore: createSourceStoreFixture(),
@@ -83,20 +83,20 @@ describe('helper content', () => {
       sshPort: 22,
     })
 
-    expect(markdown).toContain('description: Inspect and update the Project Docs SSH project workspace using shell tools like ls, find, and cat.')
-    expect(markdown).toContain('Use ssh docs.example.com to inspect the mounted project filesystem before making changes.')
-    expect(markdown).not.toContain('-p 22')
-    expect(markdown).toContain('ssh docs.example.com bootstrap --json')
-    expect(markdown).toContain('npx docs-ssh@latest status --json')
-    expect(markdown).toContain('Web/OIDC login is server-wide and is not scoped to a project')
-    expect(markdown).toContain(
-      'Treat `/projects/default` as the primary project workspace for this directory, even if the SSH session or `bootstrap --json` reports a different current project',
-    )
-    expect(markdown).toContain('pipe newline-separated commands into `batch`')
-    expect(markdown).toContain('read-range -n /README.md 1 80')
-    expect(markdown).toContain('Non-interactive SSH exec stdin is supported')
-    expect(markdown).toContain('docs-ssh-batch')
-    expect(markdown).not.toContain('/sources')
+    expect(markdown).toContain('description: Search, read, and update the Project Docs project workspace over authenticated HTTPS')
+    expect(markdown).toContain('## HTTPS workflow')
+    expect(markdown).toContain('resolve `viewer_origin` and `project`')
+    expect(markdown).toContain('Require the caller or runtime to inject `DOCS_SSH_TOKEN`')
+    expect(markdown).toContain('curl --config - --fail-with-body')
+    expect(markdown.toLowerCase()).not.toContain('envvault')
+    expect(markdown).toContain('/api/v1/projects/default/entries?path=<path>')
+    expect(markdown).toContain('/api/v1/projects/default/search?q=<query>')
+    expect(markdown).toContain('writes and directory creation are limited to `issues/` and `tasks/`')
+    expect(markdown).toContain('instead of attempting another transport')
+    expect(markdown).not.toContain('## SSH workflow')
+    expect(markdown).not.toContain('ssh docs.example.com')
+    expect(markdown).not.toContain('npx docs-ssh@latest')
+    expect(markdown).not.toContain('fallback')
   })
 
   it('renders setup markdown with installation flows and tool paths', () => {

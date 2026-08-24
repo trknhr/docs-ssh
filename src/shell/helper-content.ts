@@ -47,6 +47,47 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
   ]
 }
 
+function createHttpRules(sourceStore: SourceStore): string[] {
+  return [
+    '- Starting from the current directory, find the nearest `.docs-ssh.toml` and resolve `viewer_origin` and `project` from it.',
+    `- Use project \`${sourceStore.projectSlug}\` for every request.`,
+    '- Use HTTPS for project-scoped directory listing, metadata, search, file reads and writes, and directory creation.',
+    '- Read the bearer credential from `DOCS_SSH_TOKEN`. Never print it, commit it, place it in `.docs-ssh.toml`, or pass it through a verbose HTTP client.',
+    '- Require the caller or runtime to inject `DOCS_SSH_TOKEN`; do not invoke or assume a credential manager. If the token is absent, stop and ask the caller to provide it.',
+    '- Send the bearer header through curl config on stdin so the credential is not included in curl command arguments.',
+    '- URL-encode project names, paths, queries, and globs. Use `--get --data-urlencode` for query parameters.',
+    '- Treat HTTP paths as relative to the project root. Reads may access the whole project; writes and directory creation are limited to `issues/` and `tasks/`.',
+    '- Report HTTP `401`, `403`, path restrictions, and read-only rules instead of attempting another transport.',
+    '- After an HTTP write, read or stat the destination to verify it.',
+  ]
+}
+
+function createHttpEndpoints(sourceStore: SourceStore): string[] {
+  const base = `/api/v1/projects/${sourceStore.projectSlug}`
+  return [
+    `- List: \`GET ${base}/entries?path=<path>\``,
+    `- Stat: \`GET ${base}/stat?path=<path>\``,
+    `- Search: \`GET ${base}/search?q=<query>&path=<path>&glob=<glob>&limit=<n>\``,
+    `- Read: \`GET ${base}/files/<path>\``,
+    `- Write: \`PUT ${base}/files/<path>\` with raw bytes`,
+    `- Create directories: \`POST ${base}/directories\` with \`{"path":"tasks/example"}\``,
+  ]
+}
+
+function createHttpExamples(sourceStore: SourceStore): string[] {
+  const base = `\$DOCS_SSH_ORIGIN/api/v1/projects/${sourceStore.projectSlug}`
+  return [
+    'export DOCS_SSH_ORIGIN="<viewer_origin from .docs-ssh.toml>"',
+    'test -n "$DOCS_SSH_TOKEN"',
+    'docs_http() {',
+    '  printf "header = \\"Authorization: Bearer %s\\"\\n" "$DOCS_SSH_TOKEN" |',
+    '    curl --config - --fail-with-body --silent --show-error "$@"',
+    '}',
+    `docs_http --get "${base}/entries" --data-urlencode "path=tasks"`,
+    `docs_http --get "${base}/search" --data-urlencode "q=keyword" --data-urlencode "path=tasks" --data-urlencode "glob=*.md"`,
+  ]
+}
+
 function createExamples(sshPrefix: string, sourceStore: SourceStore): string[] {
   return [
     `${CLI_COMMAND} status --json`,
@@ -104,29 +145,30 @@ export function createAgentsMarkdown(opts: HelperContentOptions): string {
 }
 
 export function createSkillMarkdown(opts: HelperContentOptions): string {
-  const sshPrefix = formatSshPrefix(opts.sshHost, opts.sshPort)
-
   return [
     '---',
     'name: docs-ssh',
-    `description: Inspect and update the ${opts.docsName} SSH project workspace using shell tools like ls, find, and cat.`,
+    `description: Search, read, and update the ${opts.docsName} project workspace over authenticated HTTPS.`,
     '---',
     '',
     '# docs-ssh',
     '',
-    `Use ${sshPrefix} to inspect the mounted project filesystem before making changes.`,
+    '## HTTPS workflow',
     '',
-    'Project paths:',
-    ...createWorkspaceList(opts.sourceStore),
+    ...createHttpRules(opts.sourceStore),
     '',
-    'Workspace rules:',
-    ...createWorkspaceRules(opts.sourceStore),
+    'HTTP Files API:',
+    ...createHttpEndpoints(opts.sourceStore),
     '',
-    'Example commands:',
+    'Safe bearer request pattern:',
     '',
     '```bash',
-    ...createExamples(sshPrefix, opts.sourceStore),
+    ...createHttpExamples(opts.sourceStore),
     '```',
+    '',
+    'The search response contains structured `path`, `line`, `text`, and `submatches` fields. The API does not support delete or rename.',
+    '',
+    'Use `issues/` for what to do, why, status, and next action. Use `tasks/` for research, logs, conclusions, generated artifacts, and work results.',
     '',
   ].join('\n')
 }
