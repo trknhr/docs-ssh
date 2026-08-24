@@ -1,6 +1,6 @@
 # docs-ssh
 
-Use SSH to expose project docs and agent workspaces through a shell-native filesystem, with a browser viewer for humans.
+Expose project files and agent workspaces over SSH and authenticated HTTP, with a browser viewer for humans.
 
 Docs: https://trknhr.github.io/docs-ssh/
 
@@ -15,7 +15,7 @@ Coding agents produce a lot of temporary knowledge:
 
 This context may be useful for days or weeks, but not forever. Chat history can disappear, while committing every intermediate artifact to Git mixes short-lived notes with durable project documentation.
 
-docs-ssh is a workspace between chat history and Git: persistent enough for agents and humans to revisit, but separate from the source repository. Agents explore it with familiar shell tools over SSH, while humans can use the browser viewer.
+docs-ssh is a workspace between chat history and Git: persistent enough for agents and humans to revisit, but separate from the source repository. Agents use familiar shell tools over SSH or a direct HTTP Files API, while humans use the browser viewer.
 
 ## Learn More
 
@@ -71,6 +71,41 @@ docs-ssh token login --token dssh_... --host docs-ssh --project default --json
 docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md
 ```
 
+## HTTP Files API
+
+Agents can access the same project files over authenticated HTTP. The versioned API supports
+directory listing, metadata, structured text search, byte reads and writes, and recursive
+directory creation:
+
+```bash
+export DOCS_SSH_ORIGIN=http://127.0.0.1:3000
+export DOCS_SSH_PROJECT=default
+export DOCS_SSH_TOKEN=dssh_...
+
+curl --fail-with-body \
+  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
+  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/entries?path=tasks"
+
+curl --fail-with-body \
+  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
+  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/search?q=needle&path=tasks&glob=*.md"
+
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"path":"tasks/http-demo"}' \
+  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/directories"
+
+curl --fail-with-body -X PUT \
+  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
+  --data-binary @result.md \
+  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/files/tasks/http-demo/result.md"
+```
+
+The token must belong to the project. Reads require `project:read`; writes and directory creation
+require `project:write`. HTTP writes share storage with SSH and the Viewer. See the
+[HTTP Files API reference](./docs/http-files-api.md) for endpoints, path rules, and response shapes.
+
 ## HTML Artifacts
 
 Have an agent store a self-contained HTML file in the remote task artifact directory, then publish
@@ -119,6 +154,10 @@ MCP is an integration protocol, not a storage policy. docs-ssh deliberately uses
 ### Why SSH?
 
 Agents already know how to use `ls`, `find`, `rg`, and small file reads. SSH makes those operations remote, authenticated, scriptable, and easy to trace, without requiring a project-specific client. The browser viewer remains available for humans.
+
+### Why HTTP too?
+
+Some agent sandboxes can make HTTP requests more easily than they can open an interactive SSH session. The HTTP Files API exposes the same project-scoped storage without requiring a shell, while SSH remains available for exploration and shell-native workflows.
 
 ## License
 

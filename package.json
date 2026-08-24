@@ -1,7 +1,7 @@
 {
   "name": "docs-ssh",
   "version": "0.5.0",
-  "description": "A shell-native workspace over SSH for AI-agent work notes.",
+  "description": "A project-scoped file workspace over SSH and HTTP for AI agents.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -13,6 +13,7 @@
   },
   "keywords": [
     "ai-agents",
+    "http",
     "ssh",
     "documentation",
     "workspace",

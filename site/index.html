@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="docs-ssh documentation for self-hosting project docs with web sessions and scoped SSH access."
+      content="docs-ssh documentation for self-hosting agent project files with scoped SSH and HTTP access."
     />
     <title>docs-ssh documentation</title>
     <link rel="icon" href="%BASE_URL%brand/docs-ssh-mark.svg" type="image/svg+xml" />
@@ -64,6 +64,7 @@
             <a href="#web-login">Web login</a>
             <a href="#projects">Projects</a>
             <a href="#tokens">API tokens</a>
+            <a href="#http-files-api">HTTP Files API</a>
             <a href="#self-hosting">Self-hosting</a>
             <a href="#agent-workflow">Agent workflow</a>
             <a href="#skill-distribution">Skill distribution</a>
@@ -73,14 +74,14 @@
 
         <main class="content" id="content">
           <section class="doc-section intro" id="overview" data-section>
-            <p class="eyebrow">SSH for AI-agent-friendly docs</p>
-            <h1>Make docs agent friendly over SSH</h1>
+            <p class="eyebrow">File access for AI agents</p>
+            <h1>Give agents one workspace over SSH and HTTP</h1>
             <p class="lead">
-              docs-ssh gives AI agents a shell-native interface to project docs,
+              docs-ssh gives AI agents shell-native and byte-oriented interfaces to project files,
               while humans keep a browser viewer, project controls, and scoped access.
             </p>
             <div class="hero-tags" aria-label="docs-ssh highlights">
-              <span>Shell-native for agents</span>
+              <span>SSH + HTTP for agents</span>
               <span>Readable for humans</span>
               <span>Scoped by project</span>
             </div>
@@ -116,7 +117,7 @@
               <div class="intro-summary">
                 <h2>Built for agent workflows</h2>
                 <ul class="check-list">
-                  <li>AI agents use SSH instead of scraping browser-only docs.</li>
+                  <li>AI agents use SSH shell tools or a direct HTTP Files API.</li>
                   <li>Short-lived grants keep local automation scoped and revocable.</li>
                   <li>Humans still get a browser-visible project tree and controls.</li>
                 </ul>
@@ -281,7 +282,7 @@ project = "default"</code></pre>
 
           <section class="doc-section" id="tokens" data-section>
             <p class="eyebrow">Automation</p>
-            <h2>API tokens mint scoped SSH sessions</h2>
+            <h2>API tokens scope SSH and HTTP access</h2>
             <p>
               Owners and admins create project-scoped tokens from the viewer. Tokens can
               read project data, write project data, and create SSH sessions depending on
@@ -302,6 +303,42 @@ project = "default"</code></pre>
             <p class="note">
               Token secrets are shown once. Revoke tokens from the viewer when the
               workflow no longer needs access.
+            </p>
+          </section>
+
+          <section class="doc-section" id="http-files-api" data-section>
+            <p class="eyebrow">Direct file access</p>
+            <h2>Read and write project files over HTTP</h2>
+            <p>
+              The versioned Files API lists directories, returns metadata, searches text with
+              structured matches, streams bytes, writes files atomically, and creates directories
+              in the same workspace used by SSH.
+              Use a token with <code>project:read</code> for reads and
+              <code>project:write</code> for mutations.
+            </p>
+            <div class="command-block">
+              <div class="command-header">
+                <span>HTTP write</span>
+                <button data-copy="curl --fail-with-body -X PUT -H 'Authorization: Bearer dssh_...' --data-binary @result.md https://docs.example.com/api/v1/projects/default/files/tasks/demo/result.md">Copy</button>
+              </div>
+              <pre><code>curl --fail-with-body -X PUT \
+  -H 'Authorization: Bearer dssh_...' \
+  --data-binary @result.md \
+  https://docs.example.com/api/v1/projects/default/files/tasks/demo/result.md</code></pre>
+            </div>
+            <div class="command-block">
+              <div class="command-header">
+                <span>HTTP search</span>
+                <button data-copy="curl --fail-with-body -H 'Authorization: Bearer dssh_...' 'https://docs.example.com/api/v1/projects/default/search?q=needle&amp;path=tasks&amp;glob=*.md'">Copy</button>
+              </div>
+              <pre><code>curl --fail-with-body \
+  -H 'Authorization: Bearer dssh_...' \
+  'https://docs.example.com/api/v1/projects/default/search?q=needle&amp;path=tasks&amp;glob=*.md'</code></pre>
+            </div>
+            <p class="note">
+              HTTP paths are project-relative. Writes are limited to <code>issues/</code> and
+              <code>tasks/</code>, file bodies are limited to 16 MiB, and symbolic links are not followed.
+              Search currently uses the sandboxed <code>just-bash rg</code> backend.
             </p>
           </section>
 

@@ -87,7 +87,7 @@ function createWorkspaceReadme(): string {
   return [
     '# docs-ssh',
     '',
-    'This SSH filesystem separates private notes, project work, and temporary files.',
+    'This workspace separates private notes, project work, and temporary files. SSH exposes the full mounted filesystem; the HTTP Files API exposes one project at a time.',
     '',
     'Top-level paths:',
     '',
@@ -97,7 +97,8 @@ function createWorkspaceReadme(): string {
     '',
     'Rules:',
     '',
-    '- Run `bootstrap --json`, then read `/README.md` and the selected `/projects/<slug>/README.md` before automating writes.',
+    '- Over SSH, run `bootstrap --json`, then read `/README.md` and the selected `/projects/<slug>/README.md` before automating writes.',
+    '- Over HTTP, use project-relative paths below `/api/v1/projects/<slug>/`; the API reads and writes the same project files as SSH.',
     '- Use `/home` for private personal notes.',
     '- Use `/projects/<slug>/issues` for issue tracking: what to do, why, status, next action, and result links.',
     '- Use `/projects/<slug>/tasks` for research and work results: logs, conclusions, verification, proposals, and generated artifacts.',

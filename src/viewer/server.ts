@@ -36,7 +36,15 @@ import {
   writeViewerSessionCookie,
 } from '../auth/web-session.js'
 import { getStatePaths, loadSourceStore } from '../sources/source-store.js'
+import {
+  WorkspaceFileError,
+  WorkspaceFileService,
+} from '../workspace/file-service.js'
 import { ensureWorkspaceLayout } from '../workspace/layout.js'
+import {
+  RgWorkspaceSearchProvider,
+  type WorkspaceSearchProvider,
+} from '../workspace/search-service.js'
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx'])
 const TEXT_EXTENSIONS = new Set([
@@ -146,6 +154,20 @@ interface ViewerServerOptions {
   sessionSecret?: Buffer | string
   staticDir?: string
   workspaceDir?: string
+}
+
+type WorkspaceFilesApiAction = 'directories' | 'entries' | 'files' | 'search' | 'stat'
+
+interface WorkspaceFilesApiRoute {
+  action: WorkspaceFilesApiAction
+  encodedPath?: string
+  encodedProjectSlug: string
+}
+
+interface DecodedWorkspaceFilesApiRoute {
+  action: WorkspaceFilesApiAction
+  path?: string
+  projectSlug: string
 }
 
 interface ActiveViewerSession {
@@ -466,6 +488,53 @@ function isProtectedViewerDataRoute(pathname: string): boolean {
   return PROTECTED_VIEWER_DATA_ROUTES.has(pathname)
     || /^\/api\/artifacts\/[^/]+$/u.test(pathname)
     || /^\/artifacts\/[^/]+\/content$/u.test(pathname)
+}
+
+function matchWorkspaceFilesApiRoute(pathname: string): WorkspaceFilesApiRoute | null {
+  const fileMatch = /^\/api\/v1\/projects\/([^/]+)\/files(?:\/(.*))?$/u.exec(pathname)
+  if (fileMatch) {
+    return {
+      action: 'files',
+      encodedPath: fileMatch[2] ?? '',
+      encodedProjectSlug: fileMatch[1],
+    }
+  }
+
+  const actionMatch = /^\/api\/v1\/projects\/([^/]+)\/(directories|entries|search|stat)$/u.exec(pathname)
+  if (!actionMatch) return null
+  return {
+    action: actionMatch[2] as Exclude<WorkspaceFilesApiAction, 'files'>,
+    encodedProjectSlug: actionMatch[1],
+  }
+}
+
+function decodeWorkspaceFilesApiRoute(route: WorkspaceFilesApiRoute): DecodedWorkspaceFilesApiRoute {
+  let projectSlug: string
+  let path: string | undefined
+  try {
+    projectSlug = decodeURIComponent(route.encodedProjectSlug)
+    path = route.encodedPath === undefined ? undefined : decodeURIComponent(route.encodedPath)
+  } catch {
+    throw new WorkspaceFileError(400, 'invalid_path', 'URL path contains invalid percent encoding.')
+  }
+
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(projectSlug)) {
+    throw new WorkspaceFileError(400, 'invalid_project', 'Project slug is invalid.')
+  }
+  return { action: route.action, path, projectSlug }
+}
+
+function isWorkspaceFilesApiMethodAllowed(route: WorkspaceFilesApiRoute, method: string): boolean {
+  switch (route.action) {
+    case 'directories':
+      return method === 'POST'
+    case 'entries':
+    case 'search':
+    case 'stat':
+      return method === 'GET' || method === 'HEAD'
+    case 'files':
+      return method === 'GET' || method === 'HEAD' || method === 'PUT'
+  }
 }
 
 function buildViewerReturnTo(url: URL): string {
@@ -828,6 +897,21 @@ function sendJson(
   response.end(headOnly ? undefined : `${JSON.stringify(payload, null, 2)}\n`)
 }
 
+function sendWorkspaceFilesApiError(
+  response: ServerResponse,
+  statusCode: number,
+  code: string,
+  message: string,
+  headOnly = false,
+) {
+  sendJson(response, statusCode, {
+    error: {
+      code,
+      message,
+    },
+  }, headOnly)
+}
+
 function sendHtml(response: ServerResponse, statusCode: number, html: string, headOnly = false) {
   response.writeHead(statusCode, {
     'Cache-Control': 'no-store',
@@ -1042,6 +1126,31 @@ export function createViewerServer(opts: ViewerServerOptions) {
   const oidcClient = opts.oidc ? new OidcClient(opts.oidc) : null
   const sessionSecret = opts.sessionSecret ? deriveViewerSessionSecret(opts.sessionSecret) : null
   const cliLoginRequests = new Map<string, CliLoginRequest>()
+  const workspaceFileServices = new Map<string, Promise<WorkspaceFileService>>()
+  const workspaceSearchProviders = new Map<string, Promise<WorkspaceSearchProvider>>()
+
+  const getWorkspaceFileService = (rootPath: string) => {
+    let service = workspaceFileServices.get(rootPath)
+    if (!service) {
+      service = WorkspaceFileService.create(rootPath, {
+        readOnlyPaths: ['README.md', 'issues/README.md', 'tasks/README.md'],
+        writableDirectories: ['issues', 'tasks'],
+      })
+      workspaceFileServices.set(rootPath, service)
+    }
+    return service
+  }
+
+  const getWorkspaceSearchProvider = (rootPath: string) => {
+    let provider = workspaceSearchProviders.get(rootPath)
+    if (!provider) {
+      provider = getWorkspaceFileService(rootPath).then(
+        (fileService) => new RgWorkspaceSearchProvider(fileService),
+      )
+      workspaceSearchProviders.set(rootPath, provider)
+    }
+    return provider
+  }
 
   const getActiveSession = (request: IncomingMessage) => {
     if (!authStore || !sessionSecret) return null
@@ -1079,6 +1188,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
       const cliLoginApproveMatch = /^\/cli-login\/([^/]+)\/approve$/u.exec(url.pathname)
       const artifactApiMatch = /^\/api\/artifacts\/([^/]+)$/u.exec(url.pathname)
       const artifactContentMatch = /^\/artifacts\/([^/]+)\/content$/u.exec(url.pathname)
+      const workspaceFilesApiRoute = matchWorkspaceFilesApiRoute(url.pathname)
 
       if (url.pathname === '/healthz') {
         if (method !== 'GET' && method !== 'HEAD') {
@@ -1086,6 +1196,11 @@ export function createViewerServer(opts: ViewerServerOptions) {
           return
         }
         sendJson(response, 200, { status: 'ok' }, headOnly)
+        return
+      }
+
+      if (workspaceFilesApiRoute && !isWorkspaceFilesApiMethodAllowed(workspaceFilesApiRoute, method)) {
+        sendWorkspaceFilesApiError(response, 405, 'method_not_allowed', 'Method not allowed.', headOnly)
         return
       }
 
@@ -1108,6 +1223,7 @@ export function createViewerServer(opts: ViewerServerOptions) {
         && !(isCliLoginExchangeRoute && method === 'POST')
         && !(cliLoginApproveMatch && method === 'POST')
         && !(artifactApiMatch && method === 'PATCH')
+        && !(workspaceFilesApiRoute && isWorkspaceFilesApiMethodAllowed(workspaceFilesApiRoute, method))
       ) {
         sendMethodNotAllowed(response)
         return
@@ -2360,7 +2476,77 @@ export function createViewerServer(opts: ViewerServerOptions) {
         return
       }
       let apiTokenSession: AuthApiTokenSession | null = null
-      if (authStore && isProtectedViewerDataRoute(url.pathname) && !session) {
+      let decodedWorkspaceFilesApiRoute: DecodedWorkspaceFilesApiRoute | null = null
+      if (workspaceFilesApiRoute) {
+        try {
+          decodedWorkspaceFilesApiRoute = decodeWorkspaceFilesApiRoute(workspaceFilesApiRoute)
+        } catch (error) {
+          const workspaceError = error instanceof WorkspaceFileError
+            ? error
+            : new WorkspaceFileError(400, 'invalid_path', String(error))
+          sendWorkspaceFilesApiError(
+            response,
+            workspaceError.statusCode,
+            workspaceError.code,
+            workspaceError.message,
+            headOnly,
+          )
+          return
+        }
+
+        if (!authStore) {
+          sendWorkspaceFilesApiError(
+            response,
+            503,
+            'authentication_unavailable',
+            'API token authentication is not configured.',
+            headOnly,
+          )
+          return
+        }
+
+        const bearerToken = getBearerToken(request)
+        if (!bearerToken) {
+          sendWorkspaceFilesApiError(response, 401, 'missing_token', 'A bearer API token is required.', headOnly)
+          return
+        }
+
+        try {
+          apiTokenSession = authStore.authenticateApiToken(bearerToken, {
+            projectSlug: decodedWorkspaceFilesApiRoute.projectSlug,
+          })
+        } catch (error) {
+          sendWorkspaceFilesApiError(
+            response,
+            403,
+            'project_access_denied',
+            error instanceof Error ? error.message : String(error),
+            headOnly,
+          )
+          return
+        }
+        if (!apiTokenSession) {
+          sendWorkspaceFilesApiError(response, 401, 'invalid_token', 'API token is invalid or expired.', headOnly)
+          return
+        }
+
+        const isWriteRequest = method === 'POST' || method === 'PUT'
+        const scopes = apiTokenSession.token.scopes
+        const hasRequiredScope = isWriteRequest
+          ? scopes.includes('project:write')
+          : scopes.includes('project:read') || scopes.includes('project:write')
+        if (!hasRequiredScope) {
+          const requiredScope = isWriteRequest ? 'project:write' : 'project:read'
+          sendWorkspaceFilesApiError(
+            response,
+            403,
+            'insufficient_scope',
+            `API token is missing required scope "${requiredScope}".`,
+            headOnly,
+          )
+          return
+        }
+      } else if (authStore && isProtectedViewerDataRoute(url.pathname) && !session) {
         const bearerToken = getBearerToken(request)
         if (bearerToken) {
           try {
@@ -2506,6 +2692,146 @@ export function createViewerServer(opts: ViewerServerOptions) {
         mountPath: mount.mountPath,
         type: mount.type,
       }))
+
+      if (decodedWorkspaceFilesApiRoute) {
+        const projectMount = context.mounts.find((mount) => mount.type === 'project')
+        if (!projectMount) {
+          sendWorkspaceFilesApiError(response, 404, 'project_not_found', 'Project workspace was not found.', headOnly)
+          return
+        }
+
+        const service = await getWorkspaceFileService(projectMount.rootPath)
+        try {
+          if (decodedWorkspaceFilesApiRoute.action === 'search') {
+            const rawLimit = url.searchParams.get('limit')
+            const result = await (await getWorkspaceSearchProvider(projectMount.rootPath)).search({
+              caseSensitivity: url.searchParams.get('case') ?? undefined,
+              globs: url.searchParams.getAll('glob'),
+              limit: rawLimit === null ? undefined : Number(rawLimit),
+              mode: url.searchParams.get('mode') ?? undefined,
+              path: url.searchParams.get('path') ?? '',
+              query: url.searchParams.get('q') ?? '',
+            })
+            sendJson(response, 200, {
+              case: result.caseSensitivity,
+              limit: result.limit,
+              matches: result.matches,
+              mode: result.mode,
+              path: result.path,
+              project: decodedWorkspaceFilesApiRoute.projectSlug,
+              query: result.query,
+              truncated: result.truncated,
+            }, headOnly)
+            return
+          }
+
+          if (decodedWorkspaceFilesApiRoute.action === 'entries') {
+            const path = url.searchParams.get('path') ?? ''
+            const entries = await service.list(path)
+            sendJson(response, 200, {
+              entries,
+              path,
+              project: decodedWorkspaceFilesApiRoute.projectSlug,
+            }, headOnly)
+            return
+          }
+
+          if (decodedWorkspaceFilesApiRoute.action === 'stat') {
+            const path = url.searchParams.get('path') ?? ''
+            const entry = await service.stat(path)
+            sendJson(response, 200, {
+              entry,
+              project: decodedWorkspaceFilesApiRoute.projectSlug,
+            }, headOnly)
+            return
+          }
+
+          if (decodedWorkspaceFilesApiRoute.action === 'directories') {
+            let body: unknown
+            try {
+              body = await readJsonBody(request)
+            } catch (error) {
+              sendWorkspaceFilesApiError(
+                response,
+                400,
+                'invalid_request',
+                error instanceof Error ? error.message : String(error),
+              )
+              return
+            }
+
+            const path = body && typeof body === 'object' && 'path' in body
+              ? body.path
+              : undefined
+            if (typeof path !== 'string') {
+              sendWorkspaceFilesApiError(response, 400, 'invalid_request', 'Request body must include a string path.')
+              return
+            }
+
+            const result = await service.createDirectory(path)
+            sendJson(response, result.created ? 201 : 200, {
+              entry: result.entry,
+              project: decodedWorkspaceFilesApiRoute.projectSlug,
+            })
+            return
+          }
+
+          const path = decodedWorkspaceFilesApiRoute.path ?? ''
+          if (method === 'PUT') {
+            const contentLength = request.headers['content-length']
+            if (contentLength) {
+              const parsedContentLength = Number(contentLength)
+              if (!Number.isSafeInteger(parsedContentLength) || parsedContentLength < 0) {
+                sendWorkspaceFilesApiError(response, 400, 'invalid_request', 'Content-Length is invalid.')
+                return
+              }
+              if (parsedContentLength > service.maxFileBytes) {
+                sendWorkspaceFilesApiError(
+                  response,
+                  413,
+                  'file_too_large',
+                  `File exceeds the ${service.maxFileBytes} byte limit.`,
+                )
+                return
+              }
+            }
+
+            const result = await service.writeFile(path, request)
+            sendJson(response, result.created ? 201 : 200, {
+              entry: result.entry,
+              project: decodedWorkspaceFilesApiRoute.projectSlug,
+            })
+            return
+          }
+
+          const file = await service.getReadableFile(path)
+          response.writeHead(200, {
+            'Cache-Control': 'no-store',
+            'Content-Length': String(file.entry.size),
+            'Content-Type': 'application/octet-stream',
+            'Last-Modified': new Date(file.entry.modifiedAt).toUTCString(),
+            'X-Content-Type-Options': 'nosniff',
+          })
+          if (headOnly) {
+            response.end()
+            return
+          }
+          createReadStream(file.absolutePath).pipe(response)
+          return
+        } catch (error) {
+          if (error instanceof WorkspaceFileError) {
+            sendWorkspaceFilesApiError(
+              response,
+              error.statusCode,
+              error.code,
+              error.message,
+              headOnly,
+            )
+            return
+          }
+          throw error
+        }
+      }
 
       if (url.pathname === '/api/tree') {
         const { tree, truncated } = await buildTree(context.mounts)

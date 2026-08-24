@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -353,6 +353,240 @@ describe('createViewerServer health check', () => {
     expect(headResponse.status).toBe(200)
     expect(await headResponse.text()).toBe('')
     expect(postResponse.status).toBe(405)
+  })
+})
+
+describe('createViewerServer HTTP Files API', () => {
+  it('lists, stats, reads, writes, and creates directories inside a token project', async () => {
+    const viewer = await createViewerFixture({
+      clientId: 'docs-ssh-viewer',
+      issuer: 'https://accounts.example.com',
+    })
+    const authStore = createAuthStore({ dbPath: viewer.authDbPath })
+    authStore.createProject({
+      displayName: 'Other Project',
+      slug: 'other-project',
+      userLogin: 'owner',
+    })
+    const writeToken = authStore.createApiToken({
+      label: 'HTTP writer',
+      projectSlug: 'default',
+      scopes: ['project:read', 'project:write'],
+      userLogin: 'owner',
+    })
+    const readToken = authStore.createApiToken({
+      label: 'HTTP reader',
+      projectSlug: 'default',
+      scopes: ['project:read'],
+      userLogin: 'owner',
+    })
+    authStore.close()
+
+    const projectUrl = `${viewer.baseUrl}/api/v1/projects/default`
+    const writeHeaders = { Authorization: `Bearer ${writeToken.token}` }
+
+    const unauthorizedResponse = await fetch(`${projectUrl}/entries`)
+    expect(unauthorizedResponse.status).toBe(401)
+    await expect(unauthorizedResponse.json()).resolves.toEqual({
+      error: {
+        code: 'missing_token',
+        message: 'A bearer API token is required.',
+      },
+    })
+
+    const mkdirResponse = await fetch(`${projectUrl}/directories`, {
+      body: JSON.stringify({ path: 'tasks/http-demo/artifacts' }),
+      headers: {
+        ...writeHeaders,
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    })
+    expect(mkdirResponse.status).toBe(201)
+    await expect(mkdirResponse.json()).resolves.toMatchObject({
+      entry: {
+        path: 'tasks/http-demo/artifacts',
+        type: 'directory',
+      },
+      project: 'default',
+    })
+
+    const bytes = Uint8Array.from([0, 1, 2, 127, 128, 255])
+    const fileUrl = `${projectUrl}/files/tasks/http-demo/artifacts/payload.bin`
+    const putResponse = await fetch(fileUrl, {
+      body: bytes,
+      headers: writeHeaders,
+      method: 'PUT',
+    })
+    expect(putResponse.status).toBe(201)
+    await expect(putResponse.json()).resolves.toMatchObject({
+      entry: {
+        path: 'tasks/http-demo/artifacts/payload.bin',
+        size: bytes.length,
+        type: 'file',
+      },
+      project: 'default',
+    })
+
+    const getResponse = await fetch(fileUrl, { headers: writeHeaders })
+    expect(getResponse.status).toBe(200)
+    expect(getResponse.headers.get('content-type')).toBe('application/octet-stream')
+    expect(new Uint8Array(await getResponse.arrayBuffer())).toEqual(bytes)
+
+    const headResponse = await fetch(fileUrl, { headers: writeHeaders, method: 'HEAD' })
+    expect(headResponse.status).toBe(200)
+    expect(headResponse.headers.get('content-length')).toBe(String(bytes.length))
+    expect(await headResponse.text()).toBe('')
+
+    const statResponse = await fetch(
+      `${projectUrl}/stat?path=${encodeURIComponent('tasks/http-demo/artifacts/payload.bin')}`,
+      { headers: writeHeaders },
+    )
+    expect(statResponse.status).toBe(200)
+    await expect(statResponse.json()).resolves.toMatchObject({
+      entry: {
+        path: 'tasks/http-demo/artifacts/payload.bin',
+        size: bytes.length,
+        type: 'file',
+      },
+    })
+
+    const entriesResponse = await fetch(
+      `${projectUrl}/entries?path=${encodeURIComponent('tasks/http-demo/artifacts')}`,
+      { headers: writeHeaders },
+    )
+    expect(entriesResponse.status).toBe(200)
+    await expect(entriesResponse.json()).resolves.toMatchObject({
+      entries: [
+        {
+          name: 'payload.bin',
+          path: 'tasks/http-demo/artifacts/payload.bin',
+          size: bytes.length,
+          type: 'file',
+        },
+      ],
+      path: 'tasks/http-demo/artifacts',
+    })
+
+    const rawResponse = await fetch(
+      `${viewer.baseUrl}/api/raw?path=${encodeURIComponent('/projects/default/tasks/http-demo/artifacts/payload.bin')}`,
+      { headers: writeHeaders },
+    )
+    expect(rawResponse.status).toBe(200)
+    expect(new Uint8Array(await rawResponse.arrayBuffer())).toEqual(bytes)
+
+    const storedBytes = await readFile(resolve(
+      viewer.workspaceDir,
+      'tenants/default/projects/default/tasks/http-demo/artifacts/payload.bin',
+    ))
+    expect(storedBytes).toEqual(Buffer.from(bytes))
+
+    const searchableText = 'Alpha Needle\nbeta needle\nno match\n'
+    const searchableFileUrl = `${projectUrl}/files/tasks/http-demo/notes.md`
+    const searchablePutResponse = await fetch(searchableFileUrl, {
+      body: searchableText,
+      headers: writeHeaders,
+      method: 'PUT',
+    })
+    expect(searchablePutResponse.status).toBe(201)
+
+    const searchParams = new URLSearchParams({
+      glob: '*.md',
+      limit: '10',
+      path: 'tasks/http-demo',
+      q: 'needle',
+    })
+    const searchUrl = `${projectUrl}/search?${searchParams}`
+    const searchResponse = await fetch(searchUrl, {
+      headers: { Authorization: `Bearer ${readToken.token}` },
+    })
+    expect(searchResponse.status).toBe(200)
+    await expect(searchResponse.json()).resolves.toEqual({
+      case: 'smart',
+      limit: 10,
+      matches: [
+        {
+          line: 1,
+          path: 'tasks/http-demo/notes.md',
+          submatches: [{ end: 12, start: 6, text: 'Needle' }],
+          text: 'Alpha Needle',
+        },
+        {
+          line: 2,
+          path: 'tasks/http-demo/notes.md',
+          submatches: [{ end: 11, start: 5, text: 'needle' }],
+          text: 'beta needle',
+        },
+      ],
+      mode: 'literal',
+      path: 'tasks/http-demo',
+      project: 'default',
+      query: 'needle',
+      truncated: false,
+    })
+
+    const searchHeadResponse = await fetch(searchUrl, {
+      headers: { Authorization: `Bearer ${readToken.token}` },
+      method: 'HEAD',
+    })
+    expect(searchHeadResponse.status).toBe(200)
+    expect(await searchHeadResponse.text()).toBe('')
+
+    const missingQueryResponse = await fetch(`${projectUrl}/search`, {
+      headers: { Authorization: `Bearer ${readToken.token}` },
+    })
+    expect(missingQueryResponse.status).toBe(400)
+    await expect(missingQueryResponse.json()).resolves.toMatchObject({
+      error: { code: 'invalid_query' },
+    })
+
+    const invalidPatternResponse = await fetch(
+      `${projectUrl}/search?mode=regex&q=${encodeURIComponent('[')}`,
+      { headers: { Authorization: `Bearer ${readToken.token}` } },
+    )
+    expect(invalidPatternResponse.status).toBe(400)
+    await expect(invalidPatternResponse.json()).resolves.toMatchObject({
+      error: { code: 'invalid_pattern' },
+    })
+
+    const readOnlyWriteResponse = await fetch(`${projectUrl}/files/tasks/read-only.txt`, {
+      body: 'blocked',
+      headers: { Authorization: `Bearer ${readToken.token}` },
+      method: 'PUT',
+    })
+    expect(readOnlyWriteResponse.status).toBe(403)
+    await expect(readOnlyWriteResponse.json()).resolves.toMatchObject({
+      error: { code: 'insufficient_scope' },
+    })
+
+    const projectMismatchResponse = await fetch(
+      `${viewer.baseUrl}/api/v1/projects/other-project/entries`,
+      { headers: writeHeaders },
+    )
+    expect(projectMismatchResponse.status).toBe(403)
+    await expect(projectMismatchResponse.json()).resolves.toMatchObject({
+      error: { code: 'project_access_denied' },
+    })
+
+    const readmeWriteResponse = await fetch(`${projectUrl}/files/tasks/README.md`, {
+      body: 'blocked',
+      headers: writeHeaders,
+      method: 'PUT',
+    })
+    expect(readmeWriteResponse.status).toBe(403)
+    await expect(readmeWriteResponse.json()).resolves.toMatchObject({
+      error: { code: 'path_is_read_only' },
+    })
+
+    const traversalResponse = await fetch(`${projectUrl}/files/tasks/%2E%2E%2FREADME.md`, {
+      body: 'blocked',
+      headers: writeHeaders,
+      method: 'PUT',
+    })
+    expect(traversalResponse.status).toBe(400)
+    await expect(traversalResponse.json()).resolves.toMatchObject({
+      error: { code: 'invalid_path' },
+    })
   })
 })
 
