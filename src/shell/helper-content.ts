@@ -47,44 +47,41 @@ function createWorkspaceRules(sourceStore: SourceStore): string[] {
   ]
 }
 
-function createHttpRules(sourceStore: SourceStore): string[] {
+function createHttpRules(): string[] {
   return [
-    '- Starting from the current directory, find the nearest `.docs-ssh.toml` and resolve `viewer_origin` and `project` from it.',
-    `- Use project \`${sourceStore.projectSlug}\` for every request.`,
-    '- Use HTTPS for project-scoped directory listing, metadata, search, file reads and writes, and directory creation.',
+    '- Use `docs-ssh files` for project-scoped directory listing, metadata, search, file reads and writes, and directory creation.',
+    '- The command finds the nearest `.docs-ssh.toml` from the current directory and resolves `viewer_origin` and `project` from it.',
     '- Read the bearer credential from `DOCS_SSH_TOKEN`. Never print it, commit it, place it in `.docs-ssh.toml`, or pass it through a verbose HTTP client.',
     '- Require the caller or runtime to inject `DOCS_SSH_TOKEN`; do not invoke or assume a credential manager. If the token is absent, stop and ask the caller to provide it.',
-    '- Send the bearer header through curl config on stdin so the credential is not included in curl command arguments.',
-    '- URL-encode project names, paths, queries, and globs. Use `--get --data-urlencode` for query parameters.',
+    '- Let the command construct URLs and send the bearer credential. Do not build HTTP requests or authorization headers in the skill.',
     '- Treat HTTP paths as relative to the project root. Reads may access the whole project; writes and directory creation are limited to `issues/` and `tasks/`.',
     '- Report HTTP `401`, `403`, path restrictions, and read-only rules instead of attempting another transport.',
     '- After an HTTP write, read or stat the destination to verify it.',
   ]
 }
 
-function createHttpEndpoints(sourceStore: SourceStore): string[] {
-  const base = `/api/v1/projects/${sourceStore.projectSlug}`
+function createFilesCommandReference(): string[] {
   return [
-    `- List: \`GET ${base}/entries?path=<path>\``,
-    `- Stat: \`GET ${base}/stat?path=<path>\``,
-    `- Search: \`GET ${base}/search?q=<query>&path=<path>&glob=<glob>&limit=<n>\``,
-    `- Read: \`GET ${base}/files/<path>\``,
-    `- Write: \`PUT ${base}/files/<path>\` with raw bytes`,
-    `- Create directories: \`POST ${base}/directories\` with \`{"path":"tasks/example"}\``,
+    '- List: `docs-ssh files list [path] --json`',
+    '- Stat: `docs-ssh files stat [path] --json`',
+    '- Search: `docs-ssh files search <query> [--path <path>] [--glob <glob>]... [--limit <n>] [--mode literal|regex] [--case smart|sensitive|insensitive] --json`',
+    '- Read to stdout: `docs-ssh files read <path>`',
+    '- Read to a local file: `docs-ssh files read <path> --output <local-path>`',
+    '- Write: `docs-ssh files write <path> --input <local-path|-> --json`',
+    '- Create directories: `docs-ssh files mkdir <path> --json`',
   ]
 }
 
-function createHttpExamples(sourceStore: SourceStore): string[] {
-  const base = `\$DOCS_SSH_ORIGIN/api/v1/projects/${sourceStore.projectSlug}`
+function createFilesCommandExamples(): string[] {
   return [
-    'export DOCS_SSH_ORIGIN="<viewer_origin from .docs-ssh.toml>"',
     'test -n "$DOCS_SSH_TOKEN"',
-    'docs_http() {',
-    '  printf "header = \\"Authorization: Bearer %s\\"\\n" "$DOCS_SSH_TOKEN" |',
-    '    curl --config - --fail-with-body --silent --show-error "$@"',
-    '}',
-    `docs_http --get "${base}/entries" --data-urlencode "path=tasks"`,
-    `docs_http --get "${base}/search" --data-urlencode "q=keyword" --data-urlencode "path=tasks" --data-urlencode "glob=*.md"`,
+    'docs-ssh files list --json',
+    'docs-ssh files read README.md',
+    'docs-ssh files list tasks --json',
+    "docs-ssh files search keyword --path tasks --glob '*.md' --json",
+    'docs-ssh files mkdir tasks/example --json',
+    'docs-ssh files write tasks/example/notes.md --input ./notes.md --json',
+    'docs-ssh files stat tasks/example/notes.md --json',
   ]
 }
 
@@ -155,15 +152,15 @@ export function createSkillMarkdown(opts: HelperContentOptions): string {
     '',
     '## HTTPS workflow',
     '',
-    ...createHttpRules(opts.sourceStore),
+    ...createHttpRules(),
     '',
-    'HTTP Files API:',
-    ...createHttpEndpoints(opts.sourceStore),
+    'Commands:',
+    ...createFilesCommandReference(),
     '',
-    'Safe bearer request pattern:',
+    'Examples:',
     '',
     '```bash',
-    ...createHttpExamples(opts.sourceStore),
+    ...createFilesCommandExamples(),
     '```',
     '',
     'The search response contains structured `path`, `line`, `text`, and `submatches` fields. The API does not support delete or rename.',

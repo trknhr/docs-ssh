@@ -73,38 +73,26 @@ docs-ssh skill --output .agents/skills/docs-ssh/SKILL.md
 
 ## HTTP Files API
 
-Agents can access the same project files over authenticated HTTP. The versioned API supports
-directory listing, metadata, structured text search, byte reads and writes, and recursive
-directory creation:
+Agents can access the same project files over authenticated HTTP. The `files` command reads
+`viewer_origin` and `project` from the nearest `.docs-ssh.toml`, then uses the injected project
+API token:
 
 ```bash
-export DOCS_SSH_ORIGIN=http://127.0.0.1:3000
-export DOCS_SSH_PROJECT=default
 export DOCS_SSH_TOKEN=dssh_...
 
-curl --fail-with-body \
-  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
-  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/entries?path=tasks"
-
-curl --fail-with-body \
-  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
-  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/search?q=needle&path=tasks&glob=*.md"
-
-curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data '{"path":"tasks/http-demo"}' \
-  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/directories"
-
-curl --fail-with-body -X PUT \
-  -H "Authorization: Bearer $DOCS_SSH_TOKEN" \
-  --data-binary @result.md \
-  "$DOCS_SSH_ORIGIN/api/v1/projects/$DOCS_SSH_PROJECT/files/tasks/http-demo/result.md"
+docs-ssh files list tasks --json
+docs-ssh files stat tasks/http-demo/result.md --json
+docs-ssh files search needle --path tasks --glob '*.md' --json
+docs-ssh files read tasks/http-demo/result.md
+docs-ssh files mkdir tasks/http-demo --json
+docs-ssh files write tasks/http-demo/result.md --input result.md --json
 ```
 
 The token must belong to the project. Reads require `project:read`; writes and directory creation
-require `project:write`. HTTP writes share storage with SSH and the Viewer. See the
-[HTTP Files API reference](./docs/http-files-api.md) for endpoints, path rules, and response shapes.
+require `project:write`. `read` writes raw bytes to stdout or to the path passed with `--output`;
+the other operations support structured `--json` output. HTTP writes share storage with SSH and
+the Viewer. See the [HTTP Files API reference](./docs/http-files-api.md) for endpoints, path rules,
+and response shapes.
 
 ## HTML Artifacts
 

@@ -14,6 +14,23 @@ Authorization: Bearer dssh_...
 The project slug in the URL must match the token's project. Read operations accept
 `project:read` or `project:write`; mutating operations require `project:write`.
 
+## CLI
+
+The `docs-ssh files` command resolves `viewer_origin` and `project` from the nearest
+`.docs-ssh.toml` and reads the token from `DOCS_SSH_TOKEN`:
+
+```bash
+docs-ssh files list [path] --json
+docs-ssh files stat [path] --json
+docs-ssh files search <query> --path <path> --glob '*.md' --json
+docs-ssh files read <path> [--output <local-path>]
+docs-ssh files write <path> --input <local-path|-> --json
+docs-ssh files mkdir <path> --json
+```
+
+Use repeated `--glob` flags for multiple search filters. `read` emits raw bytes when `--output`
+is omitted. The remaining sections describe the underlying HTTP contract.
+
 ## Endpoints
 
 Paths are relative to the selected project root. For example, the HTTP path

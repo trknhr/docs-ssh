@@ -28,6 +28,7 @@ import {
 import type { SourceRegistry, SourceSpec } from './sources/types.js'
 import { getGitRepoPreset } from './ingest/presets.js'
 import { findProjectConfig } from './project-config.js'
+import { runFilesCommand } from './files/command.js'
 import {
   createAgentsMarkdown,
   createSetupMarkdown,
@@ -106,6 +107,12 @@ Usage:
   docs-ssh ingest git-repo <repo-url> [--name <name>] [--subdir <path>] [--ref <ref>] [--default]
   docs-ssh ingest <preset> [--name <name>] [--default]
   docs-ssh sources list
+  docs-ssh files list [path] [--json] [--project <slug>] [--viewer-origin <url>]
+  docs-ssh files stat [path] [--json] [--project <slug>] [--viewer-origin <url>]
+  docs-ssh files search <query> [--path <path>] [--glob <glob>]... [--limit <n>] [--mode literal|regex] [--case smart|sensitive|insensitive] [--json]
+  docs-ssh files read <path> [--output <local-path>] [--force] [--project <slug>] [--viewer-origin <url>]
+  docs-ssh files write <path> --input <local-path|-> [--json] [--project <slug>] [--viewer-origin <url>]
+  docs-ssh files mkdir <path> [--json] [--project <slug>] [--viewer-origin <url>]
   docs-ssh login [--host <ssh-config-host>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json] [--no-open] [--interactive]
   docs-ssh token login --token <token> [--host <ssh-config-host>] [--project <slug>] [--viewer-origin <url>] [--ttl-seconds <seconds>] [--json]
   docs-ssh config init [--host <ssh-config-host>] [--project <slug>] [--viewer-origin <url>] [--output <path>] [--force] [--json] [--interactive]
@@ -1616,14 +1623,25 @@ async function outputHelper(target: HelperTarget, args: ParsedArgs): Promise<voi
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  const args = parseArgs(argv)
 
-  if (args.positionals.length === 0 || getFlagBoolean(args, 'help')) {
+  if (args.positionals.length === 0) {
     printUsage()
     return
   }
 
   const [command, subcommand] = args.positionals
+
+  if (command === 'files') {
+    await runFilesCommand(argv.slice(1))
+    return
+  }
+
+  if (getFlagBoolean(args, 'help')) {
+    printUsage()
+    return
+  }
 
   if (command === 'agents' || command === 'setup' || command === 'skill') {
     await outputHelper(command, args)
