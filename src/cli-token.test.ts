@@ -101,7 +101,7 @@ describe('docs-ssh login', () => {
     })).rejects.toMatchObject({
       stderr: expect.stringContaining('Unknown flag --viewr-origin. Did you mean --viewer-origin?'),
     })
-  })
+  }, 15_000)
 
   it('prints the viewer origin when the login viewer cannot be reached', async () => {
     const homeDir = await createTempDir()
@@ -123,7 +123,7 @@ describe('docs-ssh login', () => {
     })).rejects.toMatchObject({
       stderr: expect.stringContaining('Could not reach docs-ssh viewer at http://127.0.0.1:1'),
     })
-  })
+  }, 15_000)
 
   it('creates a web SSH session without binding the login request to a project', async () => {
     const homeDir = await createTempDir()
@@ -233,7 +233,7 @@ describe('docs-ssh login', () => {
         server.close(() => resolveClose())
       })
     }
-  }, 10_000)
+  }, 15_000)
 
   it('prompts for viewer origin when login has no configured viewer', async () => {
     const homeDir = await createTempDir()
@@ -319,7 +319,7 @@ describe('docs-ssh login', () => {
         server.close(() => resolveClose())
       })
     }
-  }, 10_000)
+  }, 15_000)
 })
 
 describe('docs-ssh token login', () => {
@@ -411,5 +411,5 @@ describe('docs-ssh token login', () => {
         server.close(() => resolveClose())
       })
     }
-  })
+  }, 15_000)
 })

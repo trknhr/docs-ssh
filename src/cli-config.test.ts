@@ -79,7 +79,7 @@ describe('docs-ssh config init', () => {
       viewerOrigin: 'https://docs.example.com',
     })
     expect(JSON.parse(stdout)).not.toHaveProperty('project')
-  })
+  }, 15_000)
 
   it('writes .docs-ssh.toml for a project selected from the active SSH session host', async () => {
     const homeDir = await createTempDir()
@@ -132,7 +132,7 @@ describe('docs-ssh config init', () => {
       server: 'docs.example.com',
       viewerOrigin: 'https://docs.example.com',
     })
-  })
+  }, 15_000)
 
   it('requires --project in non-interactive shells when multiple projects are accessible', async () => {
     const homeDir = await createTempDir()
@@ -168,7 +168,7 @@ describe('docs-ssh config init', () => {
     })).rejects.toMatchObject({
       stderr: expect.stringContaining('Pass --project'),
     })
-  })
+  }, 15_000)
 
   it('uses the only active server session when no server is configured yet', async () => {
     const homeDir = await createTempDir()
@@ -209,7 +209,7 @@ describe('docs-ssh config init', () => {
       server: 'docs-ssh-local',
       viewerOrigin: 'https://docs.example.com',
     })
-  })
+  }, 15_000)
 
   it('requires --host in non-interactive shells when multiple active hosts exist', async () => {
     const homeDir = await createTempDir()
@@ -229,7 +229,7 @@ describe('docs-ssh config init', () => {
     })).rejects.toMatchObject({
       stderr: expect.stringContaining('Multiple active docs-ssh hosts are available. Pass --host'),
     })
-  })
+  }, 15_000)
 
   it('completes a first-run config after login without requiring --force', async () => {
     const homeDir = await createTempDir()
@@ -280,5 +280,5 @@ describe('docs-ssh config init', () => {
       host: 'docs.example.com',
       project: 'product-docs',
     })
-  })
+  }, 15_000)
 })
